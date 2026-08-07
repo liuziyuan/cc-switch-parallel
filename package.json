@@ -15,9 +15,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/liu-zy/cc-switch-parallel.git"
+    "url": "git+https://github.com/liuziyuan/cc-switch-parallel.git"
   },
-  "homepage": "https://github.com/liu-zy/cc-switch-parallel",
+  "homepage": "https://github.com/liuziyuan/cc-switch-parallel",
   "keywords": [
     "claude-code",
     "codex",

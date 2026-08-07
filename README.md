@@ -17,7 +17,7 @@ npm install -g cc-switch-parallel
 Or from source:
 
 ```bash
-git clone https://github.com/liu-zy/cc-switch-parallel.git
+git clone https://github.com/liuziyuan/cc-switch-parallel.git
 cd cc-switch-parallel
 npm link
 ```

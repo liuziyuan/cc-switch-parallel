@@ -3,13 +3,14 @@
 //
 // 用法:
 //   switch                                 # TUI 交互模式:先选 CLI 再选供应商
+//   switch update                          # 自升级到 npm 上的最新版本
 //   switch <provider> <cmd> [args...]     # 命令模式:直接指定供应商和 CLI
 //
 // 从 ~/.cc-switch/cc-switch.db 读取 provider 配置,生成独立实例目录,
 // 通过 CLAUDE_CONFIG_DIR / CODEX_HOME 环境变量隔离启动。
 // 不同 terminal 各用各的供应商配置,互不干扰。
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import {
   readFileSync,
   writeFileSync,
@@ -49,6 +50,17 @@ const INSTANCES_DIR = join(CC_SWITCH_DIR, "instances");
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
 const RESOURCES_DIR = join(SCRIPT_DIR, "..", "resources");
+
+const PKG_PATH = join(SCRIPT_DIR, "..", "package.json");
+const NPM_PACKAGE_NAME = "cc-switch-parallel";
+
+function readPackageVersion() {
+  try {
+    return JSON.parse(readFileSync(PKG_PATH, "utf8")).version || "dev";
+  } catch {
+    return "dev";
+  }
+}
 
 // ─── smol-toml 加载 ──────────────────────────────────────────────────
 
@@ -881,6 +893,36 @@ async function launchProvider(cmd, providerName, extraArgs) {
 
 // ─── 主入口 ───────────────────────────────────────────────────────────
 
+async function runUpdate() {
+  const currentVersion = readPackageVersion();
+  console.log(`当前版本: v${currentVersion}`);
+
+  let latestVersion;
+  try {
+    latestVersion = execSync(`npm view ${NPM_PACKAGE_NAME} version`, {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    console.error("✗ 无法查询最新版本,请检查网络连接。");
+    process.exit(1);
+  }
+
+  if (currentVersion === latestVersion) {
+    console.log("已是最新版本。");
+    process.exit(0);
+  }
+
+  console.log(`正在更新到 v${latestVersion}...`);
+  try {
+    execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
+  } catch {
+    process.exit(1);
+  }
+  console.log(`✓ 已更新到 v${latestVersion}`);
+  process.exit(0);
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -894,9 +936,15 @@ async function main() {
     return;
   }
 
+  if (args[0] === "update" || args[0] === "self-update" || args[0] === "--update") {
+    await runUpdate();
+    return;
+  }
+
   if (args.length < 2) {
     console.error(`用法: switch <provider> <cmd> [args...]`);
     console.error(`  或: switch  (交互模式)`);
+    console.error(`  或: switch update  (自升级到最新版本)`);
     console.error(`示例: switch "Claude Official" claude`);
     console.error(`      switch "Zhipu GLM en" claude --continue`);
     console.error(`      switch "P&G Nezha" codex`);
