@@ -1,0 +1,30 @@
+{
+  "name": "cc-switch-parallel",
+  "version": "0.1.0",
+  "description": "Launch Claude Code and Codex with per-provider isolated configs — run multiple providers in parallel terminals without switching",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "switch": "./bin/cc-launch.mjs"
+  },
+  "dependencies": {
+    "smol-toml": "^1.7.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liuziyuan/cc-switch-parallel.git"
+  },
+  "homepage": "https://github.com/liuziyuan/cc-switch-parallel",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "cc-switch",
+    "provider",
+    "parallel",
+    "isolation",
+    "cli"
+  ]
+}
