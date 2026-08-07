@@ -8,7 +8,7 @@
     "switch": "./bin/cc-launch.mjs"
   },
   "dependencies": {
-    "smol-toml": "^1.4.2"
+    "smol-toml": "^1.7.1"
   },
   "engines": {
     "node": ">=18"

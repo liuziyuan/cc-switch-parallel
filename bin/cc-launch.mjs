@@ -661,9 +661,31 @@ function setupClaudeInstance(providerId) {
   return instanceDir;
 }
 
+// 从全局 ~/.codex/ 共享到实例目录的路径列表。
+// 这些是设备级共享资源 / 用户配置,不应因 CODEX_HOME 指向实例目录而缺失。
+// auth.json 不在此列 —— 它由 launchCodex 根据 provider 类型单独处理
+// (第三方 provider 写独立 auth.json,官方/OAuth provider symlink 到全局)。
+const CODEX_SHARED_PATHS = [
+  "installation_id",       // 设备标识,缺失会导致 Codex 重新初始化
+  "hooks.json",             // 用户 hook 配置
+  "models_cache.json",      // Codex CLI 模型缓存,catalog 生成的 fallback 来源
+  "rules",                  // 用户自定义规则 (prefix_rule 等)
+  "skills",                 // 已安装的 skills
+  ".personality_migration", // 迁移标记
+  ".sandbox_migration",     // 迁移标记
+  "version.json",           // 版本检查缓存
+];
+
 function setupCodexInstance(providerId) {
   const instanceDir = join(INSTANCES_DIR, "codex", providerId);
   mkdirSync(instanceDir, { recursive: true });
+  const globalCodexDir = join(HOME, ".codex");
+  for (const name of CODEX_SHARED_PATHS) {
+    const globalPath = join(globalCodexDir, name);
+    if (existsSync(globalPath)) {
+      ensureSymlink(globalPath, join(instanceDir, name));
+    }
+  }
   return instanceDir;
 }
 
