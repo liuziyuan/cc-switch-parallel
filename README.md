@@ -6,7 +6,7 @@
 
 If you use [cc-switch](https://github.com/farion1231/cc-switch) to manage multiple AI providers (e.g. Claude Official, Zhipu GLM, GitHub Copilot), you normally have to **switch** the active provider — which changes the global `~/.claude/settings.json` or `~/.codex/config.toml` for **all** terminals.
 
-`ccp` takes a different approach: each terminal gets its own isolated config directory via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, so you can run **Claude Official in one terminal and Zhipu GLM in another simultaneously**.
+`switch` takes a different approach: each terminal gets its own isolated config directory via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, so you can run **Claude Official in one terminal and Zhipu GLM in another simultaneously**.
 
 ## Install
 
@@ -27,7 +27,7 @@ npm link
 ### Interactive mode
 
 ```bash
-ccp
+switch
 ```
 
 Shows a TUI — first select the CLI tool (claude / codex), then pick a provider, press Enter to launch.
@@ -35,16 +35,16 @@ Shows a TUI — first select the CLI tool (claude / codex), then pick a provider
 ### Command mode
 
 ```bash
-ccp <provider> <cmd> [args...]
+switch <provider> <cmd> [args...]
 ```
 
 Examples:
 
 ```bash
-ccp "Claude Official" claude
-ccp "Zhipu GLM en" claude --continue
-ccp "P&G Nezha" codex
-ccp "GitHub Copilot" codex
+switch "Claude Official" claude
+switch "Zhipu GLM en" claude --continue
+switch "P&G Nezha" codex
+switch "GitHub Copilot" codex
 ```
 
 ## How it works

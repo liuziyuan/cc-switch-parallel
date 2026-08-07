@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// ccp: Claude Code / Codex 多供应商并行启动器
+// switch: Claude Code / Codex 多供应商并行启动器
 //
 // 用法:
-//   ccp                                 # TUI 交互模式:先选 CLI 再选供应商
-//   ccp <provider> <cmd> [args...]     # 命令模式:直接指定供应商和 CLI
+//   switch                                 # TUI 交互模式:先选 CLI 再选供应商
+//   switch <provider> <cmd> [args...]     # 命令模式:直接指定供应商和 CLI
 //
 // 从 ~/.cc-switch/cc-switch.db 读取 provider 配置,生成独立实例目录,
 // 通过 CLAUDE_CONFIG_DIR / CODEX_HOME 环境变量隔离启动。
@@ -726,7 +726,7 @@ function launchCodex(providerId, settingsConfig, meta, category, commonSnippet, 
 function tuiSelect(prompt, options) {
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      reject(new Error("TUI 模式需要交互式终端。请使用命令模式: ccp <provider> <cmd>"));
+      reject(new Error("TUI 模式需要交互式终端。请使用命令模式: switch <provider> <cmd>"));
       return;
     }
 
@@ -858,11 +858,11 @@ async function main() {
   }
 
   if (args.length < 2) {
-    console.error(`用法: ccp <provider> <cmd> [args...]`);
-    console.error(`  或: ccp  (交互模式)`);
-    console.error(`示例: ccp "Claude Official" claude`);
-    console.error(`      ccp "Zhipu GLM en" claude --continue`);
-    console.error(`      ccp "P&G Nezha" codex`);
+    console.error(`用法: switch <provider> <cmd> [args...]`);
+    console.error(`  或: switch  (交互模式)`);
+    console.error(`示例: switch "Claude Official" claude`);
+    console.error(`      switch "Zhipu GLM en" claude --continue`);
+    console.error(`      switch "P&G Nezha" codex`);
     process.exit(1);
   }
 
