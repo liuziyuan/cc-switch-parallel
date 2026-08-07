@@ -772,36 +772,44 @@ function launchCodex(providerId, settingsConfig, meta, category, commonSnippet, 
 
 // ─── TUI 交互模式 ─────────────────────────────────────────────────────
 
-function tuiSelect(prompt, options) {
+function tuiSelect(prompt, options, hotkeys) {
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       reject(new Error("TUI 模式需要交互式终端。请使用命令模式: switch <provider> <cmd>"));
       return;
     }
 
+    const hasHint = !!(hotkeys && hotkeys.length);
+    // 标题(1) + 空行(1) + 选项(n) + [空行(1) + 提示(1)]
+    const totalLines = 1 + 1 + options.length + (hasHint ? 2 : 0);
     let selected = 0;
-    const totalLines = options.length + 1;
 
-    function render() {
-      process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
-      process.stdout.write(`\x1b[1m◆ ${prompt}\x1b[0m\n`);
+    function buildLines() {
+      const lines = [];
+      lines.push(`\x1b[1m\x1b[36m◆ ${prompt}\x1b[0m`);
+      lines.push("");
       for (let i = 0; i < options.length; i++) {
         if (i === selected) {
-          process.stdout.write(`\x1b[36m❯ ${options[i].label}\x1b[0m\n`);
+          lines.push(`\x1b[36m❯ ${options[i].label}\x1b[0m`);
         } else {
-          process.stdout.write(`  ${options[i].label}\n`);
+          lines.push(`\x1b[90m  ${options[i].label}\x1b[0m`);
         }
       }
+      if (hasHint) {
+        lines.push("");
+        lines.push(
+          `  ${hotkeys.map((h) => `\x1b[36m${h.key}\x1b[0m \x1b[2m${h.label}\x1b[0m`).join("   ")}`,
+        );
+      }
+      return lines;
     }
 
-    process.stdout.write(`\x1b[1m◆ ${prompt}\x1b[0m\n`);
-    for (let i = 0; i < options.length; i++) {
-      if (i === selected) {
-        process.stdout.write(`\x1b[36m❯ ${options[i].label}\x1b[0m\n`);
-      } else {
-        process.stdout.write(`  ${options[i].label}\n`);
-      }
+    function render(first) {
+      if (!first) process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
+      process.stdout.write(buildLines().join("\n") + "\n");
     }
+
+    render(true);
 
     process.stdin.setRawMode(true);
     process.stdin.resume();
@@ -817,6 +825,14 @@ function tuiSelect(prompt, options) {
         cleanup();
         resolve(options[selected]);
         return;
+      }
+      if (hotkeys) {
+        const hit = hotkeys.find((h) => h.key === key);
+        if (hit) {
+          cleanup();
+          resolve({ ...options[selected], hotkey: hit.key });
+          return;
+        }
       }
       if (key === "\x1b[A" || key === "k") {
         selected = (selected - 1 + options.length) % options.length;
@@ -838,6 +854,21 @@ function tuiSelect(prompt, options) {
   });
 }
 
+// 把权限档位映射到底层 CLI 的 argv。hotkey: "1"=默认精细(无 flag)、"2"=半自动、"3"=全自动
+function permissionArgs(cli, hotkey) {
+  if (hotkey === "2") {
+    return cli === "claude"
+      ? ["--permission-mode", "acceptEdits"]
+      : ["--approve-for-me"];
+  }
+  if (hotkey === "3") {
+    return cli === "claude"
+      ? ["--dangerously-skip-permissions"]
+      : ["--dangerously-bypass-approvals-and-sandbox"];
+  }
+  return [];
+}
+
 async function runTUI() {
   const cliOptions = [
     { label: "claude", value: "claude" },
@@ -856,9 +887,14 @@ async function runTUI() {
   const selected = await tuiSelect(
     `选择供应商 (${cli.value === "claude" ? "Claude Code" : "Codex"})`,
     providerOptions,
+    [
+      { key: "1", label: "默认·精细" },
+      { key: "2", label: "半自动" },
+      { key: "3", label: "全自动 ⚠" },
+    ],
   );
   const provider = providers.find((p) => p.id === selected.value);
-  await launchProvider(cli.value, provider.name, []);
+  await launchProvider(cli.value, provider.name, permissionArgs(cli.value, selected.hotkey));
 }
 
 // ─── 启动逻辑 ─────────────────────────────────────────────────────────
