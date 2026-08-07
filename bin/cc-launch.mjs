@@ -620,6 +620,9 @@ function readdirSyncSafe(path) {
 // 从全局 ~/.claude 共享到实例目录的路径列表。
 // 目录用 symlink,文件也用 symlink —— 这些是设备级共享资源,
 // 不应因 CLAUDE_CONFIG_DIR 指向实例目录而缺失。
+// 从全局 ~/.claude/ 共享到实例目录的路径列表。
+// 目录用 symlink,文件也用 symlink —— 这些是设备级共享资源,
+// 不应因 CLAUDE_CONFIG_DIR 指向实例目录而缺失。
 const CLAUDE_SHARED_PATHS = [
   ".credentials.json",
   "projects",
@@ -631,12 +634,24 @@ const CLAUDE_SHARED_PATHS = [
   "keybindings.json",
   "settings.local.json",
   "config.json",
+  ".claude.json",  // 含 oauthAccount 等 OAuth 登录信息,缺失会导致重新登录
 ];
 
 function setupClaudeInstance(providerId) {
   const instanceDir = join(INSTANCES_DIR, "claude", providerId);
   mkdirSync(instanceDir, { recursive: true });
   const globalClaudeDir = join(HOME, ".claude");
+
+  // .claude.json 存在两个位置:
+  //   - CLAUDE_CONFIG_DIR 未设置时: ~/.claude.json (HOME 根目录)
+  //   - CLAUDE_CONFIG_DIR 设置时: $CLAUDE_CONFIG_DIR/.claude.json
+  // 全局的 ~/.claude.json 含 oauthAccount 等 OAuth 登录信息,
+  // 实例目录缺它会导致 Claude Code 要求重新登录。
+  const globalDotClaudeJson = join(HOME, ".claude.json");
+  if (existsSync(globalDotClaudeJson)) {
+    ensureSymlink(globalDotClaudeJson, join(instanceDir, ".claude.json"));
+  }
+
   for (const name of CLAUDE_SHARED_PATHS) {
     const globalPath = join(globalClaudeDir, name);
     if (existsSync(globalPath)) {
