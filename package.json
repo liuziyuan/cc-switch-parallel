@@ -1,11 +1,19 @@
 {
   "name": "cc-switch-parallel",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Launch Claude Code and Codex with per-provider isolated configs — run multiple providers in parallel terminals without switching",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "switch": "./bin/cc-launch.mjs"
+    "switch": "./dist/cc-launch.mjs"
+  },
+  "files": [
+    "dist",
+    "resources"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "smol-toml": "^1.7.1"

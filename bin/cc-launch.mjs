@@ -52,16 +52,10 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
 const RESOURCES_DIR = join(SCRIPT_DIR, "..", "resources");
 
-const PKG_PATH = join(SCRIPT_DIR, "..", "package.json");
 const NPM_PACKAGE_NAME = "cc-switch-parallel";
 
-function readPackageVersion() {
-  try {
-    return JSON.parse(readFileSync(PKG_PATH, "utf8")).version || "dev";
-  } catch {
-    return "dev";
-  }
-}
+// Injected at build time by build.mjs; "__VERSION__" placeholder for source runs.
+const VERSION = "__VERSION__";
 
 // ─── smol-toml loader ─────────────────────────────────────────────────
 
@@ -1126,7 +1120,7 @@ async function launchProvider(cmd, providerName, extraArgs) {
 // ─── Main entry ────────────────────────────────────────────────────────
 
 async function runUpdate() {
-  const currentVersion = readPackageVersion();
+  const currentVersion = VERSION;
   console.log(`Current version: v${currentVersion}`);
 
   let latestVersion;
@@ -1173,10 +1167,27 @@ async function main() {
     return;
   }
 
+  if (args[0] === "-v" || args[0] === "--version" || args[0] === "version") {
+    const v = VERSION;
+    const latest = (() => {
+      try {
+        return execSync(`npm view ${NPM_PACKAGE_NAME} version`, {
+          encoding: "utf8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+      } catch {
+        return null;
+      }
+    })();
+    console.log(`cc-switch-parallel v${v}${latest ? (v === latest ? " (latest)" : ` (latest: ${latest})`) : ""}`);
+    process.exit(0);
+  }
+
   if (args.length < 2) {
     console.error(`Usage: switch <provider> <cmd> [args...]`);
     console.error(`  or: switch  (interactive mode)`);
     console.error(`  or: switch update  (self-update to latest version)`);
+    console.error(`  or: switch -v | --version  (show version)`);
     console.error(`Examples: switch "Claude Official" claude`);
     console.error(`          switch "Zhipu GLM en" claude --continue`);
     console.error(`          switch "P&G Nezha" codex`);
