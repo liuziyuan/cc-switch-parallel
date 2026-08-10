@@ -46,6 +46,7 @@ const CC_SWITCH_DIR = join(HOME, ".cc-switch");
 const DB_PATH = join(CC_SWITCH_DIR, "cc-switch.db");
 const SETTINGS_PATH = join(CC_SWITCH_DIR, "settings.json");
 const INSTANCES_DIR = join(CC_SWITCH_DIR, "instances");
+const HISTORY_PATH = join(CC_SWITCH_DIR, "launch_history.json");
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
@@ -148,6 +149,51 @@ function loadSettings() {
   } catch {
     return {};
   }
+}
+
+// ─── Launch history (top 5 quick-launch) ───────────────────────────────
+
+const QUICK_KEYS = ["a", "s", "d", "f", "g"];
+
+function loadHistory() {
+  try {
+    const data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+    return { entries: Array.isArray(data?.entries) ? data.entries : [] };
+  } catch {
+    return { entries: [] };
+  }
+}
+
+function recordLaunch(cli, providerName, hotkey) {
+  try {
+    const { entries } = loadHistory();
+    const key = `${cli}|${providerName}|${hotkey ?? ""}`;
+    const now = Date.now();
+    const hit = entries.find((e) => `${e.cli}|${e.provider}|${e.hotkey ?? ""}` === key);
+    if (hit) {
+      hit.count = (hit.count || 0) + 1;
+      hit.lastUsed = now;
+    } else {
+      entries.push({ cli, provider: providerName, hotkey: hotkey ?? null, count: 1, lastUsed: now });
+    }
+    atomicWrite(HISTORY_PATH, JSON.stringify({ entries }, null, 2));
+  } catch {
+    // history is best-effort; never block launch on it
+  }
+}
+
+function top5() {
+  const { entries } = loadHistory();
+  return entries
+    .slice()
+    .sort((a, b) => (b.count - a.count) || (b.lastUsed - a.lastUsed))
+    .slice(0, 5);
+}
+
+function permLabel(hotkey) {
+  if (hotkey === "2") return "Semi-auto";
+  if (hotkey === "3") return "Full-auto ⚠";
+  return "Default";
 }
 
 // ─── JSON utils (port of Rust json_deep_merge / json_is_subset) ────────
@@ -771,44 +817,94 @@ function launchCodex(providerId, settingsConfig, meta, category, commonSnippet, 
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
 
-function tuiSelect(prompt, options, hotkeys) {
+// hotkeys: [{key,label}] | undefined  (key matches a raw keypress)
+// interactive: when true (provider layer), Enter drills into param region
+//              instead of resolving; esc goes back. When false (CLI layer),
+//              number keys jump straight to resolve.
+// quickItems: [{key,label,cli,provider,hotkey}] | undefined  (top5 quick-launch;
+//             pressing key resolves a {quick:true,...} object)
+function tuiSelect(prompt, options, optsArg) {
+  // Backward-compat: accept a bare hotkeys array as 3rd arg.
+  const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
+  const hotkeys = opts.hotkeys || [];
+  const interactive = !!opts.interactive;
+  const quickItems = opts.quickItems || [];
+
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       reject(new Error("TUI mode requires an interactive terminal. Use command mode: switch <provider> <cmd>"));
       return;
     }
 
-    const hasHint = !!(hotkeys && hotkeys.length);
-    // title(1) + blank(1) + options(n) + [blank(1) + hint(1)]
-    const totalLines = 1 + 1 + options.length + (hasHint ? 2 : 0);
     let selected = 0;
+    let mode = "select"; // "select" | "param"
+    let lastDrawnLines = 0;
 
-    function buildLines() {
+    const hasHint = hotkeys.length > 0;
+
+    // Lines for a given mode (without trailing newline).
+    function buildLines(m) {
       const lines = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${prompt}\x1b[0m`);
       lines.push("");
+      const locked = m === "param";
+      // unified navigation space: [0..options.length-1] = options,
+      // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
-        if (i === selected) {
-          lines.push(`\x1b[36m❯ ${options[i].label}\x1b[0m`);
+        const num = String(i + 1);
+        if (locked) {
+          const mark = i === selected ? "▸" : " ";
+          lines.push(`\x1b[90m${mark} ${num} ${options[i].label}\x1b[0m`);
+        } else if (i === selected) {
+          lines.push(`\x1b[36m❯ ${num} ${options[i].label}\x1b[0m`);
         } else {
-          lines.push(`\x1b[90m  ${options[i].label}\x1b[0m`);
+          lines.push(`\x1b[90m  ${num} ${options[i].label}\x1b[0m`);
         }
       }
-      if (hasHint) {
+      if (m === "param") {
         lines.push("");
         lines.push(
-          `  ${hotkeys.map((h) => `\x1b[36m${h.key}\x1b[0m \x1b[2m${h.label}\x1b[0m`).join("   ")}`,
+          `  \x1b[1m\x1b[36m${hotkeys.map((h) => `${h.key} ${h.label}`).join("   ")}\x1b[0m`,
         );
+        lines.push(`  \x1b[90mesc ← back\x1b[0m`);
+      } else if (interactive) {
+        lines.push("");
+        lines.push(`  \x1b[90m↑↓ navigate   ⏎ confirm   esc ← back to CLI\x1b[0m`);
+      } else {
+        // CLI layer select mode: optionally show top5 quick-launch region
+        if (quickItems.length > 0) {
+          lines.push("");
+          lines.push(`  \x1b[90mRecent (top 5):\x1b[0m`);
+          for (let i = 0; i < quickItems.length; i++) {
+            const q = quickItems[i];
+            const isSel = selected === options.length + i;
+            if (locked) {
+              const mark = isSel ? "▸" : " ";
+              lines.push(`  \x1b[90m${mark} ${q.key} ${q.label}\x1b[0m`);
+            } else if (isSel) {
+              lines.push(`\x1b[36m❯ ${q.key} ${q.label}\x1b[0m`);
+            } else {
+              lines.push(`  \x1b[36m${q.key}\x1b[0m \x1b[90m${q.label}\x1b[0m`);
+            }
+          }
+        }
+        lines.push("");
+        const quickHint = quickItems.length > 0 ? `   ${QUICK_KEYS.slice(0, quickItems.length).join("-")} quick launch` : "";
+        lines.push(`  \x1b[90m↑↓ navigate   ⏎ or 1-${options.length} select${quickHint}   esc ← exit\x1b[0m`);
       }
       return lines;
     }
 
-    function render(first) {
-      if (!first) process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
-      process.stdout.write(buildLines().join("\n") + "\n");
+    function render(m) {
+      if (lastDrawnLines > 0) {
+        process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
+      }
+      const lines = buildLines(m);
+      process.stdout.write(lines.join("\n") + "\n");
+      lastDrawnLines = lines.length;
     }
 
-    render(true);
+    render(mode);
 
     process.stdin.setRawMode(true);
     process.stdin.resume();
@@ -820,33 +916,100 @@ function tuiSelect(prompt, options, hotkeys) {
         reject(new Error("Cancelled"));
         return;
       }
-      if (hotkeys) {
+
+      if (mode === "param") {
+        // Param region: hotkey or Enter resolves with hotkey; esc goes back.
+        if (key === "\x1b") {
+          mode = "select";
+          render(mode);
+          return;
+        }
         const hit = hotkeys.find((h) => h.key === key);
         if (hit) {
           cleanup();
           resolve({ ...options[selected], hotkey: hit.key });
           return;
         }
+        if (key === "\r" || key === "\n") {
+          cleanup();
+          resolve({ ...options[selected], hotkey: undefined });
+          return;
+        }
+        return; // ignore arrows/other keys in param mode
+      }
+
+      // select mode
+      // esc (bare \x1b) — must check AFTER arrow sequences below in practice,
+      // but arrow keys arrive as full \x1b[A / \x1b[B which don't equal bare \x1b.
+      // Unified navigation space: options + quickItems (CLI layer only).
+      const navTotal = options.length + quickItems.length;
+      if (key === "\x1b[A" || key === "k") {
+        selected = (selected - 1 + navTotal) % navTotal;
+        render(mode);
+        return;
+      }
+      if (key === "\x1b[B" || key === "j") {
+        selected = (selected + 1) % navTotal;
+        render(mode);
+        return;
       }
       if (key === "\r" || key === "\n") {
+        // If selection is on a quick item, resolve it as quick-launch.
+        if (!interactive && quickItems.length > 0 && selected >= options.length) {
+          const q = quickItems[selected - options.length];
+          cleanup();
+          resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey });
+          return;
+        }
+        if (interactive && hasHint) {
+          mode = "param";
+          render(mode);
+          return;
+        }
         cleanup();
         resolve(options[selected]);
         return;
       }
-      if (key === "\x1b[A" || key === "k") {
-        selected = (selected - 1 + options.length) % options.length;
-        render();
+      // quick-launch key (top5, CLI layer only)
+      const qHit = quickItems.find((q) => q.key === key);
+      if (qHit) {
+        cleanup();
+        resolve({ quick: true, cli: qHit.cli, provider: qHit.provider, hotkey: qHit.hotkey });
+        return;
       }
-      if (key === "\x1b[B" || key === "j") {
-        selected = (selected + 1) % options.length;
-        render();
+      // number key
+      const n = parseInt(key, 10);
+      if (!Number.isNaN(n) && n >= 1 && n <= options.length) {
+        selected = n - 1;
+        if (interactive) {
+          render(mode); // just highlight, wait for Enter
+          return;
+        }
+        // CLI layer: number jumps straight to resolve
+        cleanup();
+        resolve(options[selected]);
+        return;
+      }
+      if (key === "\x1b") {
+        // bare esc in select mode
+        cleanup();
+        if (interactive) {
+          // provider layer: go back to CLI selection
+          reject(new Error("BACK_TO_CLI"));
+        } else {
+          // CLI layer: exit
+          reject(new Error("Cancelled"));
+        }
+        return;
       }
     };
 
     function cleanup() {
       process.stdin.setRawMode(false);
       process.stdin.removeListener("data", onData);
-      process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
+      if (lastDrawnLines > 0) {
+        process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
+      }
     }
 
     process.stdin.on("data", onData);
@@ -873,27 +1036,61 @@ async function runTUI() {
     { label: "claude", value: "claude" },
     { label: "codex", value: "codex" },
   ];
-  const cli = await tuiSelect("Select CLI tool", cliOptions);
-  const appConfig = APP_CONFIGS[cli.value];
-  if (!appConfig) throw new Error(`Unsupported CLI: ${cli.value}`);
 
-  const providers = queryProvidersByApp(appConfig.appType);
-  if (providers.length === 0) {
-    console.error(`✗ No provider config found for ${appConfig.appType}. Please configure one in cc-switch first.`);
-    process.exit(1);
+  // CLI layer + provider layer loop: esc on provider goes back to CLI selection.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // Build top5 quick-launch items from history (empty on first run).
+    const recent = top5();
+    const quickItems = recent.map((e, i) => ({
+      key: QUICK_KEYS[i],
+      label: `${e.provider} · ${e.cli} · ${permLabel(e.hotkey)}`,
+      cli: e.cli,
+      provider: e.provider,
+      hotkey: e.hotkey ?? undefined,
+    }));
+
+    const cli = await tuiSelect("Select CLI tool", cliOptions, { quickItems });
+
+    // Quick-launch path: letter key bypasses provider + permission selection.
+    if (cli.quick) {
+      recordLaunch(cli.cli, cli.provider, cli.hotkey);
+      await launchProvider(cli.cli, cli.provider, permissionArgs(cli.cli, cli.hotkey));
+      return;
+    }
+
+    const appConfig = APP_CONFIGS[cli.value];
+    if (!appConfig) throw new Error(`Unsupported CLI: ${cli.value}`);
+
+    const providers = queryProvidersByApp(appConfig.appType);
+    if (providers.length === 0) {
+      console.error(`✗ No provider config found for ${appConfig.appType}. Please configure one in cc-switch first.`);
+      process.exit(1);
+    }
+    const providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
+    let selected;
+    try {
+      selected = await tuiSelect(
+        `Select provider (${cli.value === "claude" ? "Claude Code" : "Codex"})`,
+        providerOptions,
+        {
+          hotkeys: [
+            { key: "⏎", label: "Default" },
+            { key: "2", label: "Semi-auto" },
+            { key: "3", label: "Full-auto ⚠" },
+          ],
+          interactive: true,
+        },
+      );
+    } catch (e) {
+      if (e.message === "BACK_TO_CLI") continue; // esc on provider → back to CLI
+      throw e; // Ctrl+C → propagate to main()
+    }
+    const provider = providers.find((p) => p.id === selected.value);
+    recordLaunch(cli.value, provider.name, selected.hotkey);
+    await launchProvider(cli.value, provider.name, permissionArgs(cli.value, selected.hotkey));
+    return;
   }
-  const providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
-  const selected = await tuiSelect(
-    `Select provider (${cli.value === "claude" ? "Claude Code" : "Codex"})`,
-    providerOptions,
-    [
-      { key: "⏎", label: "Default" },
-      { key: "2", label: "Semi-auto" },
-      { key: "3", label: "Full-auto ⚠" },
-    ],
-  );
-  const provider = providers.find((p) => p.id === selected.value);
-  await launchProvider(cli.value, provider.name, permissionArgs(cli.value, selected.hotkey));
 }
 
 // ─── Launch logic ──────────────────────────────────────────────────────
