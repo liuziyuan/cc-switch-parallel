@@ -1125,6 +1125,28 @@ async function launchProvider(cmd, providerName, extraArgs) {
 
 // ─── Main entry ────────────────────────────────────────────────────────
 
+// Detect whether the current `switch` is managed by Volta. Volta registers its
+// own default version separately from `npm install -g`, so `npm install -g`
+// does NOT update the binary Volta actually invokes. Use `volta install` then.
+function isVoltaManaged() {
+  try {
+    const voltaRoot = process.env.VOLTA_HOME || join(HOME, ".volta");
+    const voltaBin = join(voltaRoot, "bin");
+    // Volta shims live in ~/.volta/bin and proxy node/npm/etc.
+    return existsSync(voltaBin) && which("volta");
+  } catch {
+    return false;
+  }
+}
+
+function which(cmd) {
+  try {
+    return execSync(`command -v ${cmd} 2>/dev/null || true`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function runUpdate() {
   const currentVersion = readPackageVersion();
   console.log(`Current version: v${currentVersion}`);
@@ -1145,9 +1167,13 @@ async function runUpdate() {
     process.exit(0);
   }
 
-  console.log(`Updating to v${latestVersion}...`);
+  const volta = isVoltaManaged();
+  console.log(`Updating to v${latestVersion}${volta ? " (via Volta)" : ""}...`);
   try {
-    execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
+    const cmd = volta
+      ? `volta install ${NPM_PACKAGE_NAME}@latest`
+      : `npm install -g ${NPM_PACKAGE_NAME}@latest`;
+    execSync(cmd, { stdio: "inherit" });
   } catch {
     process.exit(1);
   }
@@ -1173,10 +1199,27 @@ async function main() {
     return;
   }
 
+  if (args[0] === "-v" || args[0] === "--version" || args[0] === "version") {
+    const v = readPackageVersion();
+    const latest = (() => {
+      try {
+        return execSync(`npm view ${NPM_PACKAGE_NAME} version`, {
+          encoding: "utf8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+      } catch {
+        return null;
+      }
+    })();
+    console.log(`cc-switch-parallel v${v}${latest ? (v === latest ? " (latest)" : ` (latest: ${latest})`) : ""}`);
+    process.exit(0);
+  }
+
   if (args.length < 2) {
     console.error(`Usage: switch <provider> <cmd> [args...]`);
     console.error(`  or: switch  (interactive mode)`);
     console.error(`  or: switch update  (self-update to latest version)`);
+    console.error(`  or: switch -v | --version  (show version)`);
     console.error(`Examples: switch "Claude Official" claude`);
     console.error(`          switch "Zhipu GLM en" claude --continue`);
     console.error(`          switch "P&G Nezha" codex`);
