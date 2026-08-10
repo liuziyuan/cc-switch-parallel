@@ -52,16 +52,10 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
 const RESOURCES_DIR = join(SCRIPT_DIR, "..", "resources");
 
-const PKG_PATH = join(SCRIPT_DIR, "..", "package.json");
 const NPM_PACKAGE_NAME = "cc-switch-parallel";
 
-function readPackageVersion() {
-  try {
-    return JSON.parse(readFileSync(PKG_PATH, "utf8")).version || "dev";
-  } catch {
-    return "dev";
-  }
-}
+// Injected at build time by build.mjs; "__VERSION__" placeholder for source runs.
+const VERSION = "__VERSION__";
 
 // ─── smol-toml loader ─────────────────────────────────────────────────
 
@@ -1125,30 +1119,8 @@ async function launchProvider(cmd, providerName, extraArgs) {
 
 // ─── Main entry ────────────────────────────────────────────────────────
 
-// Detect whether the current `switch` is managed by Volta. Volta registers its
-// own default version separately from `npm install -g`, so `npm install -g`
-// does NOT update the binary Volta actually invokes. Use `volta install` then.
-function isVoltaManaged() {
-  try {
-    const voltaRoot = process.env.VOLTA_HOME || join(HOME, ".volta");
-    const voltaBin = join(voltaRoot, "bin");
-    // Volta shims live in ~/.volta/bin and proxy node/npm/etc.
-    return existsSync(voltaBin) && which("volta");
-  } catch {
-    return false;
-  }
-}
-
-function which(cmd) {
-  try {
-    return execSync(`command -v ${cmd} 2>/dev/null || true`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 async function runUpdate() {
-  const currentVersion = readPackageVersion();
+  const currentVersion = VERSION;
   console.log(`Current version: v${currentVersion}`);
 
   let latestVersion;
@@ -1167,13 +1139,9 @@ async function runUpdate() {
     process.exit(0);
   }
 
-  const volta = isVoltaManaged();
-  console.log(`Updating to v${latestVersion}${volta ? " (via Volta)" : ""}...`);
+  console.log(`Updating to v${latestVersion}...`);
   try {
-    const cmd = volta
-      ? `volta install ${NPM_PACKAGE_NAME}@latest`
-      : `npm install -g ${NPM_PACKAGE_NAME}@latest`;
-    execSync(cmd, { stdio: "inherit" });
+    execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
   } catch {
     process.exit(1);
   }
@@ -1200,7 +1168,7 @@ async function main() {
   }
 
   if (args[0] === "-v" || args[0] === "--version" || args[0] === "version") {
-    const v = readPackageVersion();
+    const v = VERSION;
     const latest = (() => {
       try {
         return execSync(`npm view ${NPM_PACKAGE_NAME} version`, {
