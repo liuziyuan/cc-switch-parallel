@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// switch: Claude Code / Codex 多供应商并行启动器
+// switch: Claude Code / Codex multi-provider parallel launcher
 //
-// 用法:
-//   switch                                 # TUI 交互模式:先选 CLI 再选供应商
-//   switch update                          # 自升级到 npm 上的最新版本
-//   switch <provider> <cmd> [args...]     # 命令模式:直接指定供应商和 CLI
+// Usage:
+//   switch                                 # TUI interactive mode: select CLI then provider
+//   switch update                          # Self-update to the latest npm version
+//   switch <provider> <cmd> [args...]     # Command mode: specify provider and CLI directly
 //
-// 从 ~/.cc-switch/cc-switch.db 读取 provider 配置,生成独立实例目录,
-// 通过 CLAUDE_CONFIG_DIR / CODEX_HOME 环境变量隔离启动。
-// 不同 terminal 各用各的供应商配置,互不干扰。
+// Reads provider config from ~/.cc-switch/cc-switch.db, generates isolated instance dirs,
+// and launches via CLAUDE_CONFIG_DIR / CODEX_HOME env var isolation.
+// Different terminals use their own provider configs without interference.
 
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import {
@@ -33,7 +33,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
-// ─── 路径常量 ─────────────────────────────────────────────────────────
+// ─── Path constants ────────────────────────────────────────────────────
 
 function getHomeDir() {
   const testHome = process.env.CC_SWITCH_TEST_HOME;
@@ -46,6 +46,7 @@ const CC_SWITCH_DIR = join(HOME, ".cc-switch");
 const DB_PATH = join(CC_SWITCH_DIR, "cc-switch.db");
 const SETTINGS_PATH = join(CC_SWITCH_DIR, "settings.json");
 const INSTANCES_DIR = join(CC_SWITCH_DIR, "instances");
+const HISTORY_PATH = join(CC_SWITCH_DIR, "launch_history.json");
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
@@ -62,13 +63,13 @@ function readPackageVersion() {
   }
 }
 
-// ─── smol-toml 加载 ──────────────────────────────────────────────────
+// ─── smol-toml loader ─────────────────────────────────────────────────
 
 let _tomlModule = null;
 
 function getToml() {
   if (_tomlModule) return _tomlModule;
-  // 尝试从本包的 node_modules 解析
+  // Try resolving from this package's node_modules
   const candidates = [
     join(SCRIPT_DIR, "..", "node_modules", "smol-toml"),
     join(SCRIPT_DIR, "..", "..", "node_modules", "smol-toml"),
@@ -90,7 +91,7 @@ function getToml() {
     }
   } catch {}
   throw new Error(
-    "无法加载 smol-toml 模块。请运行 npm install smol-toml。",
+    "Failed to load smol-toml module. Please run npm install smol-toml.",
   );
 }
 
@@ -102,7 +103,7 @@ function stringifyToml(obj) {
   return getToml().stringify(obj);
 }
 
-// ─── DB 查询 ──────────────────────────────────────────────────────────
+// ─── DB queries ───────────────────────────────────────────────────────
 
 function queryDB(sql) {
   try {
@@ -140,7 +141,7 @@ function queryCommonConfig(appType) {
   return rows[0]?.value || null;
 }
 
-// ─── 设置读取 ─────────────────────────────────────────────────────────
+// ─── Settings reader ──────────────────────────────────────────────────
 
 function loadSettings() {
   try {
@@ -150,7 +151,52 @@ function loadSettings() {
   }
 }
 
-// ─── JSON 工具函数 (复刻 Rust json_deep_merge / json_is_subset) ──────
+// ─── Launch history (top 5 quick-launch) ───────────────────────────────
+
+const QUICK_KEYS = ["a", "s", "d", "f", "g"];
+
+function loadHistory() {
+  try {
+    const data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+    return { entries: Array.isArray(data?.entries) ? data.entries : [] };
+  } catch {
+    return { entries: [] };
+  }
+}
+
+function recordLaunch(cli, providerName, hotkey) {
+  try {
+    const { entries } = loadHistory();
+    const key = `${cli}|${providerName}|${hotkey ?? ""}`;
+    const now = Date.now();
+    const hit = entries.find((e) => `${e.cli}|${e.provider}|${e.hotkey ?? ""}` === key);
+    if (hit) {
+      hit.count = (hit.count || 0) + 1;
+      hit.lastUsed = now;
+    } else {
+      entries.push({ cli, provider: providerName, hotkey: hotkey ?? null, count: 1, lastUsed: now });
+    }
+    atomicWrite(HISTORY_PATH, JSON.stringify({ entries }, null, 2));
+  } catch {
+    // history is best-effort; never block launch on it
+  }
+}
+
+function top5() {
+  const { entries } = loadHistory();
+  return entries
+    .slice()
+    .sort((a, b) => (b.count - a.count) || (b.lastUsed - a.lastUsed))
+    .slice(0, 5);
+}
+
+function permLabel(hotkey) {
+  if (hotkey === "2") return "Semi-auto";
+  if (hotkey === "3") return "Full-auto ⚠";
+  return "Default";
+}
+
+// ─── JSON utils (port of Rust json_deep_merge / json_is_subset) ────────
 
 function isPlainObject(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -191,7 +237,7 @@ function jsonIsSubset(target, source) {
   return target === source;
 }
 
-// ─── TOML 工具函数 (复刻 Rust merge_toml_table_like) ──────────────────
+// ─── TOML utils (port of Rust merge_toml_table_like) ───────────────────
 
 function tomlDeepMerge(target, source) {
   for (const [key, sourceValue] of Object.entries(source)) {
@@ -223,7 +269,7 @@ function tomlIsSubset(target, source) {
   return true;
 }
 
-// ─── Common config 判断 (复刻 Rust provider_uses_common_config) ──────
+// ─── Common config detection (port of Rust provider_uses_common_config) ─
 
 function providerUsesCommonConfig(appType, settingsConfig, meta, snippet) {
   const snippetTrimmed = (snippet || "").trim();
@@ -254,7 +300,7 @@ function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
   return false;
 }
 
-// ─── Claude 配置生成 ──────────────────────────────────────────────────
+// ─── Claude config generation ─────────────────────────────────────────
 
 const CLAUDE_SANITIZE_KEYS = [
   "api_format", "apiFormat",
@@ -287,14 +333,14 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet) {
       const source = JSON.parse(commonSnippet.trim());
       jsonDeepMerge(effective, source);
     } catch (e) {
-      console.error(`⚠ 通用配置合并失败: ${e.message}`);
+      console.error(`⚠ Common config merge failed: ${e.message}`);
     }
   }
   applyKimiForCodingContextDefaults(effective, settingsConfig);
   return sanitizeClaudeSettings(effective);
 }
 
-// ─── Codex 配置生成 ──────────────────────────────────────────────────
+// ─── Codex config generation ──────────────────────────────────────────
 
 const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
 const CODEX_RESERVED_MODEL_PROVIDER_IDS = [
@@ -534,7 +580,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
       tomlDeepMerge(target, source);
       effectiveConfigText = stringifyToml(target);
     } catch (e) {
-      console.error(`⚠ Codex 通用配置合并失败: ${e.message}`);
+      console.error(`⚠ Codex common config merge failed: ${e.message}`);
     }
   }
 
@@ -549,7 +595,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
   try {
     configObj = parseToml(effectiveConfigText || "");
   } catch (e) {
-    throw new Error(`无法解析 Codex config.toml: ${e.message}`);
+    throw new Error(`Failed to parse Codex config.toml: ${e.message}`);
   }
 
   if (catalog) {
@@ -579,7 +625,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
         setCodexExperimentalBearerToken(configObj2, apiKey);
         finalConfigText = stringifyToml(configObj2);
       } catch (e) {
-        console.error(`⚠ 注入 bearer token 失败: ${e.message}`);
+        console.error(`⚠ Failed to inject bearer token: ${e.message}`);
       }
     }
   }
@@ -587,7 +633,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
   return { configText: finalConfigText, auth, catalog, apiKey, profile };
 }
 
-// ─── 实例目录初始化 ──────────────────────────────────────────────────
+// ─── Instance dir initialization ──────────────────────────────────────
 
 function ensureSymlink(target, linkPath) {
   if (existsSync(linkPath) || isBrokenSymlink(linkPath)) {
@@ -597,18 +643,19 @@ function ensureSymlink(target, linkPath) {
         if (readlinkSync(linkPath) === target) return;
         unlinkSync(linkPath);
       } else {
-        // 非 symlink 的实体文件/目录。Claude Code 首次启动时会自动创建
-        // plugins/ 等空目录,这些应该被 symlink 替换。
-        // 但如果里面已有实质内容(非空),保留并警告,避免误删用户数据。
+        // Non-symlink real file/dir. Claude Code auto-creates empty dirs like
+        // plugins/ on first launch; these should be replaced by symlinks.
+        // But if it already has real content (non-empty), keep it and warn
+        // to avoid deleting user data.
         const dirEntries = readdirSyncSafe(linkPath);
         if (dirEntries && dirEntries.length > 0) {
-          console.error(`⚠ ${linkPath} 已存在且非空,跳过 symlink (目标: ${target})`);
+          console.error(`⚠ ${linkPath} already exists and is non-empty, skipping symlink (target: ${target})`);
           return;
         }
         rmSync(linkPath, { recursive: true, force: true });
       }
     } catch (e) {
-      console.error(`⚠ 无法替换 ${linkPath} 为 symlink: ${e.message}`);
+      console.error(`⚠ Failed to replace ${linkPath} with symlink: ${e.message}`);
       return;
     }
   }
@@ -629,12 +676,9 @@ function readdirSyncSafe(path) {
   try { return readdirSync(path); } catch { return null; }
 }
 
-// 从全局 ~/.claude 共享到实例目录的路径列表。
-// 目录用 symlink,文件也用 symlink —— 这些是设备级共享资源,
-// 不应因 CLAUDE_CONFIG_DIR 指向实例目录而缺失。
-// 从全局 ~/.claude/ 共享到实例目录的路径列表。
-// 目录用 symlink,文件也用 symlink —— 这些是设备级共享资源,
-// 不应因 CLAUDE_CONFIG_DIR 指向实例目录而缺失。
+// Paths shared from global ~/.claude/ into the instance dir.
+// Both dirs and files are symlinked — these are device-level shared resources
+// that should not be missing just because CLAUDE_CONFIG_DIR points to the instance dir.
 const CLAUDE_SHARED_PATHS = [
   ".credentials.json",
   "projects",
@@ -646,7 +690,7 @@ const CLAUDE_SHARED_PATHS = [
   "keybindings.json",
   "settings.local.json",
   "config.json",
-  ".claude.json",  // 含 oauthAccount 等 OAuth 登录信息,缺失会导致重新登录
+  ".claude.json",  // contains OAuth login info (oauthAccount); missing forces re-login
 ];
 
 function setupClaudeInstance(providerId) {
@@ -654,11 +698,11 @@ function setupClaudeInstance(providerId) {
   mkdirSync(instanceDir, { recursive: true });
   const globalClaudeDir = join(HOME, ".claude");
 
-  // .claude.json 存在两个位置:
-  //   - CLAUDE_CONFIG_DIR 未设置时: ~/.claude.json (HOME 根目录)
-  //   - CLAUDE_CONFIG_DIR 设置时: $CLAUDE_CONFIG_DIR/.claude.json
-  // 全局的 ~/.claude.json 含 oauthAccount 等 OAuth 登录信息,
-  // 实例目录缺它会导致 Claude Code 要求重新登录。
+  // .claude.json lives in two places:
+  //   - Without CLAUDE_CONFIG_DIR: ~/.claude.json (HOME root)
+  //   - With CLAUDE_CONFIG_DIR set: $CLAUDE_CONFIG_DIR/.claude.json
+  // The global ~/.claude.json holds OAuth login info (oauthAccount);
+  // missing it in the instance dir forces Claude Code to re-login.
   const globalDotClaudeJson = join(HOME, ".claude.json");
   if (existsSync(globalDotClaudeJson)) {
     ensureSymlink(globalDotClaudeJson, join(instanceDir, ".claude.json"));
@@ -673,19 +717,20 @@ function setupClaudeInstance(providerId) {
   return instanceDir;
 }
 
-// 从全局 ~/.codex/ 共享到实例目录的路径列表。
-// 这些是设备级共享资源 / 用户配置,不应因 CODEX_HOME 指向实例目录而缺失。
-// auth.json 不在此列 —— 它由 launchCodex 根据 provider 类型单独处理
-// (第三方 provider 写独立 auth.json,官方/OAuth provider symlink 到全局)。
+// Paths shared from global ~/.codex/ into the instance dir.
+// These are device-level shared resources / user config that should not be
+// missing just because CODEX_HOME points to the instance dir.
+// auth.json is NOT included here — it is handled per-provider by launchCodex
+// (third-party providers get a standalone auth.json; official/OAuth providers symlink to global).
 const CODEX_SHARED_PATHS = [
-  "installation_id",       // 设备标识,缺失会导致 Codex 重新初始化
-  "hooks.json",             // 用户 hook 配置
-  "models_cache.json",      // Codex CLI 模型缓存,catalog 生成的 fallback 来源
-  "rules",                  // 用户自定义规则 (prefix_rule 等)
-  "skills",                 // 已安装的 skills
-  ".personality_migration", // 迁移标记
-  ".sandbox_migration",     // 迁移标记
-  "version.json",           // 版本检查缓存
+  "installation_id",       // device id; missing forces Codex to reinitialize
+  "hooks.json",             // user hook config
+  "models_cache.json",      // Codex CLI model cache; fallback source for catalog generation
+  "rules",                  // user-defined rules (prefix_rule, etc.)
+  "skills",                 // installed skills
+  ".personality_migration", // migration marker
+  ".sandbox_migration",     // migration marker
+  "version.json",           // version-check cache
 ];
 
 function setupCodexInstance(providerId) {
@@ -701,7 +746,7 @@ function setupCodexInstance(providerId) {
   return instanceDir;
 }
 
-// ─── 原子写入 ─────────────────────────────────────────────────────────
+// ─── Atomic write ──────────────────────────────────────────────────────
 
 function atomicWrite(path, data) {
   const parent = dirname(path);
@@ -711,7 +756,7 @@ function atomicWrite(path, data) {
   renameSync(tmp, path);
 }
 
-// ─── CLI 启动 ─────────────────────────────────────────────────────────
+// ─── CLI launch ───────────────────────────────────────────────────────
 
 const APP_CONFIGS = {
   claude: { appType: "claude", envVar: "CLAUDE_CONFIG_DIR" },
@@ -770,38 +815,96 @@ function launchCodex(providerId, settingsConfig, meta, category, commonSnippet, 
   process.exit(result.status || 0);
 }
 
-// ─── TUI 交互模式 ─────────────────────────────────────────────────────
+// ─── TUI interactive mode ──────────────────────────────────────────────
 
-function tuiSelect(prompt, options) {
+// hotkeys: [{key,label}] | undefined  (key matches a raw keypress)
+// interactive: when true (provider layer), Enter drills into param region
+//              instead of resolving; esc goes back. When false (CLI layer),
+//              number keys jump straight to resolve.
+// quickItems: [{key,label,cli,provider,hotkey}] | undefined  (top5 quick-launch;
+//             pressing key resolves a {quick:true,...} object)
+function tuiSelect(prompt, options, optsArg) {
+  // Backward-compat: accept a bare hotkeys array as 3rd arg.
+  const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
+  const hotkeys = opts.hotkeys || [];
+  const interactive = !!opts.interactive;
+  const quickItems = opts.quickItems || [];
+
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      reject(new Error("TUI 模式需要交互式终端。请使用命令模式: switch <provider> <cmd>"));
+      reject(new Error("TUI mode requires an interactive terminal. Use command mode: switch <provider> <cmd>"));
       return;
     }
 
     let selected = 0;
-    const totalLines = options.length + 1;
+    let mode = "select"; // "select" | "param"
+    let lastDrawnLines = 0;
 
-    function render() {
-      process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
-      process.stdout.write(`\x1b[1m◆ ${prompt}\x1b[0m\n`);
+    const hasHint = hotkeys.length > 0;
+
+    // Lines for a given mode (without trailing newline).
+    function buildLines(m) {
+      const lines = [];
+      lines.push(`\x1b[1m\x1b[36m◆ ${prompt}\x1b[0m`);
+      lines.push("");
+      const locked = m === "param";
+      // unified navigation space: [0..options.length-1] = options,
+      // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
-        if (i === selected) {
-          process.stdout.write(`\x1b[36m❯ ${options[i].label}\x1b[0m\n`);
+        const num = String(i + 1);
+        if (locked) {
+          const mark = i === selected ? "▸" : " ";
+          lines.push(`\x1b[90m${mark} ${num} ${options[i].label}\x1b[0m`);
+        } else if (i === selected) {
+          lines.push(`\x1b[36m❯ ${num} ${options[i].label}\x1b[0m`);
         } else {
-          process.stdout.write(`  ${options[i].label}\n`);
+          lines.push(`\x1b[90m  ${num} ${options[i].label}\x1b[0m`);
         }
       }
+      if (m === "param") {
+        lines.push("");
+        lines.push(
+          `  \x1b[1m\x1b[36m${hotkeys.map((h) => `${h.key} ${h.label}`).join("   ")}\x1b[0m`,
+        );
+        lines.push(`  \x1b[90mesc ← back\x1b[0m`);
+      } else if (interactive) {
+        lines.push("");
+        lines.push(`  \x1b[90m↑↓ navigate   ⏎ confirm   esc ← back to CLI\x1b[0m`);
+      } else {
+        // CLI layer select mode: optionally show top5 quick-launch region
+        if (quickItems.length > 0) {
+          lines.push("");
+          lines.push(`  \x1b[90mRecent (top 5):\x1b[0m`);
+          for (let i = 0; i < quickItems.length; i++) {
+            const q = quickItems[i];
+            const isSel = selected === options.length + i;
+            if (locked) {
+              const mark = isSel ? "▸" : " ";
+              lines.push(`  \x1b[90m${mark} ${q.key} ${q.label}\x1b[0m`);
+            } else if (isSel) {
+              lines.push(`\x1b[36m❯ ${q.key} ${q.label}\x1b[0m`);
+            } else {
+              lines.push(`  \x1b[36m${q.key}\x1b[0m \x1b[90m${q.label}\x1b[0m`);
+            }
+          }
+        }
+        lines.push("");
+        const quickHint = quickItems.length > 0 ? `   ${QUICK_KEYS.slice(0, quickItems.length).join("-")} quick launch` : "";
+        lines.push(`  \x1b[90m↑↓ navigate   ⏎ or 1-${options.length} select${quickHint}   esc ← exit\x1b[0m`);
+      }
+      return lines;
     }
 
-    process.stdout.write(`\x1b[1m◆ ${prompt}\x1b[0m\n`);
-    for (let i = 0; i < options.length; i++) {
-      if (i === selected) {
-        process.stdout.write(`\x1b[36m❯ ${options[i].label}\x1b[0m\n`);
-      } else {
-        process.stdout.write(`  ${options[i].label}\n`);
+    function render(m) {
+      if (lastDrawnLines > 0) {
+        process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
       }
+      const lines = buildLines(m);
+      process.stdout.write(lines.join("\n") + "\n");
+      lastDrawnLines = lines.length;
     }
+
+    render(mode);
 
     process.stdin.setRawMode(true);
     process.stdin.resume();
@@ -810,32 +913,122 @@ function tuiSelect(prompt, options) {
       const key = data.toString();
       if (key === "\x03") {
         cleanup();
-        reject(new Error("取消"));
+        reject(new Error("Cancelled"));
+        return;
+      }
+
+      if (mode === "param") {
+        // Param region: hotkey or Enter resolves with hotkey; esc goes back.
+        if (key === "\x1b") {
+          mode = "select";
+          render(mode);
+          return;
+        }
+        const hit = hotkeys.find((h) => h.key === key);
+        if (hit) {
+          cleanup();
+          resolve({ ...options[selected], hotkey: hit.key });
+          return;
+        }
+        if (key === "\r" || key === "\n") {
+          cleanup();
+          resolve({ ...options[selected], hotkey: undefined });
+          return;
+        }
+        return; // ignore arrows/other keys in param mode
+      }
+
+      // select mode
+      // esc (bare \x1b) — must check AFTER arrow sequences below in practice,
+      // but arrow keys arrive as full \x1b[A / \x1b[B which don't equal bare \x1b.
+      // Unified navigation space: options + quickItems (CLI layer only).
+      const navTotal = options.length + quickItems.length;
+      if (key === "\x1b[A" || key === "k") {
+        selected = (selected - 1 + navTotal) % navTotal;
+        render(mode);
+        return;
+      }
+      if (key === "\x1b[B" || key === "j") {
+        selected = (selected + 1) % navTotal;
+        render(mode);
         return;
       }
       if (key === "\r" || key === "\n") {
+        // If selection is on a quick item, resolve it as quick-launch.
+        if (!interactive && quickItems.length > 0 && selected >= options.length) {
+          const q = quickItems[selected - options.length];
+          cleanup();
+          resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey });
+          return;
+        }
+        if (interactive && hasHint) {
+          mode = "param";
+          render(mode);
+          return;
+        }
         cleanup();
         resolve(options[selected]);
         return;
       }
-      if (key === "\x1b[A" || key === "k") {
-        selected = (selected - 1 + options.length) % options.length;
-        render();
+      // quick-launch key (top5, CLI layer only)
+      const qHit = quickItems.find((q) => q.key === key);
+      if (qHit) {
+        cleanup();
+        resolve({ quick: true, cli: qHit.cli, provider: qHit.provider, hotkey: qHit.hotkey });
+        return;
       }
-      if (key === "\x1b[B" || key === "j") {
-        selected = (selected + 1) % options.length;
-        render();
+      // number key
+      const n = parseInt(key, 10);
+      if (!Number.isNaN(n) && n >= 1 && n <= options.length) {
+        selected = n - 1;
+        if (interactive) {
+          render(mode); // just highlight, wait for Enter
+          return;
+        }
+        // CLI layer: number jumps straight to resolve
+        cleanup();
+        resolve(options[selected]);
+        return;
+      }
+      if (key === "\x1b") {
+        // bare esc in select mode
+        cleanup();
+        if (interactive) {
+          // provider layer: go back to CLI selection
+          reject(new Error("BACK_TO_CLI"));
+        } else {
+          // CLI layer: exit
+          reject(new Error("Cancelled"));
+        }
+        return;
       }
     };
 
     function cleanup() {
       process.stdin.setRawMode(false);
       process.stdin.removeListener("data", onData);
-      process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
+      if (lastDrawnLines > 0) {
+        process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
+      }
     }
 
     process.stdin.on("data", onData);
   });
+}
+
+// Map permission mode to underlying CLI argv. hotkey: "1"=default/fine (no flag), "2"=semi-auto, "3"=full-auto
+function permissionArgs(cli, hotkey) {
+  if (hotkey === "2") {
+    return cli === "claude"
+      ? ["--permission-mode", "acceptEdits"]
+      : ["--approve-for-me"];
+  }
+  if (hotkey === "3") {
+    return cli === "claude"
+      ? ["--dangerously-skip-permissions"]
+      : ["--dangerously-bypass-approvals-and-sandbox"];
+  }
+  return [];
 }
 
 async function runTUI() {
@@ -843,37 +1036,76 @@ async function runTUI() {
     { label: "claude", value: "claude" },
     { label: "codex", value: "codex" },
   ];
-  const cli = await tuiSelect("选择 CLI 工具", cliOptions);
-  const appConfig = APP_CONFIGS[cli.value];
-  if (!appConfig) throw new Error(`不支持的 CLI: ${cli.value}`);
 
-  const providers = queryProvidersByApp(appConfig.appType);
-  if (providers.length === 0) {
-    console.error(`✗ 没有找到 ${appConfig.appType} 的供应商配置。请先在 cc-switch 中配置。`);
-    process.exit(1);
+  // CLI layer + provider layer loop: esc on provider goes back to CLI selection.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // Build top5 quick-launch items from history (empty on first run).
+    const recent = top5();
+    const quickItems = recent.map((e, i) => ({
+      key: QUICK_KEYS[i],
+      label: `${e.provider} · ${e.cli} · ${permLabel(e.hotkey)}`,
+      cli: e.cli,
+      provider: e.provider,
+      hotkey: e.hotkey ?? undefined,
+    }));
+
+    const cli = await tuiSelect("Select CLI tool", cliOptions, { quickItems });
+
+    // Quick-launch path: letter key bypasses provider + permission selection.
+    if (cli.quick) {
+      recordLaunch(cli.cli, cli.provider, cli.hotkey);
+      await launchProvider(cli.cli, cli.provider, permissionArgs(cli.cli, cli.hotkey));
+      return;
+    }
+
+    const appConfig = APP_CONFIGS[cli.value];
+    if (!appConfig) throw new Error(`Unsupported CLI: ${cli.value}`);
+
+    const providers = queryProvidersByApp(appConfig.appType);
+    if (providers.length === 0) {
+      console.error(`✗ No provider config found for ${appConfig.appType}. Please configure one in cc-switch first.`);
+      process.exit(1);
+    }
+    const providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
+    let selected;
+    try {
+      selected = await tuiSelect(
+        `Select provider (${cli.value === "claude" ? "Claude Code" : "Codex"})`,
+        providerOptions,
+        {
+          hotkeys: [
+            { key: "⏎", label: "Default" },
+            { key: "2", label: "Semi-auto" },
+            { key: "3", label: "Full-auto ⚠" },
+          ],
+          interactive: true,
+        },
+      );
+    } catch (e) {
+      if (e.message === "BACK_TO_CLI") continue; // esc on provider → back to CLI
+      throw e; // Ctrl+C → propagate to main()
+    }
+    const provider = providers.find((p) => p.id === selected.value);
+    recordLaunch(cli.value, provider.name, selected.hotkey);
+    await launchProvider(cli.value, provider.name, permissionArgs(cli.value, selected.hotkey));
+    return;
   }
-  const providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
-  const selected = await tuiSelect(
-    `选择供应商 (${cli.value === "claude" ? "Claude Code" : "Codex"})`,
-    providerOptions,
-  );
-  const provider = providers.find((p) => p.id === selected.value);
-  await launchProvider(cli.value, provider.name, []);
 }
 
-// ─── 启动逻辑 ─────────────────────────────────────────────────────────
+// ─── Launch logic ──────────────────────────────────────────────────────
 
 async function launchProvider(cmd, providerName, extraArgs) {
   const appConfig = APP_CONFIGS[cmd];
   if (!appConfig) {
-    console.error(`✗ 不支持的命令: ${cmd}。目前支持: claude, codex`);
+    console.error(`✗ Unsupported command: ${cmd}. Supported: claude, codex`);
     process.exit(1);
   }
 
   const row = queryProvider(providerName, appConfig.appType);
   if (!row) {
-    console.error(`✗ 未找到供应商 "${providerName}" (${appConfig.appType})`);
-    console.error(`  可用供应商:`);
+    console.error(`✗ Provider "${providerName}" not found (${appConfig.appType})`);
+    console.error(`  Available providers:`);
     queryProvidersByApp(appConfig.appType).forEach((p) => console.error(`    ${p.name}`));
     process.exit(1);
   }
@@ -891,11 +1123,11 @@ async function launchProvider(cmd, providerName, extraArgs) {
   }
 }
 
-// ─── 主入口 ───────────────────────────────────────────────────────────
+// ─── Main entry ────────────────────────────────────────────────────────
 
 async function runUpdate() {
   const currentVersion = readPackageVersion();
-  console.log(`当前版本: v${currentVersion}`);
+  console.log(`Current version: v${currentVersion}`);
 
   let latestVersion;
   try {
@@ -904,22 +1136,22 @@ async function runUpdate() {
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
   } catch {
-    console.error("✗ 无法查询最新版本,请检查网络连接。");
+    console.error("✗ Failed to query latest version. Please check your network connection.");
     process.exit(1);
   }
 
   if (currentVersion === latestVersion) {
-    console.log("已是最新版本。");
+    console.log("Already up to date.");
     process.exit(0);
   }
 
-  console.log(`正在更新到 v${latestVersion}...`);
+  console.log(`Updating to v${latestVersion}...`);
   try {
     execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
   } catch {
     process.exit(1);
   }
-  console.log(`✓ 已更新到 v${latestVersion}`);
+  console.log(`✓ Updated to v${latestVersion}`);
   process.exit(0);
 }
 
@@ -930,7 +1162,7 @@ async function main() {
     try {
       await runTUI();
     } catch (e) {
-      if (e.message !== "取消") console.error(`✗ ${e.message}`);
+      if (e.message !== "Cancelled") console.error(`✗ ${e.message}`);
       process.exit(1);
     }
     return;
@@ -942,12 +1174,12 @@ async function main() {
   }
 
   if (args.length < 2) {
-    console.error(`用法: switch <provider> <cmd> [args...]`);
-    console.error(`  或: switch  (交互模式)`);
-    console.error(`  或: switch update  (自升级到最新版本)`);
-    console.error(`示例: switch "Claude Official" claude`);
-    console.error(`      switch "Zhipu GLM en" claude --continue`);
-    console.error(`      switch "P&G Nezha" codex`);
+    console.error(`Usage: switch <provider> <cmd> [args...]`);
+    console.error(`  or: switch  (interactive mode)`);
+    console.error(`  or: switch update  (self-update to latest version)`);
+    console.error(`Examples: switch "Claude Official" claude`);
+    console.error(`          switch "Zhipu GLM en" claude --continue`);
+    console.error(`          switch "P&G Nezha" codex`);
     process.exit(1);
   }
 
