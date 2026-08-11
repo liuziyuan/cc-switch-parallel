@@ -112,6 +112,16 @@ function queryDB(sql) {
   }
 }
 
+// Write helper for SQLite (mirrors queryDB without -json / JSON.parse).
+// Used by runtime-preference recycling to atomically patch common_config_claude.
+function execDB(sql) {
+  execFileSync("sqlite3", [DB_PATH, sql], {
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: 2000,
+  });
+}
+
 function sqlQuote(str) {
   return "'" + String(str).replace(/'/g, "''") + "'";
 }
@@ -133,6 +143,19 @@ function queryCommonConfig(appType) {
   const key = `common_config_${appType}`;
   const rows = queryDB(`SELECT value FROM settings WHERE key = ${sqlQuote(key)}`);
   return rows[0]?.value || null;
+}
+
+// Atomically merge a patch into common_config_claude via sqlite json_patch
+// (RFC 7396 merge patch: keys present in the patch override/add; absent keys
+// are left untouched). A single UPDATE is atomic, so concurrent launches can't
+// lose updates on disjoint keys. Only updates an existing row — never creates
+// the common config if absent.
+function patchCommonConfigClaude(patchObj) {
+  const key = "common_config_claude";
+  const patchLit = sqlQuote(JSON.stringify(patchObj));
+  execDB(
+    `UPDATE settings SET value = json_patch(value, json(${patchLit})) WHERE key = ${sqlQuote(key)}`,
+  );
 }
 
 // ─── Settings reader ──────────────────────────────────────────────────
@@ -332,6 +355,19 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet) {
   }
   applyKimiForCodingContextDefaults(effective, settingsConfig);
   return sanitizeClaudeSettings(effective);
+}
+
+// Build an enabledPlugins patch from an instance's runtime settings. Explicit
+// true/false both propagate (so /plugin enable AND disable survive the next
+// launch); absent keys are omitted (json_patch leaves them untouched), so a
+// stale instance can't delete a key another provider added.
+function collectEnabledPluginsPatch(ep) {
+  if (!isPlainObject(ep)) return null;
+  const patch = {};
+  for (const [k, v] of Object.entries(ep)) {
+    if (v === true || v === false) patch[k] = v;
+  }
+  return Object.keys(patch).length ? patch : null;
 }
 
 // ─── Codex config generation ──────────────────────────────────────────
@@ -757,8 +793,113 @@ const APP_CONFIGS = {
   codex: { appType: "codex", envVar: "CODEX_HOME" },
 };
 
+// Set of plugin keys ("name@source") with a user-scope install record — the
+// source of truth for "what's installed at user level".
+function readUserInstalledPluginSet() {
+  try {
+    const file = join(HOME, ".claude", "plugins", "installed_plugins.json");
+    if (!existsSync(file)) return new Set();
+    const data = JSON.parse(readFileSync(file, "utf8"));
+    const set = new Set();
+    for (const [k, recs] of Object.entries(data.plugins || {})) {
+      if (Array.isArray(recs) && recs.some((r) => r && r.scope === "user")) set.add(k);
+    }
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
+// Keys currently in common_config_claude.enabledPlugins.
+function readCommonEnabledPluginKeys() {
+  try {
+    const snip = queryCommonConfig("claude");
+    if (!snip) return [];
+    return Object.keys(JSON.parse(snip).enabledPlugins || {});
+  } catch {
+    return [];
+  }
+}
+
+// Best-effort: sync every claude instance's enabledPlugins into
+// common_config_claude. Runs at every launch so a /plugin change in one
+// provider propagates to all providers the next time ANY provider starts — no
+// need for the source session to exit. installed_plugins.json's user-scope
+// records are the source of truth for "what's installed", so all three
+// operations propagate:
+//  - enable/disable: explicit true/false from any instance → merged into common.
+//  - uninstall: a plugin dropped from user-scope is removed from common (null),
+//    even if a stale instance still lists it as enabled.
+function recycleAllClaudeInstances() {
+  try {
+    const dir = join(INSTANCES_DIR, "claude");
+    const installedUser = readUserInstalledPluginSet();
+    const epPatch = {};
+    let has = false;
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir)) {
+        try {
+          const s = JSON.parse(readFileSync(join(dir, name, "settings.json"), "utf8"));
+          const ep = collectEnabledPluginsPatch(s.enabledPlugins);
+          if (!ep) continue;
+          for (const [k, v] of Object.entries(ep)) {
+            // Only honor states for plugins still installed at user scope;
+            // stale entries for uninstalled plugins are ignored.
+            if (installedUser.has(k)) { epPatch[k] = v; has = true; }
+          }
+        } catch {
+          // missing/corrupt instance settings — skip
+        }
+      }
+    }
+    // Remove from common any plugin no longer installed at user scope.
+    for (const k of readCommonEnabledPluginKeys()) {
+      if (!installedUser.has(k) && !(k in epPatch)) { epPatch[k] = null; has = true; }
+    }
+    if (has) patchCommonConfigClaude({ enabledPlugins: epPatch });
+  } catch {
+    // best-effort: unreadable instances dir or DB lock — silently skip.
+  }
+}
+
+// Rewrite any per-instance-prefixed installPath in the shared
+// installed_plugins.json back to the global ~/.claude/plugins path. cc-switch
+// points CLAUDE_CONFIG_DIR at a per-instance dir, so Claude Code records newly
+// installed user plugins under that instance and other instances can't resolve
+// them. Idempotent (already-global paths are untouched) and best-effort.
+const INSTANCE_PLUGIN_PATH_RE = /^.*?\/instances\/claude\/[0-9a-f-]+\/plugins\//;
+function normalizeInstalledPluginPaths() {
+  try {
+    const globalPluginsDir = join(HOME, ".claude", "plugins");
+    const file = join(globalPluginsDir, "installed_plugins.json");
+    if (!existsSync(file)) return;
+    const data = JSON.parse(readFileSync(file, "utf8"));
+    let changed = false;
+    for (const recs of Object.values(data.plugins || {})) {
+      if (!Array.isArray(recs)) continue;
+      for (const rec of recs) {
+        const ip = rec.installPath;
+        if (typeof ip === "string" && INSTANCE_PLUGIN_PATH_RE.test(ip)) {
+          rec.installPath = ip.replace(INSTANCE_PLUGIN_PATH_RE, `${globalPluginsDir}/`);
+          changed = true;
+        }
+      }
+    }
+    if (changed) atomicWrite(file, JSON.stringify(data, null, 2));
+  } catch {
+    // best-effort: missing/corrupt file — silently skip.
+  }
+}
+
 function launchClaude(providerId, settingsConfig, meta, commonSnippet, settings, extraArgs) {
   const instanceDir = setupClaudeInstance(providerId);
+
+  // Defensive: recycle prefs left by a previous crashed session, then re-read
+  // common in case the patch above changed it.
+  recycleAllClaudeInstances();
+  normalizeInstalledPluginPaths();
+  commonSnippet = queryCommonConfig("claude") || commonSnippet;
+
   const effective = buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet);
   atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
 
@@ -768,6 +909,11 @@ function launchClaude(providerId, settingsConfig, meta, commonSnippet, settings,
     stdio: "inherit",
     env: { ...process.env, CLAUDE_CONFIG_DIR: instanceDir },
   });
+
+  // Primary path: recycle prefs changed during this session (e.g. /plugin).
+  recycleAllClaudeInstances();
+  normalizeInstalledPluginPaths();
+
   process.exit(result.status || 0);
 }
 
