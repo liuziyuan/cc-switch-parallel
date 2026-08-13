@@ -18,7 +18,6 @@ import {
   existsSync,
   symlinkSync,
   readlinkSync,
-  statSync,
   lstatSync,
   readdirSync,
   unlinkSync,
@@ -28,7 +27,7 @@ import {
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -47,6 +46,7 @@ const DB_PATH = join(CC_SWITCH_DIR, "cc-switch.db");
 const SETTINGS_PATH = join(CC_SWITCH_DIR, "settings.json");
 const INSTANCES_DIR = join(CC_SWITCH_DIR, "instances");
 const HISTORY_PATH = join(CC_SWITCH_DIR, "launch_history.json");
+const SYNC_STATE_PATH = join(CC_SWITCH_DIR, "sync-state.json");
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
@@ -104,6 +104,7 @@ function queryDB(sql) {
     const json = execFileSync("sqlite3", ["-json", DB_PATH, sql], {
       encoding: "utf8",
       maxBuffer: 50 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
     });
     return JSON.parse(json || "[]");
   } catch (e) {
@@ -119,6 +120,7 @@ function execDB(sql) {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
     timeout: 2000,
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
@@ -750,7 +752,7 @@ function setupClaudeInstance(providerId) {
 // Paths shared from global ~/.codex/ into the instance dir.
 // These are device-level shared resources / user config that should not be
 // missing just because CODEX_HOME points to the instance dir.
-// auth.json is NOT included here — it is handled per-provider by launchCodex
+// auth.json is NOT included here — it is handled per-provider by the codex adapter
 // (third-party providers get a standalone auth.json; official/OAuth providers symlink to global).
 const CODEX_SHARED_PATHS = [
   "installation_id",       // device id; missing forces Codex to reinitialize
@@ -786,11 +788,148 @@ function atomicWrite(path, data) {
   renameSync(tmp, path);
 }
 
-// ─── CLI launch ───────────────────────────────────────────────────────
+// ─── Sync state snapshot (config drift detection) ─────────────────────
 
-const APP_CONFIGS = {
-  claude: { appType: "claude", envVar: "CLAUDE_CONFIG_DIR" },
-  codex: { appType: "codex", envVar: "CODEX_HOME" },
+function sha256(str) {
+  return createHash("sha256").update(str).digest("hex");
+}
+
+function loadSyncState() {
+  try {
+    return JSON.parse(readFileSync(SYNC_STATE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveSyncState(state) {
+  atomicWrite(SYNC_STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+// ─── App adapters (per-CLI strategy) ──────────────────────────────────
+// Each CLI implements a small adapter so adding a new CLI (e.g. gemini) means
+// adding one object here — runTUI / launchProvider / main stay generic. Fields:
+//   appType          DB app_type value
+//   label            CLI-layer display name
+//   bin              executable name
+//   envVar           env var that points the CLI at the instance dir
+//   commonConfigKey  settings-table key for the shared config snippet
+//   setupInstance()  create instance dir + symlink shared resources
+//   prepare()        generate & write the instance's config files
+//   launch()         spawnSync the CLI and exit
+//   permissionArgs() map permission hotkey → CLI argv
+// Optional (claude only): detectPluginDrift() / syncPluginsBack() — plugin
+//   config drift detection & write-back into common_config (added in sync flow).
+const APP_ADAPTERS = {
+  claude: {
+    appType: "claude",
+    label: "claude",
+    displayName: "Claude Code",
+    bin: "claude",
+    envVar: "CLAUDE_CONFIG_DIR",
+    commonConfigKey: "common_config_claude",
+
+    setupInstance: setupClaudeInstance,
+
+    prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
+      normalizeInstalledPluginPaths();
+      const effective = buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet);
+      atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
+    },
+
+    launch(instanceDir, extraArgs) {
+      process.stderr.write(`\x1b[2mCLAUDE_CONFIG_DIR=${instanceDir} claude ${extraArgs.join(" ")}\x1b[0m\n`);
+      const result = spawnSync("claude", extraArgs, {
+        stdio: "inherit",
+        env: { ...process.env, CLAUDE_CONFIG_DIR: instanceDir },
+      });
+      normalizeInstalledPluginPaths();
+      process.exit(result.status || 0);
+    },
+
+    permissionArgs(hotkey) {
+      if (hotkey === "2") return ["--permission-mode", "acceptEdits"];
+      if (hotkey === "3") return ["--dangerously-skip-permissions"];
+      return [];
+    },
+
+    // Upward drift: plugin installs/removals/toggles since the last sync.
+    // Returns { added, removed, toggled, patch, installedKeys } or null.
+    detectPluginDrift(state) {
+      const { patch, installedKeys } = computeEnabledPluginsPatch();
+      const prev = state?.claude || {};
+      const prevEnabled = prev.enabledPlugins || {};
+      const prevKeys = new Set(prev.installedPluginKeys || []);
+      const curKeys = new Set(installedKeys);
+
+      const added = installedKeys.filter((k) => !prevKeys.has(k));
+      const removed = [...prevKeys].filter((k) => !curKeys.has(k));
+      const toggled = [];
+      for (const [k, v] of Object.entries(patch || {})) {
+        if (v !== null && v !== prevEnabled[k]) toggled.push({ key: k, from: prevEnabled[k], to: v });
+      }
+
+      if (!added.length && !removed.length && !toggled.length) return null;
+      return { added, removed, toggled, patch, installedKeys };
+    },
+
+    // Write-back: apply the plugin patch into common_config_claude.
+    syncPluginsBack(drift) {
+      applyEnabledPluginsPatch(drift.patch);
+    },
+  },
+
+  codex: {
+    appType: "codex",
+    label: "codex",
+    displayName: "Codex",
+    bin: "codex",
+    envVar: "CODEX_HOME",
+    commonConfigKey: "common_config_codex",
+
+    setupInstance: setupCodexInstance,
+
+    prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
+      const { configText, auth, catalog, apiKey } = buildCodexConfig(
+        settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
+      );
+      atomicWrite(join(instanceDir, "config.toml"), configText);
+
+      const authPath = join(instanceDir, "auth.json");
+      const globalAuthPath = join(HOME, ".codex", "auth.json");
+      if (!apiKey && !codexAuthHasLoginMaterial(auth)) {
+        if (existsSync(globalAuthPath)) {
+          ensureSymlink(globalAuthPath, authPath);
+        } else {
+          atomicWrite(authPath, JSON.stringify({}, null, 2));
+        }
+      } else {
+        const authContent = apiKey
+          ? { OPENAI_API_KEY: apiKey }
+          : codexAuthHasLoginMaterial(auth) ? auth : {};
+        atomicWrite(authPath, JSON.stringify(authContent, null, 2));
+      }
+
+      if (catalog) {
+        atomicWrite(join(instanceDir, CC_SWITCH_CATALOG_FILENAME), JSON.stringify(catalog, null, 2));
+      }
+    },
+
+    launch(instanceDir, extraArgs) {
+      process.stderr.write(`\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`);
+      const result = spawnSync("codex", extraArgs, {
+        stdio: "inherit",
+        env: { ...process.env, CODEX_HOME: instanceDir },
+      });
+      process.exit(result.status || 0);
+    },
+
+    permissionArgs(hotkey) {
+      if (hotkey === "2") return ["--approve-for-me"];
+      if (hotkey === "3") return ["--dangerously-bypass-approvals-and-sandbox"];
+      return [];
+    },
+  },
 };
 
 // Set of plugin keys ("name@source") with a user-scope install record — the
@@ -821,16 +960,16 @@ function readCommonEnabledPluginKeys() {
   }
 }
 
-// Best-effort: sync every claude instance's enabledPlugins into
-// common_config_claude. Runs at every launch so a /plugin change in one
-// provider propagates to all providers the next time ANY provider starts — no
-// need for the source session to exit. installed_plugins.json's user-scope
+// Compute the enabledPlugins patch to write back into common_config_claude,
+// based on all claude instances' runtime settings + the user-scope install
+// set. Pure — does not touch the DB. installed_plugins.json's user-scope
 // records are the source of truth for "what's installed", so all three
-// operations propagate:
+// operations are captured:
 //  - enable/disable: explicit true/false from any instance → merged into common.
 //  - uninstall: a plugin dropped from user-scope is removed from common (null),
 //    even if a stale instance still lists it as enabled.
-function recycleAllClaudeInstances() {
+// Returns { patch, installedKeys } — patch is a json_patch object or null.
+function computeEnabledPluginsPatch() {
   try {
     const dir = join(INSTANCES_DIR, "claude");
     const installedUser = readUserInstalledPluginSet();
@@ -856,9 +995,21 @@ function recycleAllClaudeInstances() {
     for (const k of readCommonEnabledPluginKeys()) {
       if (!installedUser.has(k) && !(k in epPatch)) { epPatch[k] = null; has = true; }
     }
-    if (has) patchCommonConfigClaude({ enabledPlugins: epPatch });
+    return { patch: has ? epPatch : null, installedKeys: [...installedUser] };
   } catch {
-    // best-effort: unreadable instances dir or DB lock — silently skip.
+    // best-effort: unreadable instances dir or DB lock — return empty.
+    return { patch: null, installedKeys: [] };
+  }
+}
+
+// Write an enabledPlugins patch into common_config_claude (used by the sync
+// flow after user confirmation). No-op on an empty patch.
+function applyEnabledPluginsPatch(patch) {
+  if (!patch || Object.keys(patch).length === 0) return;
+  try {
+    patchCommonConfigClaude({ enabledPlugins: patch });
+  } catch {
+    // best-effort: DB lock or unreadable — skip write-back silently.
   }
 }
 
@@ -891,68 +1042,129 @@ function normalizeInstalledPluginPaths() {
   }
 }
 
-function launchClaude(providerId, settingsConfig, meta, commonSnippet, settings, extraArgs) {
-  const instanceDir = setupClaudeInstance(providerId);
+// ─── Config drift detection & sync ────────────────────────────────────
 
-  // Defensive: recycle prefs left by a previous crashed session, then re-read
-  // common in case the patch above changed it.
-  recycleAllClaudeInstances();
-  normalizeInstalledPluginPaths();
-  commonSnippet = queryCommonConfig("claude") || commonSnippet;
-
-  const effective = buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet);
-  atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
-
-  process.stderr.write(`\x1b[2mCLAUDE_CONFIG_DIR=${instanceDir} claude ${extraArgs.join(" ")}\x1b[0m\n`);
-
-  const result = spawnSync("claude", extraArgs, {
-    stdio: "inherit",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: instanceDir },
-  });
-
-  // Primary path: recycle prefs changed during this session (e.g. /plugin).
-  recycleAllClaudeInstances();
-  normalizeInstalledPluginPaths();
-
-  process.exit(result.status || 0);
+// Downward drift: cc-switch's common config snippet changed since the last
+// snapshot. Returns { appType: true } for each app whose snippet hash differs.
+function detectCommonConfigDrift(state) {
+  const drift = {};
+  for (const adapter of Object.values(APP_ADAPTERS)) {
+    const snippet = queryCommonConfig(adapter.appType) || "";
+    const hash = sha256(snippet);
+    const prev = state?.commonConfig?.[adapter.appType];
+    if (prev !== undefined && prev !== hash) drift[adapter.appType] = true;
+  }
+  return drift;
 }
 
-function launchCodex(providerId, settingsConfig, meta, category, commonSnippet, settings, extraArgs) {
-  const instanceDir = setupCodexInstance(providerId);
-  const { configText, auth, catalog, apiKey } = buildCodexConfig(
-    settingsConfig, meta, category, commonSnippet,
-    { id: providerId }, settings,
-  );
+// Record the current state as the sync baseline. common config is always
+// snapshotted (its hash reflects both cc-switch edits and our own write-back);
+// claude's plugin state is snapshotted only after a confirmed plugin sync.
+function snapshotSyncState(state, pluginSyncedCmds) {
+  state.commonConfig = state.commonConfig || {};
+  for (const adapter of Object.values(APP_ADAPTERS)) {
+    const snippet = queryCommonConfig(adapter.appType) || "";
+    state.commonConfig[adapter.appType] = sha256(snippet);
+  }
+  if (pluginSyncedCmds.includes("claude")) {
+    const { installedKeys } = computeEnabledPluginsPatch();
+    state.claude = state.claude || {};
+    state.claude.installedPluginKeys = installedKeys;
+    let enabled = {};
+    try {
+      const snip = queryCommonConfig("claude");
+      if (snip) enabled = JSON.parse(snip).enabledPlugins || {};
+    } catch {}
+    state.claude.enabledPlugins = enabled;
+  }
+}
 
-  atomicWrite(join(instanceDir, "config.toml"), configText);
-
-  const authPath = join(instanceDir, "auth.json");
-  const globalAuthPath = join(HOME, ".codex", "auth.json");
-
-  if (!apiKey && !codexAuthHasLoginMaterial(auth)) {
-    if (existsSync(globalAuthPath)) {
-      ensureSymlink(globalAuthPath, authPath);
-    } else {
-      atomicWrite(authPath, JSON.stringify({}, null, 2));
+// Interactive yes/no confirm (TUI only). Returns true on "y", false otherwise.
+function confirmSync(lines) {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      resolve(false);
+      return;
     }
-  } else {
-    const authContent = apiKey
-      ? { OPENAI_API_KEY: apiKey }
-      : codexAuthHasLoginMaterial(auth) ? auth : {};
-    atomicWrite(authPath, JSON.stringify(authContent, null, 2));
-  }
-
-  if (catalog) {
-    atomicWrite(join(instanceDir, CC_SWITCH_CATALOG_FILENAME), JSON.stringify(catalog, null, 2));
-  }
-
-  process.stderr.write(`\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`);
-
-  const result = spawnSync("codex", extraArgs, {
-    stdio: "inherit",
-    env: { ...process.env, CODEX_HOME: instanceDir },
+    for (const line of lines) process.stderr.write(`  ${line}\n`);
+    process.stderr.write(`\n  \x1b[1mSync these changes?\x1b[0m [y/N] `);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    const onData = (data) => {
+      const key = data.toString();
+      process.stdin.setRawMode(false);
+      process.stdin.removeListener("data", onData);
+      process.stderr.write(`${key.trim()}\n`);
+      resolve(/^y/i.test(key.trim()));
+    };
+    process.stdin.on("data", onData);
   });
-  process.exit(result.status || 0);
+}
+
+// Entry point: detect common-config + plugin drift, then prompt (TUI) or warn
+// (command mode). Returns { synced, drifted }.
+async function detectAndPromptSync({ tui = false } = {}) {
+  const state = loadSyncState();
+
+  // First run: no baseline snapshot yet — establish it silently so subsequent
+  // plugin/common-config changes are detectable (don't report existing plugins
+  // as "added" on the very first sync).
+  if (!state?.commonConfig || Object.keys(state.commonConfig).length === 0) {
+    snapshotSyncState(state, ["claude"]);
+    saveSyncState(state);
+    return { synced: false, drifted: false };
+  }
+
+  const commonDrift = detectCommonConfigDrift(state);
+
+  const pluginDrifts = {};
+  for (const [cmd, adapter] of Object.entries(APP_ADAPTERS)) {
+    if (adapter.detectPluginDrift) {
+      const d = adapter.detectPluginDrift(state);
+      if (d) pluginDrifts[cmd] = d;
+    }
+  }
+
+  const hasCommon = Object.keys(commonDrift).length > 0;
+  const hasPlugin = Object.keys(pluginDrifts).length > 0;
+  if (!hasCommon && !hasPlugin) return { synced: false, drifted: false };
+
+  // Build the change summary (dedup added/removed vs toggled).
+  const lines = [];
+  for (const appType of Object.keys(commonDrift)) {
+    lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed in cc-switch — restart instances to apply`);
+  }
+  for (const d of Object.values(pluginDrifts)) {
+    const changedKeys = new Set([...d.added, ...d.removed]);
+    for (const k of d.added) lines.push(`\x1b[32m+ plugin installed:\x1b[0m ${k}`);
+    for (const k of d.removed) lines.push(`\x1b[31m- plugin uninstalled:\x1b[0m ${k}`);
+    for (const t of d.toggled) {
+      if (changedKeys.has(t.key)) continue;
+      lines.push(`\x1b[33m~ plugin toggled:\x1b[0m ${t.key} (${t.from ?? "unset"} → ${t.to})`);
+    }
+  }
+
+  if (!tui) {
+    // command mode: non-blocking warning, no write-back.
+    process.stderr.write(`\x1b[33m⚠ Config drift detected:\x1b[0m\n`);
+    for (const line of lines) process.stderr.write(`  ${line}\n`);
+    process.stderr.write(`  Run \x1b[1mswitch sync\x1b[0m to review and sync.\n`);
+    return { synced: false, drifted: true };
+  }
+
+  // TUI mode: interactive confirm, then write back on "y".
+  const ok = await confirmSync(lines);
+  if (ok) {
+    const syncedCmds = [];
+    for (const [cmd, d] of Object.entries(pluginDrifts)) {
+      APP_ADAPTERS[cmd]?.syncPluginsBack?.(d);
+      syncedCmds.push(cmd);
+    }
+    snapshotSyncState(state, syncedCmds);
+    saveSyncState(state);
+    return { synced: true, drifted: true };
+  }
+  return { synced: false, drifted: true };
 }
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
@@ -1157,25 +1369,13 @@ function tuiSelect(prompt, options, optsArg) {
 }
 
 // Map permission mode to underlying CLI argv. hotkey: "1"=default/fine (no flag), "2"=semi-auto, "3"=full-auto
-function permissionArgs(cli, hotkey) {
-  if (hotkey === "2") {
-    return cli === "claude"
-      ? ["--permission-mode", "acceptEdits"]
-      : ["--approve-for-me"];
-  }
-  if (hotkey === "3") {
-    return cli === "claude"
-      ? ["--dangerously-skip-permissions"]
-      : ["--dangerously-bypass-approvals-and-sandbox"];
-  }
-  return [];
-}
-
 async function runTUI() {
-  const cliOptions = [
-    { label: "claude", value: "claude" },
-    { label: "codex", value: "codex" },
-  ];
+  await detectAndPromptSync({ tui: true });
+
+  const cliOptions = Object.entries(APP_ADAPTERS).map(([value, adapter]) => ({
+    label: adapter.label,
+    value,
+  }));
 
   // CLI layer + provider layer loop: esc on provider goes back to CLI selection.
   // eslint-disable-next-line no-constant-condition
@@ -1195,23 +1395,23 @@ async function runTUI() {
     // Quick-launch path: letter key bypasses provider + permission selection.
     if (cli.quick) {
       recordLaunch(cli.cli, cli.provider, cli.hotkey);
-      await launchProvider(cli.cli, cli.provider, permissionArgs(cli.cli, cli.hotkey));
+      await launchProvider(cli.cli, cli.provider, APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey));
       return;
     }
 
-    const appConfig = APP_CONFIGS[cli.value];
-    if (!appConfig) throw new Error(`Unsupported CLI: ${cli.value}`);
+    const adapter = APP_ADAPTERS[cli.value];
+    if (!adapter) throw new Error(`Unsupported CLI: ${cli.value}`);
 
-    const providers = queryProvidersByApp(appConfig.appType);
+    const providers = queryProvidersByApp(adapter.appType);
     if (providers.length === 0) {
-      console.error(`✗ No provider config found for ${appConfig.appType}. Please configure one in cc-switch first.`);
+      console.error(`✗ No provider config found for ${adapter.appType}. Please configure one in cc-switch first.`);
       process.exit(1);
     }
     const providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
     let selected;
     try {
       selected = await tuiSelect(
-        `Select provider (${cli.value === "claude" ? "Claude Code" : "Codex"})`,
+        `Select provider (${adapter.displayName})`,
         providerOptions,
         {
           hotkeys: [
@@ -1228,7 +1428,7 @@ async function runTUI() {
     }
     const provider = providers.find((p) => p.id === selected.value);
     recordLaunch(cli.value, provider.name, selected.hotkey);
-    await launchProvider(cli.value, provider.name, permissionArgs(cli.value, selected.hotkey));
+    await launchProvider(cli.value, provider.name, adapter.permissionArgs(selected.hotkey));
     return;
   }
 }
@@ -1236,31 +1436,176 @@ async function runTUI() {
 // ─── Launch logic ──────────────────────────────────────────────────────
 
 async function launchProvider(cmd, providerName, extraArgs) {
-  const appConfig = APP_CONFIGS[cmd];
-  if (!appConfig) {
-    console.error(`✗ Unsupported command: ${cmd}. Supported: claude, codex`);
+  const adapter = APP_ADAPTERS[cmd];
+  if (!adapter) {
+    console.error(`✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`);
     process.exit(1);
   }
 
-  const row = queryProvider(providerName, appConfig.appType);
+  await detectAndPromptSync({ tui: false });
+
+  const row = queryProvider(providerName, adapter.appType);
   if (!row) {
-    console.error(`✗ Provider "${providerName}" not found (${appConfig.appType})`);
+    console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
     console.error(`  Available providers:`);
-    queryProvidersByApp(appConfig.appType).forEach((p) => console.error(`    ${p.name}`));
+    queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
     process.exit(1);
   }
 
   const settingsConfig = JSON.parse(row.settings_config || "{}");
   const meta = JSON.parse(row.meta || "{}");
   const category = row.category;
-  const commonSnippet = queryCommonConfig(appConfig.appType);
+  const commonSnippet = queryCommonConfig(adapter.appType);
   const settings = loadSettings();
 
-  if (cmd === "claude") {
-    launchClaude(row.id, settingsConfig, meta, commonSnippet, settings, extraArgs);
-  } else if (cmd === "codex") {
-    launchCodex(row.id, settingsConfig, meta, category, commonSnippet, settings, extraArgs);
+  const instanceDir = adapter.setupInstance(row.id);
+  adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, commonSnippet, settings);
+  adapter.launch(instanceDir, extraArgs);
+}
+
+// ─── doctor / clean ────────────────────────────────────────────────────
+
+function which(bin) {
+  try {
+    const r = spawnSync("which", [bin], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  } catch {
+    return null;
   }
+}
+
+function collectInstances() {
+  const instances = [];
+  for (const adapter of Object.values(APP_ADAPTERS)) {
+    const dir = join(INSTANCES_DIR, adapter.appType);
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSyncSafe(dir) || []) {
+      const full = join(dir, name);
+      if (lstatSyncSafe(full)?.isDirectory()) instances.push({ name, appType: adapter.appType, path: full });
+    }
+  }
+  return instances;
+}
+
+function runDoctor() {
+  const checks = [];
+  const add = (label, pass, detail) => checks.push({ label, pass, detail });
+
+  // sqlite3
+  const sqliteOk = !!which("sqlite3");
+  add("sqlite3 CLI", sqliteOk, sqliteOk ? "available" : "not found on PATH — required to read the cc-switch DB");
+
+  // DB + providers
+  let dbOk = false;
+  let counts = "";
+  if (!existsSync(DB_PATH)) {
+    counts = "DB file not found";
+  } else {
+    try {
+      const tables = queryDB(`SELECT name FROM sqlite_master WHERE type='table' AND name='providers'`);
+      if (tables.length === 0) {
+        counts = "providers table missing";
+      } else {
+        const parts = [];
+        for (const adapter of Object.values(APP_ADAPTERS)) {
+          parts.push(`${adapter.appType}: ${queryProvidersByApp(adapter.appType).length}`);
+        }
+        counts = parts.join(", ");
+        dbOk = true;
+      }
+    } catch (e) {
+      counts = e.message;
+    }
+  }
+  add("cc-switch DB", dbOk, dbOk ? `readable (providers — ${counts})` : counts);
+
+  // CLI binaries
+  for (const adapter of Object.values(APP_ADAPTERS)) {
+    const p = which(adapter.bin);
+    add(`${adapter.bin} binary`, !!p, p || "not found on PATH");
+  }
+
+  // common config parse
+  for (const adapter of Object.values(APP_ADAPTERS)) {
+    const snip = queryCommonConfig(adapter.appType);
+    if (!snip) { add(`common_config_${adapter.appType}`, true, "not set"); continue; }
+    let pass = true;
+    try { adapter.appType === "claude" ? JSON.parse(snip) : parseToml(snip); } catch { pass = false; }
+    add(`common_config_${adapter.appType}`, pass, pass ? "parseable" : "unparseable");
+  }
+
+  // instance dirs
+  const instances = collectInstances();
+  add("instance dirs", true, `${instances.length} instance(s)`);
+
+  // sync state
+  add("sync-state.json", existsSync(SYNC_STATE_PATH), existsSync(SYNC_STATE_PATH) ? "present" : "not yet created (first run)");
+
+  // render
+  console.log("\n  \x1b[1mcc-switch-parallel doctor\x1b[0m\n");
+  for (const c of checks) {
+    const mark = c.pass ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
+    console.log(`  ${mark} ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
+  }
+  console.log("");
+  const failed = checks.filter((c) => !c.pass).length;
+  if (failed) {
+    console.log(`  \x1b[31m${failed} issue(s) found.\x1b[0m\n`);
+    process.exit(1);
+  }
+  console.log("  \x1b[32mAll checks passed.\x1b[0m\n");
+}
+
+async function runClean(args) {
+  const instances = collectInstances();
+  if (!instances.length) {
+    console.log("No instance directories found.");
+    return;
+  }
+
+  if (args.includes("--all") || args.includes("--yes")) {
+    for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
+    console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
+    return;
+  }
+
+  if (!process.stdin.isTTY) {
+    console.error("✗ clean requires an interactive terminal (or use --all to remove everything).");
+    process.exit(1);
+  }
+
+  const options = [
+    ...instances.map((i) => ({ label: `${i.appType}/${i.name}`, value: i.path })),
+    { label: "Delete ALL instances", value: "__all__" },
+  ];
+  const choice = await tuiSelect("Select instance directory to remove", options);
+  if (choice.value === "__all__") {
+    for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
+    console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
+  } else {
+    rmSync(choice.value, { recursive: true, force: true });
+    console.log(`✓ Removed ${choice.value}`);
+  }
+}
+
+function printHelp() {
+  console.log(`cc-switch-parallel — launch Claude Code / Codex with per-provider isolated configs
+
+Usage:
+  switch                                 Interactive TUI (select CLI, then provider)
+  switch <provider> <cmd> [args...]     Launch a provider directly
+  switch sync                           Detect & sync config drift (plugins, common config)
+  switch doctor                         Diagnose the environment
+  switch clean [--all]                  Remove instance directories
+  switch update                         Self-update to the latest npm version
+  switch -v | --version                 Show version
+
+Commands: ${Object.keys(APP_ADAPTERS).join(", ")}
+
+Examples:
+  switch "Claude Official" claude
+  switch "Zhipu GLM en" claude --continue
+  switch "P&G Nezha" codex`);
 }
 
 // ─── Main entry ────────────────────────────────────────────────────────
@@ -1288,7 +1633,15 @@ async function runUpdate() {
   console.log(`Updating to v${latestVersion}...`);
   try {
     execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
-  } catch {
+  } catch (e) {
+    const msg = String(e?.stderr || e?.message || "");
+    if (/EACCES|EPERM|EISDIR/.test(msg)) {
+      console.error(`✗ Permission denied. Try: sudo npm install -g ${NPM_PACKAGE_NAME}@latest`);
+    } else if (/ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|network|fetch failed/.test(msg)) {
+      console.error("✗ Network error during install. Please check your connection and retry.");
+    } else {
+      console.error(`✗ Update failed: ${msg.trim() || "unknown error"}`);
+    }
     process.exit(1);
   }
   console.log(`✓ Updated to v${latestVersion}`);
@@ -1313,6 +1666,31 @@ async function main() {
     return;
   }
 
+  if (args[0] === "sync") {
+    const result = await detectAndPromptSync({ tui: true });
+    if (!result.drifted) console.log("No config drift detected — everything in sync.");
+    else if (result.synced) console.log("✓ Synced.");
+    else console.log("Skipped — no changes written.");
+    process.exit(0);
+    return;
+  }
+
+  if (args[0] === "doctor") {
+    runDoctor();
+    return;
+  }
+
+  if (args[0] === "clean") {
+    await runClean(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "-h" || args[0] === "--help" || args[0] === "help") {
+    printHelp();
+    process.exit(0);
+    return;
+  }
+
   if (args[0] === "-v" || args[0] === "--version" || args[0] === "version") {
     const v = VERSION;
     const latest = (() => {
@@ -1331,9 +1709,7 @@ async function main() {
 
   if (args.length < 2) {
     console.error(`Usage: switch <provider> <cmd> [args...]`);
-    console.error(`  or: switch  (interactive mode)`);
-    console.error(`  or: switch update  (self-update to latest version)`);
-    console.error(`  or: switch -v | --version  (show version)`);
+    console.error(`  Run \`switch --help\` for all commands.`);
     console.error(`Examples: switch "Claude Official" claude`);
     console.error(`          switch "Zhipu GLM en" claude --continue`);
     console.error(`          switch "P&G Nezha" codex`);
