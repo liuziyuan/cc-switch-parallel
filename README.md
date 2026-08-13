@@ -2,6 +2,8 @@
 
 > Launch Claude Code and Codex with per-provider isolated configs — run multiple providers in parallel terminals without switching.
 
+[English](README.md) | [中文](README_ZH.md)
+
 ## What it does
 
 If you use [cc-switch](https://github.com/farion1231/cc-switch) to manage multiple AI providers (e.g. Claude Official, Zhipu GLM, GitHub Copilot), you normally have to **switch** the active provider — which changes the global `~/.claude/settings.json` or `~/.codex/config.toml` for **all** terminals.
@@ -47,6 +49,25 @@ switch "P&G Nezha" codex
 switch "GitHub Copilot" codex
 ```
 
+### Other commands
+
+```bash
+switch sync       # Detect & sync config drift (plugins, common config)
+switch doctor     # Diagnose the environment (sqlite3, DB, binaries, …)
+switch clean      # Remove instance directories (interactive, or --all)
+switch update     # Self-update to the latest npm version
+switch --help     # List all commands
+```
+
+## Config drift & sync
+
+`switch` keeps a snapshot (`~/.cc-switch/sync-state.json`) of the config it last saw, and detects two kinds of drift on every launch:
+
+- **Downward** — cc-switch's *common config* (`common_config_claude` / `common_config_codex`) changed in the desktop app. Existing instances still hold the old value, so `switch` warns you to restart them.
+- **Upward** — a plugin/skill was installed, removed, or toggled inside a `switch`-launched Claude session (`/plugin`). `switch` warns you and can write the change back into cc-switch's `common_config_claude.enabledPlugins`.
+
+In **TUI mode** drift is shown before the CLI selector and you can confirm the sync inline. In **command mode** it's a non-blocking warning on stderr — run `switch sync` to review and apply. The first run silently records a baseline, so existing plugins are never reported as "new".
+
 ## How it works
 
 1. Reads provider configs from `~/.cc-switch/cc-switch.db` (SQLite, managed by cc-switch)
@@ -68,6 +89,21 @@ switch "GitHub Copilot" codex
 ```
 
 Each instance is ~8KB — the heavy data (plugins, session history, credentials) is symlinked, not copied.
+
+## Adding a new CLI
+
+Each CLI is a small adapter (`APP_ADAPTERS` in `bin/cc-launch.mjs`). To add e.g. Gemini, add one object — `runTUI`, `launchProvider`, and `main` stay generic:
+
+```js
+const APP_ADAPTERS = {
+  claude:  { appType, label, displayName, bin, envVar, commonConfigKey,
+             setupInstance, prepare, launch, permissionArgs },
+  codex:   { /* … */ },
+  // gemini: { /* … */ },   ← add here
+};
+```
+
+`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Optional `detectPluginDrift` / `syncPluginsBack` (Claude only today) add per-CLI plugin sync.
 
 ## Requirements
 
