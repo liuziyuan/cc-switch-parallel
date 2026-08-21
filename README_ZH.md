@@ -37,7 +37,7 @@ switch
 ### 命令模式
 
 ```bash
-switch <provider> <cmd> [args...]
+switch [--sync|--no-sync] <provider> <cmd> [args...]
 ```
 
 示例：
@@ -45,8 +45,8 @@ switch <provider> <cmd> [args...]
 ```bash
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
-switch "P&G Nezha" codex
-switch "GitHub Copilot" codex
+switch --sync "Claude Official" claude   # 启动前就地交互确认配置漂移
+switch --no-sync "P&G Nezha" codex       # 静默启动，抑制漂移警告
 ```
 
 ### 其他命令
@@ -63,10 +63,10 @@ switch --help     # 列出所有命令
 
 `switch` 会保存一份它上次看到的配置快照（`~/.cc-switch/sync-state.json`），并在每次启动时检测两类漂移：
 
-- **下行** —— cc-switch 的*通用配置*（`common_config_claude` / `common_config_codex`）在桌面端被改动。已有的实例仍持有旧值，因此 `switch` 会提示你重启它们。
-- **上行** —— 在 `switch` 启动的 Claude 会话里，插件/技能被安装、移除或切换（`/plugin`）。`switch` 会提示你，并可把改动回写进 cc-switch 的 `common_config_claude.enabledPlugins`。
+- **下行** —— cc-switch 的*通用配置*（`common_config_claude` / `common_config_codex`）在桌面端被改动。陈旧状态**按实例跟踪**：警告会指出具体哪些 provider 还在用旧配置，且提示会一直保留，直到每个实例真正重新启动（确认一次无关的插件同步不会顺带清掉它）。
+- **上行** —— 在 `switch` 启动的 Claude 会话里，插件/技能被安装、移除或切换（`/plugin`）。`switch` 会提示你，并可把改动回写进 cc-switch 的 `common_config_claude.enabledPlugins`。多个实例状态冲突时，只有插件状态被真实修改过的实例才有投票权（旧通用配置的陈旧镜像没有）；被修改过的实例之间，以最近的改动为准。
 
-在 **TUI 模式**下，漂移会在 CLI 选择器之前展示，你可以就地确认同步。在**命令模式**下，它是在 stderr 上的非阻塞警告 —— 运行 `switch sync` 来查看并应用。首次运行会静默记录一份基线，因此已有的插件永远不会被报告为「新增」。
+在 **TUI 模式**下，漂移会在 CLI 选择器之前展示，你可以就地确认同步。在**命令模式**下，它是在 stderr 上的非阻塞警告 —— 运行 `switch sync` 来查看并应用，加 `--sync` 可在启动前就地确认，加 `--no-sync` 则完全抑制警告。首次运行会静默记录一份基线，因此已有的插件永远不会被报告为「新增」。
 
 ## 工作原理
 
@@ -103,7 +103,7 @@ const APP_ADAPTERS = {
 };
 ```
 
-`setupInstance` 创建实例目录 + 软链接，`prepare` 生成配置文件，`launch` 启动 CLI，`permissionArgs` 映射权限快捷键。可选的 `detectPluginDrift` / `syncPluginsBack`（目前仅 Claude）提供按 CLI 的插件同步。
+`setupInstance` 创建实例目录 + 软链接，`prepare` 生成配置文件，`launch` 启动 CLI，`permissionArgs` 映射权限快捷键。可选的 `detectPluginDrift` / `syncPluginsBack`（目前仅 Claude）提供按 CLI 的插件同步；可选的 `readInstancePluginState` 让按实例的漂移基线记录该 CLI 的插件状态。
 
 ## 系统要求
 

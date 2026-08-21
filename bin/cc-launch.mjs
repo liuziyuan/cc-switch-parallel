@@ -806,6 +806,16 @@ function saveSyncState(state) {
   atomicWrite(SYNC_STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+// Shallow-compare two {pluginKey: bool} maps (undefined/missing treated as
+// absent on both sides via Set union of keys).
+function shallowEqualPlugins(a, b) {
+  const ao = isPlainObject(a) ? a : {};
+  const bo = isPlainObject(b) ? b : {};
+  const keys = new Set([...Object.keys(ao), ...Object.keys(bo)]);
+  for (const k of keys) if (ao[k] !== bo[k]) return false;
+  return true;
+}
+
 // ─── App adapters (per-CLI strategy) ──────────────────────────────────
 // Each CLI implements a small adapter so adding a new CLI (e.g. gemini) means
 // adding one object here — runTUI / launchProvider / main stay generic. Fields:
@@ -853,10 +863,21 @@ const APP_ADAPTERS = {
       return [];
     },
 
+    // Read the enabledPlugins this instance's settings.json currently holds
+    // (used by recordInstanceBaseline() to snapshot per-instance provenance).
+    readInstancePluginState(instanceDir) {
+      try {
+        const s = JSON.parse(readFileSync(join(instanceDir, "settings.json"), "utf8"));
+        return isPlainObject(s.enabledPlugins) ? s.enabledPlugins : {};
+      } catch {
+        return null;
+      }
+    },
+
     // Upward drift: plugin installs/removals/toggles since the last sync.
     // Returns { added, removed, toggled, patch, installedKeys } or null.
     detectPluginDrift(state) {
-      const { patch, installedKeys } = computeEnabledPluginsPatch();
+      const { patch, installedKeys } = computeEnabledPluginsPatch(state);
       const prev = state?.claude || {};
       const prevEnabled = prev.enabledPlugins || {};
       const prevKeys = new Set(prev.installedPluginKeys || []);
@@ -968,27 +989,52 @@ function readCommonEnabledPluginKeys() {
 //  - enable/disable: explicit true/false from any instance → merged into common.
 //  - uninstall: a plugin dropped from user-scope is removed from common (null),
 //    even if a stale instance still lists it as enabled.
+//
+// Arbitration: an instance's enabledPlugins that still matches the baseline
+// recorded the last time cc-switch generated its settings.json (state.instances)
+// carries no user intent — it's just a mirror of whatever common config looked
+// like at prepare time — so it does not get a vote. Among instances that were
+// actually edited by the user (e.g. via /plugin), the most recently modified
+// settings.json wins per key. Instances with no recorded baseline (e.g. a
+// sync-state.json predating this tracking) are treated as lowest priority so
+// they don't clobber instances we do have provenance for.
 // Returns { patch, installedKeys } — patch is a json_patch object or null.
-function computeEnabledPluginsPatch() {
+function computeEnabledPluginsPatch(state) {
   try {
     const dir = join(INSTANCES_DIR, "claude");
     const installedUser = readUserInstalledPluginSet();
-    const epPatch = {};
-    let has = false;
+    const baselines = state?.instances?.claude || {};
+    const candidates = [];
     if (existsSync(dir)) {
       for (const name of readdirSync(dir)) {
         try {
-          const s = JSON.parse(readFileSync(join(dir, name, "settings.json"), "utf8"));
-          const ep = collectEnabledPluginsPatch(s.enabledPlugins);
+          const settingsPath = join(dir, name, "settings.json");
+          const s = JSON.parse(readFileSync(settingsPath, "utf8"));
+          const cur = isPlainObject(s.enabledPlugins) ? s.enabledPlugins : {};
+          const baseline = baselines[name]?.enabledPlugins;
+          const known = baseline !== undefined;
+          if (known && shallowEqualPlugins(cur, baseline)) continue; // unchanged mirror — no vote
+          const ep = collectEnabledPluginsPatch(cur);
           if (!ep) continue;
-          for (const [k, v] of Object.entries(ep)) {
-            // Only honor states for plugins still installed at user scope;
-            // stale entries for uninstalled plugins are ignored.
-            if (installedUser.has(k)) { epPatch[k] = v; has = true; }
-          }
+          let mtimeMs = 0;
+          try { mtimeMs = lstatSync(settingsPath).mtimeMs; } catch {}
+          candidates.push({ ep, known, mtimeMs });
         } catch {
           // missing/corrupt instance settings — skip
         }
+      }
+    }
+    // Unknown-baseline candidates apply first (lowest priority); among the
+    // rest, oldest-first so the most recently modified instance wins last.
+    candidates.sort((a, b) => (a.known !== b.known ? (a.known ? 1 : -1) : a.mtimeMs - b.mtimeMs));
+
+    const epPatch = {};
+    let has = false;
+    for (const { ep } of candidates) {
+      for (const [k, v] of Object.entries(ep)) {
+        // Only honor states for plugins still installed at user scope;
+        // stale entries for uninstalled plugins are ignored.
+        if (installedUser.has(k)) { epPatch[k] = v; has = true; }
       }
     }
     // Remove from common any plugin no longer installed at user scope.
@@ -1044,30 +1090,61 @@ function normalizeInstalledPluginPaths() {
 
 // ─── Config drift detection & sync ────────────────────────────────────
 
-// Downward drift: cc-switch's common config snippet changed since the last
-// snapshot. Returns { appType: true } for each app whose snippet hash differs.
+// Downward drift: cc-switch's common config snippet changed since a given
+// instance last had its settings.json generated (state.instances[appType][id]
+// .commonHash, recorded by recordInstanceBaseline() at prepare time — NOT a
+// single global hash, so syncing plugins for one instance can't silently mark
+// every other instance's common-config drift as resolved).
+// Returns { appType: [providerName, ...] } for each app with stale instances.
 function detectCommonConfigDrift(state) {
   const drift = {};
   for (const adapter of Object.values(APP_ADAPTERS)) {
     const snippet = queryCommonConfig(adapter.appType) || "";
     const hash = sha256(snippet);
-    const prev = state?.commonConfig?.[adapter.appType];
-    if (prev !== undefined && prev !== hash) drift[adapter.appType] = true;
+    const instanceStates = state?.instances?.[adapter.appType] || {};
+    const staleIds = Object.keys(instanceStates).filter(
+      (id) => instanceStates[id]?.commonHash !== undefined && instanceStates[id].commonHash !== hash,
+    );
+    if (!staleIds.length) continue;
+    const nameById = new Map(queryProvidersByApp(adapter.appType).map((p) => [p.id, p.name]));
+    drift[adapter.appType] = staleIds.map((id) => nameById.get(id) || id);
   }
   return drift;
 }
 
-// Record the current state as the sync baseline. common config is always
-// snapshotted (its hash reflects both cc-switch edits and our own write-back);
-// claude's plugin state is snapshotted only after a confirmed plugin sync.
-function snapshotSyncState(state, pluginSyncedCmds) {
-  state.commonConfig = state.commonConfig || {};
-  for (const adapter of Object.values(APP_ADAPTERS)) {
-    const snippet = queryCommonConfig(adapter.appType) || "";
-    state.commonConfig[adapter.appType] = sha256(snippet);
+// Record per-instance provenance right after (re)generating an instance's
+// config, so later drift checks can tell "this instance mirrors the current
+// common config" from "this instance is stale" or "this instance's plugin
+// state was actually edited by the user". Called on every launch, for every
+// app — not just claude/plugins — so codex's commonHash tracking works too.
+// Best-effort: a failure here must never block a launch.
+function recordInstanceBaseline(adapter, providerId, instanceDir, commonSnippet) {
+  try {
+    const state = loadSyncState();
+    state.instances = state.instances || {};
+    state.instances[adapter.appType] = state.instances[adapter.appType] || {};
+    const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
+    if (adapter.readInstancePluginState) {
+      const ep = adapter.readInstancePluginState(instanceDir);
+      if (ep) entry.enabledPlugins = ep;
+    }
+    state.instances[adapter.appType][providerId] = entry;
+    state.version = 2;
+    saveSyncState(state);
+  } catch {
+    // best-effort: DB/disk hiccup — the next launch will retry.
   }
+}
+
+// Record the current state as the sync baseline. Common-config staleness is
+// tracked per instance (see recordInstanceBaseline) and is NOT touched here —
+// confirming a plugin sync must not silently clear an unrelated "restart
+// these instances" prompt. claude's global plugin baseline (installedKeys /
+// enabledPlugins, used by detectPluginDrift's added/removed/toggled diff) is
+// snapshotted only after a confirmed plugin sync.
+function snapshotSyncState(state, pluginSyncedCmds) {
   if (pluginSyncedCmds.includes("claude")) {
-    const { installedKeys } = computeEnabledPluginsPatch();
+    const { installedKeys } = computeEnabledPluginsPatch(state);
     state.claude = state.claude || {};
     state.claude.installedPluginKeys = installedKeys;
     let enabled = {};
@@ -1077,6 +1154,7 @@ function snapshotSyncState(state, pluginSyncedCmds) {
     } catch {}
     state.claude.enabledPlugins = enabled;
   }
+  state.version = 2;
 }
 
 // Interactive yes/no confirm (TUI only). Returns true on "y", false otherwise.
@@ -1102,14 +1180,18 @@ function confirmSync(lines) {
 }
 
 // Entry point: detect common-config + plugin drift, then prompt (TUI) or warn
-// (command mode). Returns { synced, drifted }.
-async function detectAndPromptSync({ tui = false } = {}) {
+// (command mode, unless quiet) or stay silent (quiet — for --sync/--no-sync
+// scripted callers that only care about the return value). Returns
+// { synced, drifted }.
+async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   const state = loadSyncState();
 
-  // First run: no baseline snapshot yet — establish it silently so subsequent
-  // plugin/common-config changes are detectable (don't report existing plugins
-  // as "added" on the very first sync).
-  if (!state?.commonConfig || Object.keys(state.commonConfig).length === 0) {
+  // First run: no plugin baseline yet — establish it silently so subsequent
+  // plugin changes are detectable (don't report existing plugins as "added"
+  // on the very first sync). Common-config staleness needs no such bootstrap:
+  // it's tracked per instance and instances without a recorded baseline are
+  // simply skipped by detectCommonConfigDrift until they're next launched.
+  if (!state?.claude?.installedPluginKeys) {
     snapshotSyncState(state, ["claude"]);
     saveSyncState(state);
     return { synced: false, drifted: false };
@@ -1129,10 +1211,12 @@ async function detectAndPromptSync({ tui = false } = {}) {
   const hasPlugin = Object.keys(pluginDrifts).length > 0;
   if (!hasCommon && !hasPlugin) return { synced: false, drifted: false };
 
+  if (quiet) return { synced: false, drifted: true };
+
   // Build the change summary (dedup added/removed vs toggled).
   const lines = [];
-  for (const appType of Object.keys(commonDrift)) {
-    lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed in cc-switch — restart instances to apply`);
+  for (const [appType, names] of Object.entries(commonDrift)) {
+    lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
   }
   for (const d of Object.values(pluginDrifts)) {
     const changedKeys = new Set([...d.added, ...d.removed]);
@@ -1148,7 +1232,7 @@ async function detectAndPromptSync({ tui = false } = {}) {
     // command mode: non-blocking warning, no write-back.
     process.stderr.write(`\x1b[33m⚠ Config drift detected:\x1b[0m\n`);
     for (const line of lines) process.stderr.write(`  ${line}\n`);
-    process.stderr.write(`  Run \x1b[1mswitch sync\x1b[0m to review and sync.\n`);
+    process.stderr.write(`  Run \x1b[1mswitch sync\x1b[0m (or \x1b[1mswitch --sync\x1b[0m) to review and sync.\n`);
     return { synced: false, drifted: true };
   }
 
@@ -1435,14 +1519,17 @@ async function runTUI() {
 
 // ─── Launch logic ──────────────────────────────────────────────────────
 
-async function launchProvider(cmd, providerName, extraArgs) {
+// syncFlag: null (default) = non-blocking stderr warning if drifted;
+//           "on"  (--sync)    = interactive confirm before launching;
+//           "off" (--no-sync) = fully silent, no warning at all.
+async function launchProvider(cmd, providerName, extraArgs, syncFlag = null) {
   const adapter = APP_ADAPTERS[cmd];
   if (!adapter) {
     console.error(`✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`);
     process.exit(1);
   }
 
-  await detectAndPromptSync({ tui: false });
+  await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
 
   const row = queryProvider(providerName, adapter.appType);
   if (!row) {
@@ -1460,6 +1547,7 @@ async function launchProvider(cmd, providerName, extraArgs) {
 
   const instanceDir = adapter.setupInstance(row.id);
   adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, commonSnippet, settings);
+  recordInstanceBaseline(adapter, row.id, instanceDir, commonSnippet);
   adapter.launch(instanceDir, extraArgs);
 }
 
@@ -1594,6 +1682,8 @@ function printHelp() {
 Usage:
   switch                                 Interactive TUI (select CLI, then provider)
   switch <provider> <cmd> [args...]     Launch a provider directly
+  switch --sync <provider> <cmd> [...]  Same, but confirm config drift first
+  switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
   switch sync                           Detect & sync config drift (plugins, common config)
   switch doctor                         Diagnose the environment
   switch clean [--all]                  Remove instance directories
@@ -1650,6 +1740,15 @@ async function runUpdate() {
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // Leading --sync / --no-sync flag (command mode only). Must be stripped
+  // before any other parsing since the remainder of argv is forwarded
+  // verbatim to the launched CLI (e.g. `claude --continue`) — a flag parsed
+  // anywhere but the front could be mistaken for a CLI argument.
+  let syncFlag = null;
+  while (args.length && (args[0] === "--sync" || args[0] === "--no-sync")) {
+    syncFlag = args.shift() === "--sync" ? "on" : "off";
+  }
 
   if (args.length === 0) {
     try {
@@ -1719,7 +1818,7 @@ async function main() {
   const providerName = args[0];
   const cmd = args[1];
   const extraArgs = args.slice(2);
-  await launchProvider(cmd, providerName, extraArgs);
+  await launchProvider(cmd, providerName, extraArgs, syncFlag);
 }
 
 main().catch((e) => {
