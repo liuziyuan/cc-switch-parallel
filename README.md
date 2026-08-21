@@ -37,7 +37,7 @@ Shows a TUI — first select the CLI tool (claude / codex), then pick a provider
 ### Command mode
 
 ```bash
-switch <provider> <cmd> [args...]
+switch [--sync|--no-sync] <provider> <cmd> [args...]
 ```
 
 Examples:
@@ -45,8 +45,8 @@ Examples:
 ```bash
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
-switch "P&G Nezha" codex
-switch "GitHub Copilot" codex
+switch --sync "Claude Official" claude   # confirm config drift interactively before launching
+switch --no-sync "P&G Nezha" codex       # launch silently, suppress the drift warning
 ```
 
 ### Other commands
@@ -63,10 +63,10 @@ switch --help     # List all commands
 
 `switch` keeps a snapshot (`~/.cc-switch/sync-state.json`) of the config it last saw, and detects two kinds of drift on every launch:
 
-- **Downward** — cc-switch's *common config* (`common_config_claude` / `common_config_codex`) changed in the desktop app. Existing instances still hold the old value, so `switch` warns you to restart them.
-- **Upward** — a plugin/skill was installed, removed, or toggled inside a `switch`-launched Claude session (`/plugin`). `switch` warns you and can write the change back into cc-switch's `common_config_claude.enabledPlugins`.
+- **Downward** — cc-switch's *common config* (`common_config_claude` / `common_config_codex`) changed in the desktop app. Staleness is tracked **per instance**: the warning names exactly which providers still run the old config, and it stays until each one is actually relaunched (confirming an unrelated plugin sync won't clear it).
+- **Upward** — a plugin/skill was installed, removed, or toggled inside a `switch`-launched Claude session (`/plugin`). `switch` warns you and can write the change back into cc-switch's `common_config_claude.enabledPlugins`. When multiple instances disagree, only instances whose plugin state was actually edited get a vote (a stale mirror of the old common config doesn't); among edited instances the most recent change wins.
 
-In **TUI mode** drift is shown before the CLI selector and you can confirm the sync inline. In **command mode** it's a non-blocking warning on stderr — run `switch sync` to review and apply. The first run silently records a baseline, so existing plugins are never reported as "new".
+In **TUI mode** drift is shown before the CLI selector and you can confirm the sync inline. In **command mode** it's a non-blocking warning on stderr — run `switch sync` to review and apply, pass `--sync` to confirm inline before launching, or `--no-sync` to suppress the warning entirely. The first run silently records a baseline, so existing plugins are never reported as "new".
 
 ## How it works
 
@@ -103,7 +103,7 @@ const APP_ADAPTERS = {
 };
 ```
 
-`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Optional `detectPluginDrift` / `syncPluginsBack` (Claude only today) add per-CLI plugin sync.
+`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Optional `detectPluginDrift` / `syncPluginsBack` (Claude only today) add per-CLI plugin sync; optional `readInstancePluginState` lets the per-instance drift baseline record that CLI's plugin state.
 
 ## Requirements
 
