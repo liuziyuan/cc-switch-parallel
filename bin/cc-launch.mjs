@@ -135,6 +135,13 @@ function queryProvider(name, appType) {
   return rows[0] || null;
 }
 
+function queryProviderById(id, appType) {
+  const rows = queryDB(
+    `SELECT id, name, settings_config, category, meta FROM providers WHERE id = ${sqlQuote(id)} AND app_type = ${sqlQuote(appType)} LIMIT 1`,
+  );
+  return rows[0] || null;
+}
+
 function queryProvidersByApp(appType) {
   return queryDB(
     `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
@@ -1095,21 +1102,77 @@ function normalizeInstalledPluginPaths() {
 // .commonHash, recorded by recordInstanceBaseline() at prepare time — NOT a
 // single global hash, so syncing plugins for one instance can't silently mark
 // every other instance's common-config drift as resolved).
-// Returns { appType: [providerName, ...] } for each app with stale instances.
-function detectCommonConfigDrift(state) {
-  const drift = {};
+// Returns { appType: [providerId, ...] } for each app with stale instances.
+function collectStaleInstanceIds(state) {
+  const stale = {};
   for (const adapter of Object.values(APP_ADAPTERS)) {
     const snippet = queryCommonConfig(adapter.appType) || "";
     const hash = sha256(snippet);
     const instanceStates = state?.instances?.[adapter.appType] || {};
-    const staleIds = Object.keys(instanceStates).filter(
+    const ids = Object.keys(instanceStates).filter(
       (id) => instanceStates[id]?.commonHash !== undefined && instanceStates[id].commonHash !== hash,
     );
-    if (!staleIds.length) continue;
-    const nameById = new Map(queryProvidersByApp(adapter.appType).map((p) => [p.id, p.name]));
-    drift[adapter.appType] = staleIds.map((id) => nameById.get(id) || id);
+    if (ids.length) stale[adapter.appType] = ids;
+  }
+  return stale;
+}
+
+// Display-facing view of collectStaleInstanceIds: provider names instead of
+// ids. Returns { appType: [providerName, ...] } for each app with stale
+// instances.
+function detectCommonConfigDrift(state) {
+  const drift = {};
+  for (const [appType, ids] of Object.entries(collectStaleInstanceIds(state))) {
+    const nameById = new Map(queryProvidersByApp(appType).map((p) => [p.id, p.name]));
+    drift[appType] = ids.map((id) => nameById.get(id) || id);
   }
   return drift;
+}
+
+// Regenerate the live config of every stale instance so it mirrors the current
+// common config again — the same setupInstance + prepare a real launch would
+// do, minus actually launching. Baselines are updated in-place on `state`
+// (NOT via recordInstanceBaseline, whose internal load/save would clobber the
+// caller's state object); the caller persists with saveSyncState(). Providers
+// whose DB row is gone get their baseline pruned instead (clean removes the
+// instance dir but historically left the state entry behind). Best-effort per
+// instance: a failure keeps the old baseline so the prompt fires again next
+// time instead of silently hiding the problem. Returns refreshed provider
+// names. Does NOT touch running sessions — they still need a restart to pick
+// up the new config, which is what "restart to apply" in the prompt means.
+function refreshStaleInstances(state, staleByApp) {
+  const refreshed = [];
+  state.instances = state.instances || {};
+  for (const [appType, ids] of Object.entries(staleByApp)) {
+    const adapter = Object.values(APP_ADAPTERS).find((a) => a.appType === appType);
+    if (!adapter) continue;
+    const commonSnippet = queryCommonConfig(appType);
+    const settings = loadSettings();
+    state.instances[appType] = state.instances[appType] || {};
+    for (const id of ids) {
+      const row = queryProviderById(id, appType);
+      if (!row) {
+        delete state.instances[appType][id]; // provider gone — drop the ghost baseline
+        continue;
+      }
+      try {
+        const settingsConfig = JSON.parse(row.settings_config || "{}");
+        const meta = JSON.parse(row.meta || "{}");
+        const instanceDir = adapter.setupInstance(row.id);
+        adapter.prepare(instanceDir, row.id, settingsConfig, meta, row.category, commonSnippet, settings);
+        const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
+        if (adapter.readInstancePluginState) {
+          const ep = adapter.readInstancePluginState(instanceDir);
+          if (ep) entry.enabledPlugins = ep;
+        }
+        state.instances[appType][row.id] = entry;
+        refreshed.push(row.name);
+      } catch {
+        // best-effort: keep the old baseline so the drift stays visible.
+      }
+    }
+  }
+  return refreshed;
 }
 
 // Record per-instance provenance right after (re)generating an instance's
@@ -1138,10 +1201,11 @@ function recordInstanceBaseline(adapter, providerId, instanceDir, commonSnippet)
 
 // Record the current state as the sync baseline. Common-config staleness is
 // tracked per instance (see recordInstanceBaseline) and is NOT touched here —
-// confirming a plugin sync must not silently clear an unrelated "restart
-// these instances" prompt. claude's global plugin baseline (installedKeys /
-// enabledPlugins, used by detectPluginDrift's added/removed/toggled diff) is
-// snapshotted only after a confirmed plugin sync.
+// a confirmed sync resolves it via refreshStaleInstances(), which regenerates
+// each stale instance's config and updates its baseline directly on `state`.
+// claude's global plugin baseline (installedKeys / enabledPlugins, used by
+// detectPluginDrift's added/removed/toggled diff) is snapshotted only after a
+// confirmed plugin sync.
 function snapshotSyncState(state, pluginSyncedCmds) {
   if (pluginSyncedCmds.includes("claude")) {
     const { installedKeys } = computeEnabledPluginsPatch(state);
@@ -1182,7 +1246,8 @@ function confirmSync(lines) {
 // Entry point: detect common-config + plugin drift, then prompt (TUI) or warn
 // (command mode, unless quiet) or stay silent (quiet — for --sync/--no-sync
 // scripted callers that only care about the return value). Returns
-// { synced, drifted }.
+// { synced, drifted, refreshed? } — on a confirmed sync, `refreshed` lists the
+// provider names whose stale live configs were just regenerated in place.
 async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   const state = loadSyncState();
 
@@ -1244,9 +1309,16 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
       APP_ADAPTERS[cmd]?.syncPluginsBack?.(d);
       syncedCmds.push(cmd);
     }
+    // Order matters: the plugin write-back above just changed common_config,
+    // so staleness is recomputed AFTER it. Every stale instance — the ones
+    // flagged before the confirm AND the ones the write-back just made stale —
+    // gets its live config regenerated in place and its baseline refreshed,
+    // so this prompt won't fire again on the next launch. Running sessions
+    // still need a restart to pick up the new config.
+    const refreshed = refreshStaleInstances(state, collectStaleInstanceIds(state));
     snapshotSyncState(state, syncedCmds);
     saveSyncState(state);
-    return { synced: true, drifted: true };
+    return { synced: true, drifted: true, refreshed };
   }
   return { synced: false, drifted: true };
 }
@@ -1575,6 +1647,26 @@ function collectInstances() {
   return instances;
 }
 
+// Drop the drift baselines of removed instance dirs, so stale-instance
+// prompts stop naming providers whose directories are gone (the dir name IS
+// the providerId — see setupInstance). Best-effort: a state-file hiccup must
+// not fail the clean itself.
+function pruneInstanceBaselines(instances) {
+  try {
+    const state = loadSyncState();
+    let changed = false;
+    for (const { name, appType } of instances) {
+      if (state.instances?.[appType]?.[name] !== undefined) {
+        delete state.instances[appType][name];
+        changed = true;
+      }
+    }
+    if (changed) saveSyncState(state);
+  } catch {
+    // best-effort: unreadable state — the ghost entry stays, harmless.
+  }
+}
+
 function runDoctor() {
   const checks = [];
   const add = (label, pass, detail) => checks.push({ label, pass, detail });
@@ -1653,6 +1745,7 @@ async function runClean(args) {
 
   if (args.includes("--all") || args.includes("--yes")) {
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
+    pruneInstanceBaselines(instances);
     console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
     return;
   }
@@ -1669,9 +1762,11 @@ async function runClean(args) {
   const choice = await tuiSelect("Select instance directory to remove", options);
   if (choice.value === "__all__") {
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
+    pruneInstanceBaselines(instances);
     console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
   } else {
     rmSync(choice.value, { recursive: true, force: true });
+    pruneInstanceBaselines(instances.filter((i) => i.path === choice.value));
     console.log(`✓ Removed ${choice.value}`);
   }
 }
@@ -1768,8 +1863,13 @@ async function main() {
   if (args[0] === "sync") {
     const result = await detectAndPromptSync({ tui: true });
     if (!result.drifted) console.log("No config drift detected — everything in sync.");
-    else if (result.synced) console.log("✓ Synced.");
-    else console.log("Skipped — no changes written.");
+    else if (result.synced) {
+      console.log(
+        result.refreshed?.length
+          ? `✓ Synced (refreshed: ${result.refreshed.join(", ")}).`
+          : "✓ Synced.",
+      );
+    } else console.log("Skipped — no changes written.");
     process.exit(0);
     return;
   }
