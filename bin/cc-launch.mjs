@@ -177,22 +177,67 @@ function loadSettings() {
   }
 }
 
-// ─── Launch history (top 5 quick-launch) ───────────────────────────────
+// ─── Launch history (top 5 quick-launch + manual pin ordering) ─────────
 
 const QUICK_KEYS = ["a", "s", "d", "f", "g"];
+
+// Pin identity is the cli+provider pair: pinning happens at the provider
+// layer, before a permission mode (entry-level hotkey) is even chosen.
+const pairId = (cli, provider) => `${cli}|${provider}`;
+
+// `order` is a sparse 5-slot array — a pinned pair id keeps its slot, null
+// slots are filled by natural count/lastUsed ranking. Normalized from any
+// stored value (missing field, dense legacy array, junk entries).
+function normalizeOrder(raw) {
+  const out = [null, null, null, null, null];
+  if (Array.isArray(raw)) raw.slice(0, 5).forEach((v, i) => { if (typeof v === "string") out[i] = v; });
+  return out;
+}
 
 function loadHistory() {
   try {
     const data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
-    return { entries: Array.isArray(data?.entries) ? data.entries : [] };
+    return {
+      entries: Array.isArray(data?.entries) ? data.entries : [],
+      order: normalizeOrder(data?.order),
+    };
   } catch {
-    return { entries: [] };
+    return { entries: [], order: normalizeOrder(undefined) };
   }
+}
+
+// Single write path so the manual order survives entry updates — recordLaunch
+// used to rewrite the file from scratch, which would silently drop pins.
+function saveHistory(entries, order) {
+  atomicWrite(HISTORY_PATH, JSON.stringify({ entries, order }, null, 2));
+}
+
+// Merge pinned slots with the natural count ranking. Pinned pairs occupy their
+// recorded slot; empty slots are filled by unpinned entries, best count first.
+// A pin is pair-level: among multiple permission-mode entries of the same pair,
+// only the strongest (count, lastUsed) shows in the slot and none of them may
+// also appear as a natural filler (no duplicate rows).
+function mergeTop5(entries, order) {
+  const byCount = (a, b) => (b.count - a.count) || (b.lastUsed - a.lastUsed);
+  const valid = order.map((id) =>
+    id && entries.some((e) => pairId(e.cli, e.provider) === id) ? id : null);
+  const pinnedSet = new Set(valid.filter(Boolean));
+  const rep = (id) => entries
+    .filter((e) => pairId(e.cli, e.provider) === id)
+    .sort(byCount)[0];
+  const natural = entries.filter((e) => !pinnedSet.has(pairId(e.cli, e.provider))).sort(byCount);
+  const out = [];
+  let ni = 0;
+  for (let i = 0; i < 5; i++) {
+    if (valid[i]) out.push(rep(valid[i]));
+    else if (ni < natural.length) out.push(natural[ni++]);
+  }
+  return out;
 }
 
 function recordLaunch(cli, providerName, hotkey) {
   try {
-    const { entries } = loadHistory();
+    const { entries, order } = loadHistory();
     const key = `${cli}|${providerName}|${hotkey ?? ""}`;
     const now = Date.now();
     const hit = entries.find((e) => `${e.cli}|${e.provider}|${e.hotkey ?? ""}` === key);
@@ -202,18 +247,48 @@ function recordLaunch(cli, providerName, hotkey) {
     } else {
       entries.push({ cli, provider: providerName, hotkey: hotkey ?? null, count: 1, lastUsed: now });
     }
-    atomicWrite(HISTORY_PATH, JSON.stringify({ entries }, null, 2));
+    // One-shot pin semantics: a real launch releases the pair back to natural ranking.
+    const slot = order.indexOf(pairId(cli, providerName));
+    if (slot >= 0) order[slot] = null;
+    saveHistory(entries, order);
   } catch {
     // history is best-effort; never block launch on it
   }
 }
 
 function top5() {
-  const { entries } = loadHistory();
-  return entries
-    .slice()
-    .sort((a, b) => (b.count - a.count) || (b.lastUsed - a.lastUsed))
-    .slice(0, 5);
+  const { entries, order } = loadHistory();
+  return mergeTop5(entries, order);
+}
+
+// Pin a pair into display slot pos (1-5): materialize the currently displayed
+// list, remove the pair's old position, insert at pos so later items shift
+// down (the old slot 5 drops off), then project back so that only explicitly
+// pinned ids keep holding slots. Returns the effective slot (1-5), or null.
+function insertManualOrder(cli, providerName, pos) {
+  try {
+    const { entries, order } = loadHistory();
+    const id = pairId(cli, providerName);
+    if (!entries.some((e) => pairId(e.cli, e.provider) === id)) {
+      // Placeholder so a never-launched pair can still be pinned. The real
+      // launch will create its own (hotkey-keyed) entry; this one just sits at
+      // count 0 and can never re-enter top5 once released.
+      entries.push({ cli, provider: providerName, hotkey: null, count: 0, lastUsed: 0 });
+    }
+    const displayed = mergeTop5(entries, order)
+      .map((e) => pairId(e.cli, e.provider))
+      .filter((x) => x !== id); // take out own old row first → re-pin moves, not duplicates
+    const idx = Math.min(pos - 1, displayed.length); // clamp when fewer entries than pos
+    displayed.splice(idx, 0, id);
+    const nextOrder = Array(5).fill(null); // always persist the full 5-slot array
+    displayed
+      .slice(0, 5) // whatever falls past slot 5 loses its pin
+      .forEach((x, i) => { nextOrder[i] = (x === id || order.includes(x)) ? x : null; });
+    saveHistory(entries, nextOrder);
+    return idx + 1;
+  } catch {
+    return null;
+  }
 }
 
 function permLabel(hotkey) {
@@ -1331,12 +1406,16 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
 //              number keys jump straight to resolve.
 // quickItems: [{key,label,cli,provider,hotkey}] | undefined  (top5 quick-launch;
 //             pressing key resolves a {quick:true,...} object)
+// pinContext + onPin: enable the `t` key (pin the highlighted option into the
+//             Recent top5 slots). onPin(cliValue, label, pos) must perform the
+//             reorder and return the effective slot 1-5, or null on failure.
 function tuiSelect(prompt, options, optsArg) {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
   const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
   const hotkeys = opts.hotkeys || [];
   const interactive = !!opts.interactive;
   const quickItems = opts.quickItems || [];
+  const pinEnabled = !!opts.pinContext && typeof opts.onPin === "function";
 
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -1345,17 +1424,20 @@ function tuiSelect(prompt, options, optsArg) {
     }
 
     let selected = 0;
-    let mode = "select"; // "select" | "param"
+    let mode = "select"; // "select" | "param" | "pin"
     let lastDrawnLines = 0;
+    let pinTarget = null; // option captured when entering pin mode ({label})
 
     const hasHint = hotkeys.length > 0;
 
-    // Lines for a given mode (without trailing newline).
-    function buildLines(m) {
+    // Lines for a given mode (without trailing newline). notice renders one
+    // extra dim row below the hints — passed per-render, so it disappears on
+    // the next state change without any cleanup bookkeeping.
+    function buildLines(m, notice) {
       const lines = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${prompt}\x1b[0m`);
       lines.push("");
-      const locked = m === "param";
+      const locked = m === "param" || m === "pin";
       // unified navigation space: [0..options.length-1] = options,
       // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
@@ -1375,9 +1457,15 @@ function tuiSelect(prompt, options, optsArg) {
           `  \x1b[1m\x1b[36m${hotkeys.map((h) => `${h.key} ${h.label}`).join("   ")}\x1b[0m`,
         );
         lines.push(`  \x1b[90mesc ← back\x1b[0m`);
+      } else if (m === "pin") {
+        lines.push("");
+        lines.push(
+          `  \x1b[1m\x1b[36mPin "${pinTarget.label}" into Recent top5 · press 1-5   esc cancel\x1b[0m`,
+        );
       } else if (interactive) {
         lines.push("");
-        lines.push(`  \x1b[90m↑↓ navigate   ⏎ confirm   esc ← back to CLI\x1b[0m`);
+        const pinHint = pinEnabled ? `   t pin top5` : "";
+        lines.push(`  \x1b[90m↑↓ navigate   ⏎ confirm${pinHint}   esc ← back to CLI\x1b[0m`);
       } else {
         // CLI layer select mode: optionally show top5 quick-launch region
         if (quickItems.length > 0) {
@@ -1400,14 +1488,18 @@ function tuiSelect(prompt, options, optsArg) {
         const quickHint = quickItems.length > 0 ? `   ${QUICK_KEYS.slice(0, quickItems.length).join("-")} quick launch` : "";
         lines.push(`  \x1b[90m↑↓ navigate   ⏎ or 1-${options.length} select${quickHint}   esc ← exit\x1b[0m`);
       }
+      if (notice) {
+        lines.push("");
+        lines.push(`  \x1b[32m${notice}\x1b[0m`);
+      }
       return lines;
     }
 
-    function render(m) {
+    function render(m, notice) {
       if (lastDrawnLines > 0) {
         process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
       }
-      const lines = buildLines(m);
+      const lines = buildLines(m, notice);
       process.stdout.write(lines.join("\n") + "\n");
       lastDrawnLines = lines.length;
     }
@@ -1444,6 +1536,28 @@ function tuiSelect(prompt, options, optsArg) {
           return;
         }
         return; // ignore arrows/other keys in param mode
+      }
+
+      if (mode === "pin") {
+        // Pin region: pick a slot 1-5, esc cancels. Never launches.
+        if (key === "\x1b") {
+          mode = "select";
+          render(mode);
+          return;
+        }
+        const n = parseInt(key, 10);
+        if (!Number.isNaN(n) && n >= 1 && n <= 5) {
+          const slot = opts.onPin(opts.pinContext, pinTarget.label, n);
+          mode = "select";
+          render(
+            mode,
+            slot
+              ? `✓ Pinned "${pinTarget.label}" to Recent #${slot} — esc back to CLI to see it`
+              : `✗ Pin failed (history write error)`,
+          );
+          return;
+        }
+        return; // ignore Enter/arrows/everything else while pinning
       }
 
       // select mode
@@ -1483,6 +1597,13 @@ function tuiSelect(prompt, options, optsArg) {
       if (qHit) {
         cleanup();
         resolve({ quick: true, cli: qHit.cli, provider: qHit.provider, hotkey: qHit.hotkey });
+        return;
+      }
+      // `t`: pin the highlighted option into the Recent top5 slots
+      if (pinEnabled && key === "t" && selected < options.length) {
+        pinTarget = options[selected];
+        mode = "pin";
+        render(mode);
         return;
       }
       // number key
@@ -1576,6 +1697,8 @@ async function runTUI() {
             { key: "3", label: "Full-auto ⚠" },
           ],
           interactive: true,
+          pinContext: cli.value,
+          onPin: insertManualOrder,
         },
       );
     } catch (e) {
