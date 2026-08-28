@@ -261,6 +261,42 @@ function top5() {
   return mergeTop5(entries, order);
 }
 
+// Which of the given provider names still exist in cc-switch for this app.
+// One IN query per call keeps the TUI snapshot cheap (≤5 names per app).
+// Deliberately NOT queryDB: its silent-catch collapses any sqlite3 failure
+// (missing binary, missing table, locked DB) to [], which here would flag
+// every row dead and trick the user into deleting live entries. Any error
+// must fail open — a missed flag just fails at launch as before.
+function existingProviders(appType, names) {
+  if (names.length === 0) return new Set();
+  let rows;
+  try {
+    const json = execFileSync("sqlite3", ["-json", DB_PATH,
+      `SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)} AND name IN (${names.map(sqlQuote).join(", ")})`,
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    rows = JSON.parse(json || "[]");
+  } catch {
+    return new Set(names);
+  }
+  return new Set(rows.map((r) => r.name));
+}
+
+// Drop every history trace of a pair: all permission-mode entries plus any
+// manual-pin slot it holds. Used by the TUI remove confirm.
+function removeHistoryPair(cli, providerName) {
+  try {
+    const { entries, order } = loadHistory();
+    const id = pairId(cli, providerName);
+    const kept = entries.filter((e) => pairId(e.cli, e.provider) !== id);
+    const slot = order.indexOf(id);
+    if (slot >= 0) order[slot] = null;
+    saveHistory(kept, order);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Pin a pair into display slot pos (1-5): materialize the currently displayed
 // list, remove the pair's old position, insert at pos so later items shift
 // down (the old slot 5 drops off), then project back so that only explicitly
@@ -1404,17 +1440,23 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
 // interactive: when true (provider layer), Enter drills into param region
 //              instead of resolving; esc goes back. When false (CLI layer),
 //              number keys jump straight to resolve.
-// quickItems: [{key,label,cli,provider,hotkey}] | undefined  (top5 quick-launch;
-//             pressing key resolves a {quick:true,...} object)
+// quickItems: [{key,label,cli,provider,hotkey,dead?}] | undefined  (top5 quick-
+//             launch; pressing key resolves a {quick:true,...} object. dead:
+//             provider no longer exists in cc-switch → selectable but not
+//             launchable; Enter/key on it opens the remove confirm.)
 // pinContext + onPin: enable the `t` key (pin the highlighted option into the
 //             Recent top5 slots). onPin(cliValue, label, pos) must perform the
 //             reorder and return the effective slot 1-5, or null on failure.
+// onRemove(cliValue, providerName): persist removal of a pair from Recent
+//             (entries + pin slot); return true on success. The in-memory row
+//             is spliced and remaining rows re-keyed for the rest of the view.
 function tuiSelect(prompt, options, optsArg) {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
   const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
   const hotkeys = opts.hotkeys || [];
   const interactive = !!opts.interactive;
-  const quickItems = opts.quickItems || [];
+  let quickItems = opts.quickItems || []; // mutable: removals re-key live
+  const canRemove = typeof opts.onRemove === "function";
   const pinEnabled = !!opts.pinContext && typeof opts.onPin === "function";
 
   return new Promise((resolve, reject) => {
@@ -1424,9 +1466,10 @@ function tuiSelect(prompt, options, optsArg) {
     }
 
     let selected = 0;
-    let mode = "select"; // "select" | "param" | "pin"
+    let mode = "select"; // "select" | "param" | "pin" | "remove"
     let lastDrawnLines = 0;
     let pinTarget = null; // option captured when entering pin mode ({label})
+    let removeTarget = null; // quick item captured when entering remove confirm
 
     const hasHint = hotkeys.length > 0;
 
@@ -1437,7 +1480,7 @@ function tuiSelect(prompt, options, optsArg) {
       const lines = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${prompt}\x1b[0m`);
       lines.push("");
-      const locked = m === "param" || m === "pin";
+      const locked = m === "param" || m === "pin" || m === "remove";
       // unified navigation space: [0..options.length-1] = options,
       // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
@@ -1462,6 +1505,12 @@ function tuiSelect(prompt, options, optsArg) {
         lines.push(
           `  \x1b[1m\x1b[36mPin "${pinTarget.label}" into Recent top5 · press 1-5   esc cancel\x1b[0m`,
         );
+      } else if (m === "remove") {
+        lines.push("");
+        const head = removeTarget.dead
+          ? `\x1b[31m✗ "${removeTarget.provider}" no longer exists in cc-switch\x1b[0m — remove from Recent?`
+          : `Remove "${removeTarget.provider}" from Recent?`;
+        lines.push(`  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`);
       } else if (interactive) {
         lines.push("");
         const pinHint = pinEnabled ? `   t pin top5` : "";
@@ -1474,19 +1523,23 @@ function tuiSelect(prompt, options, optsArg) {
           for (let i = 0; i < quickItems.length; i++) {
             const q = quickItems[i];
             const isSel = selected === options.length + i;
+            // Provider deleted in cc-switch: keep the row (history + pin may
+            // still be wanted) but flag it red and make it non-launchable.
+            const flag = q.dead ? ` \x1b[31m✗ missing\x1b[0m` : "";
             if (locked) {
               const mark = isSel ? "▸" : " ";
-              lines.push(`  \x1b[90m${mark} ${q.key} ${q.label}\x1b[0m`);
+              lines.push(`  \x1b[90m${mark} ${q.key} ${q.label}\x1b[0m${flag}`);
             } else if (isSel) {
-              lines.push(`\x1b[36m❯ ${q.key} ${q.label}\x1b[0m`);
+              lines.push(`\x1b[36m❯ ${q.key} ${q.label}\x1b[0m${flag}`);
             } else {
-              lines.push(`  \x1b[36m${q.key}\x1b[0m \x1b[90m${q.label}\x1b[0m`);
+              lines.push(`  \x1b[36m${q.key}\x1b[0m \x1b[90m${q.label}\x1b[0m${flag}`);
             }
           }
         }
         lines.push("");
         const quickHint = quickItems.length > 0 ? `   ${QUICK_KEYS.slice(0, quickItems.length).join("-")} quick launch` : "";
-        lines.push(`  \x1b[90m↑↓ navigate   ⏎ or 1-${options.length} select${quickHint}   esc ← exit\x1b[0m`);
+        const removeHint = canRemove && quickItems.length > 0 ? `   x remove` : "";
+        lines.push(`  \x1b[90m↑↓ navigate   ⏎ or 1-${options.length} select${quickHint}${removeHint}   esc ← exit\x1b[0m`);
       }
       if (notice) {
         lines.push("");
@@ -1560,6 +1613,33 @@ function tuiSelect(prompt, options, optsArg) {
         return; // ignore Enter/arrows/everything else while pinning
       }
 
+      if (mode === "remove") {
+        // Confirm region: y removes the pair from Recent (persisted), any
+        // other key — esc, n, arrows — cancels back to select untouched.
+        if (key === "y" || key === "Y") {
+          const ok = opts.onRemove(removeTarget.cli, removeTarget.provider);
+          if (ok) {
+            const idx = quickItems.indexOf(removeTarget);
+            if (idx >= 0) quickItems.splice(idx, 1);
+            quickItems.forEach((q, i) => { q.key = QUICK_KEYS[i]; }); // re-key to fill the gap
+          }
+          const notice = ok
+            ? `✓ Removed "${removeTarget.provider}" from Recent`
+            : `✗ Remove failed (history write error)`;
+          removeTarget = null;
+          mode = "select";
+          if (selected >= options.length + quickItems.length) {
+            selected = Math.max(0, options.length + quickItems.length - 1);
+          }
+          render(mode, notice);
+          return;
+        }
+        removeTarget = null;
+        mode = "select";
+        render(mode);
+        return;
+      }
+
       // select mode
       // esc (bare \x1b) — must check AFTER arrow sequences below in practice,
       // but arrow keys arrive as full \x1b[A / \x1b[B which don't equal bare \x1b.
@@ -1576,9 +1656,16 @@ function tuiSelect(prompt, options, optsArg) {
         return;
       }
       if (key === "\r" || key === "\n") {
-        // If selection is on a quick item, resolve it as quick-launch.
+        // If selection is on a quick item, resolve it as quick-launch —
+        // unless the provider is gone, then offer cleanup instead.
         if (!interactive && quickItems.length > 0 && selected >= options.length) {
           const q = quickItems[selected - options.length];
+          if (q.dead) {
+            removeTarget = q;
+            mode = "remove";
+            render(mode);
+            return;
+          }
           cleanup();
           resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey });
           return;
@@ -1595,8 +1682,22 @@ function tuiSelect(prompt, options, optsArg) {
       // quick-launch key (top5, CLI layer only)
       const qHit = quickItems.find((q) => q.key === key);
       if (qHit) {
+        if (qHit.dead) {
+          selected = options.length + quickItems.indexOf(qHit);
+          removeTarget = qHit;
+          mode = "remove";
+          render(mode);
+          return;
+        }
         cleanup();
         resolve({ quick: true, cli: qHit.cli, provider: qHit.provider, hotkey: qHit.hotkey });
+        return;
+      }
+      // `x`: remove the highlighted quick item from Recent (confirm follows)
+      if (canRemove && key === "x" && quickItems.length > 0 && selected >= options.length) {
+        removeTarget = quickItems[selected - options.length];
+        mode = "remove";
+        render(mode);
         return;
       }
       // `t`: pin the highlighted option into the Recent top5 slots
@@ -1658,16 +1759,29 @@ async function runTUI() {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     // Build top5 quick-launch items from history (empty on first run).
+    // Rows whose provider was deleted in cc-switch stay listed (a manual pin
+    // may still be wanted) but get flagged dead: red ✗, Enter/key offers
+    // cleanup instead of a guaranteed launch failure.
     const recent = top5();
+    const aliveByApp = new Map();
+    for (const e of recent) {
+      const appType = APP_ADAPTERS[e.cli]?.appType;
+      if (!appType || aliveByApp.has(appType)) continue;
+      aliveByApp.set(appType, existingProviders(appType, recent.filter((x) => APP_ADAPTERS[x.cli]?.appType === appType).map((x) => x.provider)));
+    }
     const quickItems = recent.map((e, i) => ({
       key: QUICK_KEYS[i],
       label: `${e.provider} · ${e.cli} · ${permLabel(e.hotkey)}`,
       cli: e.cli,
       provider: e.provider,
       hotkey: e.hotkey ?? undefined,
+      dead: !aliveByApp.get(APP_ADAPTERS[e.cli]?.appType)?.has(e.provider),
     }));
 
-    const cli = await tuiSelect("Select CLI tool", cliOptions, { quickItems });
+    const cli = await tuiSelect("Select CLI tool", cliOptions, {
+      quickItems,
+      onRemove: removeHistoryPair,
+    });
 
     // Quick-launch path: letter key bypasses provider + permission selection.
     if (cli.quick) {
