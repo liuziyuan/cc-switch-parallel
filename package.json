@@ -1,6 +1,6 @@
 {
   "name": "cc-switch-parallel",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Launch Claude Code and Codex with per-provider isolated configs — run multiple providers in parallel terminals without switching",
   "license": "MIT",
   "type": "module",
