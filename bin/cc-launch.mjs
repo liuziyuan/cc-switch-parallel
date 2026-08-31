@@ -148,6 +148,18 @@ function queryProvidersByApp(appType) {
   );
 }
 
+// Same query, but errors PROPAGATE (queryDB's silent-catch collapses any
+// sqlite3 failure — missing binary, missing table, locked DB — to [], which
+// would corrupt callers that must fail open: the v1→v2 history migration
+// (every live entry would be marked dead) and the TUI's alive snapshot
+// (every Recent row would be flagged ✗ missing).
+function queryProvidersStrict(appType) {
+  const json = execFileSync("sqlite3", ["-json", DB_PATH,
+    `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return JSON.parse(json || "[]");
+}
+
 function queryCommonConfig(appType) {
   const key = `common_config_${appType}`;
   const rows = queryDB(`SELECT value FROM settings WHERE key = ${sqlQuote(key)}`);
@@ -181,11 +193,22 @@ function loadSettings() {
 
 const QUICK_KEYS = ["a", "s", "d", "f", "g"];
 
-// Pin identity is the cli+provider pair: pinning happens at the provider
-// layer, before a permission mode (entry-level hotkey) is even chosen.
-const pairId = (cli, provider) => `${cli}|${provider}`;
+// History schema version. 2 = id-keyed entries: {cli, providerId, provider
+// (name kept for display + v0.6 downgrade compat), hotkey, extraArgs, count,
+// lastUsed}. Absent = 1 = the pre-0.7 name-keyed format.
+const HISTORY_VERSION = 2;
 
-// `order` is a sparse 5-slot array — a pinned pair id keeps its slot, null
+// Entry/pin identity: cli + provider id when resolved, cli + stored name for
+// entries whose provider no longer exists (dead rows — the name is their only
+// identifier). order slots hold these key strings.
+const entryKey = (e) => (e.providerId ? `${e.cli}|${e.providerId}` : `${e.cli}|${e.provider}`);
+
+// Set when a migration attempt fails; frozen for the process lifetime. Every
+// write path checks it — saving the empty in-memory history over the file
+// would silently destroy all counts and pins.
+let _historyFrozen = false;
+
+// `order` is a sparse 5-slot array — a pinned entry key keeps its slot, null
 // slots are filled by natural count/lastUsed ranking. Normalized from any
 // stored value (missing field, dense legacy array, junk entries).
 function normalizeOrder(raw) {
@@ -195,37 +218,126 @@ function normalizeOrder(raw) {
 }
 
 function loadHistory() {
+  if (_historyFrozen) return { entries: [], order: normalizeOrder(undefined) };
+  let data;
   try {
-    const data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+    data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+  } catch {
+    return { entries: [], order: normalizeOrder(undefined) }; // no file yet — fresh history
+  }
+  if (data?.version === HISTORY_VERSION) {
     return {
       entries: Array.isArray(data?.entries) ? data.entries : [],
       order: normalizeOrder(data?.order),
     };
+  }
+  // v1 (name-keyed) or unknown — migrate once, in place. Nothing is dropped:
+  // names that no longer resolve become providerId:null dead rows headed for
+  // the `c` cleanup, not silent deletions.
+  let migrated;
+  try {
+    migrated = migrateHistory(data);
   } catch {
+    _historyFrozen = true; // DB unavailable — never risk overwriting v1 data
     return { entries: [], order: normalizeOrder(undefined) };
   }
+  try {
+    // Narrow the concurrent-migration window: another switch process may have
+    // migrated meanwhile; only persist when the file is still pre-v2.
+    const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+    if (cur?.version !== HISTORY_VERSION) saveHistory(migrated.entries, migrated.order);
+  } catch {
+    // unreadable now — keep the migrated view in memory only
+  }
+  return migrated;
+}
+
+// One-time v1→v2: resolve entry names to provider ids via the cc-switch DB.
+// Strict DB access (errors propagate → loadHistory freezes writes) so a
+// locked DB can't downgrade every live entry to a dead row.
+function migrateHistory(data) {
+  const entries = (Array.isArray(data?.entries) ? data.entries : [])
+    .filter((e) => e && typeof e.cli === "string" && typeof e.provider === "string");
+  const appTypes = new Set();
+  for (const e of entries) {
+    const t = APP_ADAPTERS[e.cli]?.appType;
+    if (t) appTypes.add(t);
+  }
+  const idByName = new Map(); // `appType|name` → id, first wins (queryProvider's ORDER BY id semantics)
+  for (const appType of appTypes) {
+    for (const p of queryProvidersStrict(appType)) {
+      const k = `${appType}|${p.name}`;
+      if (!idByName.has(k)) idByName.set(k, p.id);
+    }
+  }
+  const keyMap = new Map(); // old `cli|name` order-slot ids → new entryKey form
+  for (const e of entries) {
+    e.providerId = idByName.get(`${APP_ADAPTERS[e.cli]?.appType}|${e.provider}`) ?? null;
+    if (!Array.isArray(e.extraArgs)) e.extraArgs = [];
+    keyMap.set(`${e.cli}|${e.provider}`, entryKey(e));
+  }
+  const order = normalizeOrder(data?.order).map((slot) => (slot && keyMap.has(slot) ? keyMap.get(slot) : null));
+  return { entries, order };
 }
 
 // Single write path so the manual order survives entry updates — recordLaunch
 // used to rewrite the file from scratch, which would silently drop pins.
 function saveHistory(entries, order) {
-  atomicWrite(HISTORY_PATH, JSON.stringify({ entries, order }, null, 2));
+  atomicWrite(HISTORY_PATH, JSON.stringify({ version: HISTORY_VERSION, entries, order }, null, 2));
 }
 
-// Merge pinned slots with the natural count ranking. Pinned pairs occupy their
-// recorded slot; empty slots are filled by unpinned entries, best count first.
-// A pin is pair-level: among multiple permission-mode entries of the same pair,
-// only the strongest (count, lastUsed) shows in the slot and none of them may
-// also appear as a natural filler (no duplicate rows).
-function mergeTop5(entries, order) {
-  const byCount = (a, b) => (b.count - a.count) || (b.lastUsed - a.lastUsed);
+// A row is dead when its provider no longer exists in cc-switch: entries with
+// a resolved id check the live id set (a rename keeps the id → stays alive);
+// id-less pre-migration entries are dead by definition (their name didn't
+// resolve). A missing snapshot (cli unknown or DB unavailable) means "all
+// alive" — fail open, same stance as the old existingProviders.
+function isDeadEntry(e, aliveByCli) {
+  const snap = aliveByCli?.get(e.cli);
+  if (!snap) return false;
+  return e.providerId ? !snap.idSet.has(e.providerId) : true;
+}
+
+// Per-CLI alive snapshot for the TUI: cli → {idSet, nameById} | null. null =
+// DB unavailable → treat everything as alive (fail open). One full-table
+// query per CLI replaces the old per-call existence IN query and also feeds
+// display names, so renames surface without touching history.
+function snapshotAliveByCli() {
+  const byCli = new Map();
+  for (const [value, adapter] of Object.entries(APP_ADAPTERS)) {
+    try {
+      const rows = queryProvidersStrict(adapter.appType);
+      byCli.set(value, {
+        idSet: new Set(rows.map((r) => r.id)),
+        nameById: new Map(rows.map((r) => [r.id, r.name])),
+      });
+    } catch {
+      byCli.set(value, null);
+    }
+  }
+  return byCli;
+}
+
+// Merge pinned slots with the natural count ranking. Rows are deduped per
+// pair: among a pair's permission-mode entries only the strongest
+// (count, lastUsed) shows — pinned in its slot, never again as a natural
+// filler. Dead rows rank after live ones, so they only surface when live rows
+// can't fill all 5 slots; pinned slots keep dead rows (the user's explicit
+// placement wins, flagged red for cleanup).
+function mergeTop5(entries, order, aliveByCli) {
   const valid = order.map((id) =>
-    id && entries.some((e) => pairId(e.cli, e.provider) === id) ? id : null);
+    id && entries.some((e) => entryKey(e) === id) ? id : null);
   const pinnedSet = new Set(valid.filter(Boolean));
-  const rep = (id) => entries
-    .filter((e) => pairId(e.cli, e.provider) === id)
-    .sort(byCount)[0];
-  const natural = entries.filter((e) => !pinnedSet.has(pairId(e.cli, e.provider))).sort(byCount);
+  const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
+  const byStrength = (a, b) => (liveness(b) - liveness(a)) || (b.count - a.count) || (b.lastUsed - a.lastUsed);
+  const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(byStrength)[0];
+  const seen = new Set();
+  const natural = [];
+  for (const e of [...entries].sort(byStrength)) {
+    const k = entryKey(e);
+    if (pinnedSet.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    natural.push(e);
+  }
   const out = [];
   let ni = 0;
   for (let i = 0; i < 5; i++) {
@@ -235,96 +347,137 @@ function mergeTop5(entries, order) {
   return out;
 }
 
-function recordLaunch(cli, providerName, hotkey) {
+// Pins are persistent: only an explicit unpin (or removing the pair) releases
+// a slot — a real launch never does. Launches update count/lastUsed/extraArgs
+// and follow renames so the stored display name never goes stale.
+function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
+  if (_historyFrozen) return;
   try {
     const { entries, order } = loadHistory();
-    const key = `${cli}|${providerName}|${hotkey ?? ""}`;
     const now = Date.now();
-    const hit = entries.find((e) => `${e.cli}|${e.provider}|${e.hotkey ?? ""}` === key);
+    const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
     if (hit) {
       hit.count = (hit.count || 0) + 1;
       hit.lastUsed = now;
+      hit.provider = providerName;
+      hit.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
     } else {
-      entries.push({ cli, provider: providerName, hotkey: hotkey ?? null, count: 1, lastUsed: now });
+      entries.push({
+        cli, providerId, provider: providerName, hotkey: hotkey ?? null,
+        extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
+      });
     }
-    // One-shot pin semantics: a real launch releases the pair back to natural ranking.
-    const slot = order.indexOf(pairId(cli, providerName));
-    if (slot >= 0) order[slot] = null;
     saveHistory(entries, order);
   } catch {
     // history is best-effort; never block launch on it
   }
 }
 
-function top5() {
+function top5(aliveByCli) {
   const { entries, order } = loadHistory();
-  return mergeTop5(entries, order);
+  return mergeTop5(entries, order, aliveByCli);
 }
 
-// Which of the given provider names still exist in cc-switch for this app.
-// One IN query per call keeps the TUI snapshot cheap (≤5 names per app).
-// Deliberately NOT queryDB: its silent-catch collapses any sqlite3 failure
-// (missing binary, missing table, locked DB) to [], which here would flag
-// every row dead and trick the user into deleting live entries. Any error
-// must fail open — a missed flag just fails at launch as before.
-function existingProviders(appType, names) {
-  if (names.length === 0) return new Set();
-  let rows;
+// Release a pin slot (idempotent — unpinning an unpinned pair is a no-op).
+// The entry itself stays and returns to natural ranking. Returns the updated
+// top5 rows so the caller can refresh its view in place, or null on failure.
+function unpinPair(key, aliveByCli) {
+  if (_historyFrozen) return null;
   try {
-    const json = execFileSync("sqlite3", ["-json", DB_PATH,
-      `SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)} AND name IN (${names.map(sqlQuote).join(", ")})`,
-    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    rows = JSON.parse(json || "[]");
+    const { entries, order } = loadHistory();
+    const slot = order.indexOf(key);
+    if (slot >= 0) {
+      order[slot] = null;
+      saveHistory(entries, order);
+    }
+    return mergeTop5(entries, order, aliveByCli);
   } catch {
-    return new Set(names);
+    return null;
   }
-  return new Set(rows.map((r) => r.name));
 }
 
 // Drop every history trace of a pair: all permission-mode entries plus any
-// manual-pin slot it holds. Used by the TUI remove confirm.
-function removeHistoryPair(cli, providerName) {
+// manual-pin slot it holds. Used by the TUI remove confirm. Returns the
+// updated top5 rows, or null on failure.
+function removeHistoryPair(key, aliveByCli) {
+  if (_historyFrozen) return null;
   try {
     const { entries, order } = loadHistory();
-    const id = pairId(cli, providerName);
-    const kept = entries.filter((e) => pairId(e.cli, e.provider) !== id);
-    const slot = order.indexOf(id);
+    const kept = entries.filter((e) => entryKey(e) !== key);
+    const slot = order.indexOf(key);
     if (slot >= 0) order[slot] = null;
     saveHistory(kept, order);
-    return true;
+    return mergeTop5(kept, order, aliveByCli);
   } catch {
-    return false;
+    return null;
+  }
+}
+
+// Bulk `c` cleanup: drop every dead entry in the WHOLE history (not just the
+// visible 5 rows — otherwise each cleanup would just reveal another dead
+// natural-filler row). Stale order slots need no handling here: mergeTop5's
+// valid check drops keys with no remaining entry. Returns rows removed, or
+// -1 on failure.
+function removeAllDeadPairs(aliveByCli) {
+  if (_historyFrozen) return -1;
+  try {
+    const { entries, order } = loadHistory();
+    const kept = entries.filter((e) => !isDeadEntry(e, aliveByCli));
+    if (kept.length === entries.length) return 0;
+    saveHistory(kept, order);
+    return entries.length - kept.length;
+  } catch {
+    return -1;
   }
 }
 
 // Pin a pair into display slot pos (1-5): materialize the currently displayed
 // list, remove the pair's old position, insert at pos so later items shift
 // down (the old slot 5 drops off), then project back so that only explicitly
-// pinned ids keep holding slots. Returns the effective slot (1-5), or null.
-function insertManualOrder(cli, providerName, pos) {
+// pinned keys keep holding slots. item = {cli, providerId, provider}. Returns
+// the effective slot (1-5), or null on failure.
+function insertManualOrder(item, pos, aliveByCli) {
+  if (_historyFrozen) return null;
   try {
     const { entries, order } = loadHistory();
-    const id = pairId(cli, providerName);
-    if (!entries.some((e) => pairId(e.cli, e.provider) === id)) {
-      // Placeholder so a never-launched pair can still be pinned. The real
-      // launch will create its own (hotkey-keyed) entry; this one just sits at
-      // count 0 and can never re-enter top5 once released.
-      entries.push({ cli, provider: providerName, hotkey: null, count: 0, lastUsed: 0 });
+    const key = entryKey(item);
+    if (!entries.some((e) => entryKey(e) === key)) {
+      // Placeholder so a never-launched pair can still be pinned. A real
+      // launch will create its own (hotkey-keyed) entry; this one just sits
+      // at count 0 and ranks last until then.
+      entries.push({
+        cli: item.cli, providerId: item.providerId ?? null, provider: item.provider,
+        hotkey: null, extraArgs: [], count: 0, lastUsed: 0,
+      });
     }
-    const displayed = mergeTop5(entries, order)
-      .map((e) => pairId(e.cli, e.provider))
-      .filter((x) => x !== id); // take out own old row first → re-pin moves, not duplicates
+    const displayed = mergeTop5(entries, order, aliveByCli)
+      .map((e) => entryKey(e))
+      .filter((x) => x !== key); // take out own old row first → re-pin moves, not duplicates
     const idx = Math.min(pos - 1, displayed.length); // clamp when fewer entries than pos
-    displayed.splice(idx, 0, id);
+    displayed.splice(idx, 0, key);
     const nextOrder = Array(5).fill(null); // always persist the full 5-slot array
     displayed
       .slice(0, 5) // whatever falls past slot 5 loses its pin
-      .forEach((x, i) => { nextOrder[i] = (x === id || order.includes(x)) ? x : null; });
+      .forEach((x, i) => { nextOrder[i] = (x === key || order.includes(x)) ? x : null; });
     saveHistory(entries, nextOrder);
     return idx + 1;
   } catch {
     return null;
   }
+}
+
+// Compact relative age for Recent rows. count-0 pin placeholders carry
+// lastUsed 0 — that's "never", not "55 years ago".
+function relTime(ts) {
+  const t = typeof ts === "number" && ts > 0 ? ts : 0;
+  if (!t) return "never";
+  const s = Math.max(0, Date.now() - t) / 1000;
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)}d`;
+  const d = new Date(t);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 function permLabel(hotkey) {
@@ -981,6 +1134,18 @@ const APP_ADAPTERS = {
       return [];
     },
 
+    // Reverse of permissionArgs for history recording: which permission mode
+    // (if any) the forwarded argv carries. Contract: returns undefined when no
+    // permission flag is present — never "1"/default, or the same launch would
+    // fork two history entries.
+    inferHotkeyFromArgs(args) {
+      if (args.includes("--dangerously-skip-permissions")) return "3";
+      const i = args.indexOf("--permission-mode");
+      if (i >= 0 && args[i + 1] === "acceptEdits") return "2";
+      if (args.includes("--permission-mode=acceptEdits")) return "2";
+      return undefined;
+    },
+
     // Read the enabledPlugins this instance's settings.json currently holds
     // (used by recordInstanceBaseline() to snapshot per-instance provenance).
     readInstancePluginState(instanceDir) {
@@ -1067,6 +1232,13 @@ const APP_ADAPTERS = {
       if (hotkey === "2") return ["--approve-for-me"];
       if (hotkey === "3") return ["--dangerously-bypass-approvals-and-sandbox"];
       return [];
+    },
+
+    // See the claude adapter for the contract (undefined = no permission flag).
+    inferHotkeyFromArgs(args) {
+      if (args.includes("--dangerously-bypass-approvals-and-sandbox")) return "3";
+      if (args.includes("--approve-for-me")) return "2";
+      return undefined;
     },
   },
 };
@@ -1440,24 +1612,36 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
 // interactive: when true (provider layer), Enter drills into param region
 //              instead of resolving; esc goes back. When false (CLI layer),
 //              number keys jump straight to resolve.
-// quickItems: [{key,label,cli,provider,hotkey,dead?}] | undefined  (top5 quick-
-//             launch; pressing key resolves a {quick:true,...} object. dead:
-//             provider no longer exists in cc-switch → selectable but not
-//             launchable; Enter/key on it opens the remove confirm.)
-// pinContext + onPin: enable the `t` key (pin the highlighted option into the
-//             Recent top5 slots). onPin(cliValue, label, pos) must perform the
-//             reorder and return the effective slot 1-5, or null on failure.
-// onRemove(cliValue, providerName): persist removal of a pair from Recent
-//             (entries + pin slot); return true on success. The in-memory row
-//             is spliced and remaining rows re-keyed for the rest of the view.
+// quickItems: [{key,label,cli,providerId,provider,hotkey,extraArgs,pairKey,
+//               dead,pinned}] | undefined  (top5 quick-launch; pressing the
+//               key resolves a {quick:true,...} object. dead: provider no
+//               longer exists in cc-switch → selectable but not launchable;
+//               Enter/key on it opens the remove confirm. pinned: row holds a
+//               manual top5 slot → `*` marker + `u` unpin.)
+// pinContext + onPin (provider layer): `t` pins the highlighted option into
+//               the Recent top5 slots. onPin(item, pos) with item =
+//               {cli, providerId, provider}; returns the effective slot 1-5,
+//               or null on failure.
+// quickPin + onPin/onUnpin/onRemove/onCleanup (CLI layer): `t`/`u`/`x`/`c` on
+//               the Recent region. quickPin is deliberately separate from
+//               pinContext so a CLI-layer `t` can never capture a plain CLI
+//               option (e.g. "claude") as a pin target.
+// onRefreshQuickItems(): rebuild quickItems after any history mutation so the
+//               shown order/dead/pinned state matches disk. Newly surfaced
+//               natural-filler rows need their dead flag from the caller's
+//               alive snapshot — tuiSelect itself has no DB access.
 function tuiSelect(prompt, options, optsArg) {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
   const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
   const hotkeys = opts.hotkeys || [];
   const interactive = !!opts.interactive;
-  let quickItems = opts.quickItems || []; // mutable: removals re-key live
+  let quickItems = opts.quickItems || []; // mutable: refreshed after mutations
   const canRemove = typeof opts.onRemove === "function";
-  const pinEnabled = !!opts.pinContext && typeof opts.onPin === "function";
+  const canCleanup = typeof opts.onCleanup === "function";
+  const canUnpin = typeof opts.onUnpin === "function";
+  const pinOptions = !!opts.pinContext && typeof opts.onPin === "function"; // provider layer
+  const pinQuick = !!opts.quickPin && typeof opts.onPin === "function"; // CLI layer
+  const refreshQuick = typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
 
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -1466,55 +1650,94 @@ function tuiSelect(prompt, options, optsArg) {
     }
 
     let selected = 0;
-    let mode = "select"; // "select" | "param" | "pin" | "remove"
+    let mode = "select"; // "select" | "param" | "pin" | "confirm"
     let lastDrawnLines = 0;
-    let pinTarget = null; // option captured when entering pin mode ({label})
-    let removeTarget = null; // quick item captured when entering remove confirm
+    let pinTarget = null; // {cli, providerId, provider, label} captured entering pin mode
+    let confirmAction = null; // {kind:"remove"|"cleanup"|"launch", target} in confirm mode
 
     const hasHint = hotkeys.length > 0;
+
+    const navTotal = () => options.length + quickItems.length;
+    // After any quickItems mutation (refresh/cleanup): an out-of-range
+    // selected index would crash the Enter path (`q.dead` on undefined) with
+    // raw mode still on — the terminal would hang.
+    function clampSelected() {
+      if (selected >= navTotal()) selected = Math.max(0, navTotal() - 1);
+    }
+    function refreshQuickItems() {
+      if (!refreshQuick) return;
+      quickItems = refreshQuick() || [];
+      clampSelected();
+    }
+
+    // ANSI redraw counts LINES — a soft-wrapped row would leave ghosts on
+    // every repaint. Keep generated text within the terminal width (CJK
+    // counted double, matching most terminal renderers).
+    function fit(str, pad) {
+      const cols = (process.stdout.columns || 80) - pad;
+      let w = 0;
+      let out = "";
+      for (const ch of str) {
+        const cw = ch.codePointAt(0) > 0xff ? 2 : 1;
+        if (w + cw > cols - 1) return out + "…";
+        w += cw;
+        out += ch;
+      }
+      return out;
+    }
 
     // Lines for a given mode (without trailing newline). notice renders one
     // extra dim row below the hints — passed per-render, so it disappears on
     // the next state change without any cleanup bookkeeping.
     function buildLines(m, notice) {
       const lines = [];
-      lines.push(`\x1b[1m\x1b[36m◆ ${prompt}\x1b[0m`);
+      lines.push(`\x1b[1m\x1b[36m◆ ${fit(prompt, 4)}\x1b[0m`);
       lines.push("");
-      const locked = m === "param" || m === "pin" || m === "remove";
+      const locked = m === "param" || m === "pin" || m === "confirm";
       // unified navigation space: [0..options.length-1] = options,
       // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
         const num = String(i + 1);
         if (locked) {
           const mark = i === selected ? "▸" : " ";
-          lines.push(`\x1b[90m${mark} ${num} ${options[i].label}\x1b[0m`);
+          lines.push(`\x1b[90m${mark} ${num} ${fit(options[i].label, 8)}\x1b[0m`);
         } else if (i === selected) {
-          lines.push(`\x1b[36m❯ ${num} ${options[i].label}\x1b[0m`);
+          lines.push(`\x1b[36m❯ ${num} ${fit(options[i].label, 8)}\x1b[0m`);
         } else {
-          lines.push(`\x1b[90m  ${num} ${options[i].label}\x1b[0m`);
+          lines.push(`\x1b[90m  ${num} ${fit(options[i].label, 8)}\x1b[0m`);
         }
       }
       if (m === "param") {
         lines.push("");
         lines.push(
-          `  \x1b[1m\x1b[36m${hotkeys.map((h) => `${h.key} ${h.label}`).join("   ")}\x1b[0m`,
+          `  \x1b[1m\x1b[36m${fit(hotkeys.map((h) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
         );
         lines.push(`  \x1b[90mesc ← back\x1b[0m`);
       } else if (m === "pin") {
         lines.push("");
         lines.push(
-          `  \x1b[1m\x1b[36mPin "${pinTarget.label}" into Recent top5 · press 1-5   esc cancel\x1b[0m`,
+          `  \x1b[1m\x1b[36m${fit(`Pin "${pinTarget.label}" into Recent top5 · press 1-5   esc cancel`, 4)}\x1b[0m`,
         );
-      } else if (m === "remove") {
+      } else if (m === "confirm") {
         lines.push("");
-        const head = removeTarget.dead
-          ? `\x1b[31m✗ "${removeTarget.provider}" no longer exists in cc-switch\x1b[0m — remove from Recent?`
-          : `Remove "${removeTarget.provider}" from Recent?`;
+        const { kind, target } = confirmAction;
+        let head;
+        if (kind === "launch") {
+          // One keypress away from --dangerously-skip-permissions — the only
+          // confirm in the TUI that guards a launch rather than a deletion.
+          head = `\x1b[33m⚠ "${target.provider}" would launch Full-auto (--dangerously-skip-permissions)\x1b[0m — launch?`;
+        } else if (kind === "cleanup") {
+          head = `Remove ${target.count} dead ${target.count === 1 ? "entry" : "entries"} from Recent?`;
+        } else if (target.dead) {
+          head = `\x1b[31m✗ "${target.provider}" no longer exists in cc-switch\x1b[0m — remove from Recent?`;
+        } else {
+          head = `Remove "${target.provider}" from Recent?`;
+        }
         lines.push(`  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`);
       } else if (interactive) {
         lines.push("");
-        const pinHint = pinEnabled ? `   t pin top5` : "";
-        lines.push(`  \x1b[90m↑↓ navigate   ⏎ confirm${pinHint}   esc ← back to CLI\x1b[0m`);
+        const pinHint = pinOptions ? `   t pin top5` : "";
+        lines.push(`  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}   esc ← back to CLI`, 4)}\x1b[0m`);
       } else {
         // CLI layer select mode: optionally show top5 quick-launch region
         if (quickItems.length > 0) {
@@ -1525,25 +1748,43 @@ function tuiSelect(prompt, options, optsArg) {
             const isSel = selected === options.length + i;
             // Provider deleted in cc-switch: keep the row (history + pin may
             // still be wanted) but flag it red and make it non-launchable.
-            const flag = q.dead ? ` \x1b[31m✗ missing\x1b[0m` : "";
+            // A pinned row keeps its manual slot — marked `*` so a persistent
+            // pin never reads as "the ranking is broken".
+            const flag = q.dead ? `\x1b[31m ✗ missing\x1b[0m` : "";
+            const pin = q.pinned ? "*" : " ";
+            const text = fit(`${q.key} ${pin}${q.label}`, 6);
             if (locked) {
               const mark = isSel ? "▸" : " ";
-              lines.push(`  \x1b[90m${mark} ${q.key} ${q.label}\x1b[0m${flag}`);
+              lines.push(`  \x1b[90m${mark} ${text}\x1b[0m${flag}`);
             } else if (isSel) {
-              lines.push(`\x1b[36m❯ ${q.key} ${q.label}\x1b[0m${flag}`);
+              lines.push(`\x1b[36m❯ ${text}\x1b[0m${flag}`);
             } else {
-              lines.push(`  \x1b[36m${q.key}\x1b[0m \x1b[90m${q.label}\x1b[0m${flag}`);
+              lines.push(`  \x1b[36m${text.slice(0, 1)}\x1b[0m \x1b[90m${text.slice(2)}\x1b[0m${flag}`);
             }
           }
         }
         lines.push("");
-        const quickHint = quickItems.length > 0 ? `   ${QUICK_KEYS.slice(0, quickItems.length).join("-")} quick launch` : "";
-        const removeHint = canRemove && quickItems.length > 0 ? `   x remove` : "";
-        lines.push(`  \x1b[90m↑↓ navigate   ⏎ or 1-${options.length} select${quickHint}${removeHint}   esc ← exit\x1b[0m`);
+        // Context-sensitive hints: only the keys that apply where the cursor
+        // is, and short enough that the full key list (with t/u/x/c active)
+        // still fits an 80-col terminal without soft-wrapping.
+        const parts = ["↑↓ nav"];
+        if (quickItems.length === 0 || selected < options.length) {
+          parts.push(`⏎/1-${options.length} sel`);
+        }
+        if (quickItems.length > 0) parts.push(`${QUICK_KEYS[0]}-${QUICK_KEYS[quickItems.length - 1]} quick`);
+        if (quickItems.length > 0 && selected >= options.length) {
+          if (pinQuick) parts.push("t pin");
+          if (canUnpin && quickItems[selected - options.length]?.pinned) parts.push("u unpin");
+          if (canRemove) parts.push("x rm");
+        }
+        const deadCount = quickItems.filter((q) => q.dead).length;
+        if (canCleanup && deadCount > 0) parts.push("c clean dead");
+        parts.push("esc exit");
+        lines.push(`  \x1b[90m${fit(parts.join("   "), 4)}\x1b[0m`);
       }
       if (notice) {
         lines.push("");
-        lines.push(`  \x1b[32m${notice}\x1b[0m`);
+        lines.push(`  \x1b[32m${fit(notice, 4)}\x1b[0m`);
       }
       return lines;
     }
@@ -1600,12 +1841,17 @@ function tuiSelect(prompt, options, optsArg) {
         }
         const n = parseInt(key, 10);
         if (!Number.isNaN(n) && n >= 1 && n <= 5) {
-          const slot = opts.onPin(opts.pinContext, pinTarget.label, n);
+          const slot = opts.onPin(pinTarget, n);
           mode = "select";
+          // CLI layer stays put after pinning — refresh so the new order is
+          // visible immediately; the provider layer re-enters via esc anyway.
+          if (slot && !interactive) refreshQuickItems();
           render(
             mode,
             slot
-              ? `✓ Pinned "${pinTarget.label}" to Recent #${slot} — esc back to CLI to see it`
+              ? (interactive
+                ? `✓ Pinned "${pinTarget.label}" to Recent #${slot} — esc back to CLI to see it`
+                : `✓ Pinned "${pinTarget.label}" to Recent #${slot}`)
               : `✗ Pin failed (history write error)`,
           );
           return;
@@ -1613,28 +1859,35 @@ function tuiSelect(prompt, options, optsArg) {
         return; // ignore Enter/arrows/everything else while pinning
       }
 
-      if (mode === "remove") {
-        // Confirm region: y removes the pair from Recent (persisted), any
-        // other key — esc, n, arrows — cancels back to select untouched.
+      if (mode === "confirm") {
+        // Confirm region: y executes the pending action, any other key —
+        // esc, n, arrows — cancels back to select untouched.
         if (key === "y" || key === "Y") {
-          const ok = opts.onRemove(removeTarget.cli, removeTarget.provider);
-          if (ok) {
-            const idx = quickItems.indexOf(removeTarget);
-            if (idx >= 0) quickItems.splice(idx, 1);
-            quickItems.forEach((q, i) => { q.key = QUICK_KEYS[i]; }); // re-key to fill the gap
-          }
-          const notice = ok
-            ? `✓ Removed "${removeTarget.provider}" from Recent`
-            : `✗ Remove failed (history write error)`;
-          removeTarget = null;
+          const { kind, target } = confirmAction;
+          confirmAction = null;
           mode = "select";
-          if (selected >= options.length + quickItems.length) {
-            selected = Math.max(0, options.length + quickItems.length - 1);
+          if (kind === "launch") {
+            cleanup();
+            resolve({ quick: true, cli: target.cli, provider: target.provider, hotkey: target.hotkey, extraArgs: target.extraArgs });
+            return;
           }
-          render(mode, notice);
+          if (kind === "cleanup") {
+            const removed = opts.onCleanup();
+            if (removed > 0) refreshQuickItems();
+            render(
+              mode,
+              removed >= 0
+                ? `✓ Removed ${removed} dead ${removed === 1 ? "entry" : "entries"} from Recent`
+                : `✗ Cleanup failed (history write error)`,
+            );
+            return;
+          }
+          const ok = opts.onRemove(target.pairKey) !== null;
+          if (ok) refreshQuickItems();
+          render(mode, ok ? `✓ Removed "${target.provider}" from Recent` : `✗ Remove failed (history write error)`);
           return;
         }
-        removeTarget = null;
+        confirmAction = null;
         mode = "select";
         render(mode);
         return;
@@ -1644,30 +1897,42 @@ function tuiSelect(prompt, options, optsArg) {
       // esc (bare \x1b) — must check AFTER arrow sequences below in practice,
       // but arrow keys arrive as full \x1b[A / \x1b[B which don't equal bare \x1b.
       // Unified navigation space: options + quickItems (CLI layer only).
-      const navTotal = options.length + quickItems.length;
       if (key === "\x1b[A" || key === "k") {
-        selected = (selected - 1 + navTotal) % navTotal;
+        selected = (selected - 1 + navTotal()) % navTotal();
         render(mode);
         return;
       }
       if (key === "\x1b[B" || key === "j") {
-        selected = (selected + 1) % navTotal;
+        selected = (selected + 1) % navTotal();
         render(mode);
         return;
       }
+      // Resolve a quick item: dead rows offer cleanup, Full-auto rows ask for
+      // explicit confirmation (one keypress = --dangerously-skip-permissions),
+      // everything else launches immediately. Dead wins over the Full-auto
+      // confirm — that launch is guaranteed to fail anyway.
+      const tryQuick = (q) => {
+        selected = options.length + Math.max(0, quickItems.indexOf(q));
+        if (q.dead) {
+          confirmAction = { kind: "remove", target: q };
+          mode = "confirm";
+          render(mode);
+          return;
+        }
+        if (q.hotkey === "3") {
+          confirmAction = { kind: "launch", target: q };
+          mode = "confirm";
+          render(mode);
+          return;
+        }
+        cleanup();
+        resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey, extraArgs: q.extraArgs });
+      };
       if (key === "\r" || key === "\n") {
         // If selection is on a quick item, resolve it as quick-launch —
         // unless the provider is gone, then offer cleanup instead.
         if (!interactive && quickItems.length > 0 && selected >= options.length) {
-          const q = quickItems[selected - options.length];
-          if (q.dead) {
-            removeTarget = q;
-            mode = "remove";
-            render(mode);
-            return;
-          }
-          cleanup();
-          resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey });
+          tryQuick(quickItems[selected - options.length]);
           return;
         }
         if (interactive && hasHint) {
@@ -1682,27 +1947,52 @@ function tuiSelect(prompt, options, optsArg) {
       // quick-launch key (top5, CLI layer only)
       const qHit = quickItems.find((q) => q.key === key);
       if (qHit) {
-        if (qHit.dead) {
-          selected = options.length + quickItems.indexOf(qHit);
-          removeTarget = qHit;
-          mode = "remove";
-          render(mode);
-          return;
-        }
-        cleanup();
-        resolve({ quick: true, cli: qHit.cli, provider: qHit.provider, hotkey: qHit.hotkey });
+        tryQuick(qHit);
         return;
       }
       // `x`: remove the highlighted quick item from Recent (confirm follows)
       if (canRemove && key === "x" && quickItems.length > 0 && selected >= options.length) {
-        removeTarget = quickItems[selected - options.length];
-        mode = "remove";
+        confirmAction = { kind: "remove", target: quickItems[selected - options.length] };
+        mode = "confirm";
         render(mode);
         return;
       }
-      // `t`: pin the highlighted option into the Recent top5 slots
-      if (pinEnabled && key === "t" && selected < options.length) {
-        pinTarget = options[selected];
+      // `u`: unpin the highlighted Recent row (idempotent; entry stays)
+      if (canUnpin && key === "u" && quickItems.length > 0 && selected >= options.length) {
+        const q = quickItems[selected - options.length];
+        const ok = opts.onUnpin(q.pairKey) !== null;
+        if (ok) refreshQuickItems();
+        render(mode, ok ? `✓ Unpinned "${q.provider}" — back to natural ranking` : `✗ Unpin failed (history write error)`);
+        return;
+      }
+      // `c`: bulk-remove every dead entry from Recent (confirm follows)
+      if (canCleanup && key === "c") {
+        const deadCount = quickItems.filter((q) => q.dead).length;
+        if (deadCount > 0) {
+          confirmAction = { kind: "cleanup", target: { count: deadCount } };
+          mode = "confirm";
+          render(mode);
+          return;
+        }
+      }
+      // `t` pins into the Recent top5 slots. Two distinct layers, deliberately
+      // gated separately: provider layer captures the highlighted provider;
+      // CLI layer captures the highlighted Recent row. pinTarget is always a
+      // structured {cli, providerId, provider} — never the display label.
+      if (interactive && pinOptions && key === "t" && selected < options.length) {
+        pinTarget = {
+          cli: opts.pinContext,
+          providerId: options[selected].value,
+          provider: options[selected].label,
+          label: options[selected].label,
+        };
+        mode = "pin";
+        render(mode);
+        return;
+      }
+      if (pinQuick && key === "t" && quickItems.length > 0 && selected >= options.length) {
+        const q = quickItems[selected - options.length];
+        pinTarget = { cli: q.cli, providerId: q.providerId, provider: q.provider, label: q.provider };
         mode = "pin";
         render(mode);
         return;
@@ -1746,7 +2036,10 @@ function tuiSelect(prompt, options, optsArg) {
   });
 }
 
-// Map permission mode to underlying CLI argv. hotkey: "1"=default/fine (no flag), "2"=semi-auto, "3"=full-auto
+// Quick-launch rows carry everything a replay needs: the pair identity
+// (providerId when known, name as fallback/display), the last permission
+// mode, and the full original argv (extraArgs) so `--continue`-style flags
+// survive into the next quick launch.
 async function runTUI() {
   await detectAndPromptSync({ tui: true });
 
@@ -1758,35 +2051,52 @@ async function runTUI() {
   // CLI layer + provider layer loop: esc on provider goes back to CLI selection.
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    // Build top5 quick-launch items from history (empty on first run).
-    // Rows whose provider was deleted in cc-switch stay listed (a manual pin
-    // may still be wanted) but get flagged dead: red ✗, Enter/key offers
-    // cleanup instead of a guaranteed launch failure.
-    const recent = top5();
-    const aliveByApp = new Map();
-    for (const e of recent) {
-      const appType = APP_ADAPTERS[e.cli]?.appType;
-      if (!appType || aliveByApp.has(appType)) continue;
-      aliveByApp.set(appType, existingProviders(appType, recent.filter((x) => APP_ADAPTERS[x.cli]?.appType === appType).map((x) => x.provider)));
-    }
-    const quickItems = recent.map((e, i) => ({
-      key: QUICK_KEYS[i],
-      label: `${e.provider} · ${e.cli} · ${permLabel(e.hotkey)}`,
-      cli: e.cli,
-      provider: e.provider,
-      hotkey: e.hotkey ?? undefined,
-      dead: !aliveByApp.get(APP_ADAPTERS[e.cli]?.appType)?.has(e.provider),
-    }));
+    // One alive snapshot per loop iteration feeds both dead-flagging and
+    // display names, so a cc-switch rename surfaces without touching history.
+    // Fail-open: on DB error everything reads alive (launch fails loudly later).
+    const aliveByCli = snapshotAliveByCli();
+    const buildQuickItems = () => {
+      const { order } = loadHistory();
+      return top5(aliveByCli).map((e, i) => {
+        const snap = aliveByCli.get(e.cli);
+        const name = (e.providerId && snap?.nameById.get(e.providerId)) || e.provider;
+        const permArgs = APP_ADAPTERS[e.cli]?.permissionArgs?.(e.hotkey) ?? [];
+        const replay = Array.isArray(e.extraArgs) ? e.extraArgs : [];
+        // "+args" marks rows whose replay goes beyond the bare permission flags
+        // (--continue etc.). An empty extraArgs on a non-default mode is NOT
+        // extra — quick-launch backfills the permission flags itself.
+        const hasExtraArgs = replay.length > 0 && JSON.stringify(replay) !== JSON.stringify(permArgs);
+        return {
+          key: QUICK_KEYS[i],
+          label: `${name} · ${e.cli} · ${permLabel(e.hotkey)} · ${relTime(e.lastUsed)}${hasExtraArgs ? " · +args" : ""}`,
+          cli: e.cli,
+          providerId: e.providerId ?? null,
+          provider: name,
+          hotkey: e.hotkey ?? undefined,
+          extraArgs: replay,
+          pairKey: entryKey(e),
+          dead: isDeadEntry(e, aliveByCli),
+          pinned: order.includes(entryKey(e)),
+        };
+      });
+    };
 
     const cli = await tuiSelect("Select CLI tool", cliOptions, {
-      quickItems,
-      onRemove: removeHistoryPair,
+      quickItems: buildQuickItems(),
+      quickPin: true,
+      onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
+      onUnpin: (key) => unpinPair(key, aliveByCli),
+      onRemove: (key) => removeHistoryPair(key, aliveByCli),
+      onCleanup: () => removeAllDeadPairs(aliveByCli),
+      onRefreshQuickItems: buildQuickItems,
     });
 
-    // Quick-launch path: letter key bypasses provider + permission selection.
+    // Quick-launch path: letter key bypasses provider + permission selection
+    // and replays the recorded argv (falling back to the bare permission flags
+    // for pre-extraArgs entries).
     if (cli.quick) {
-      recordLaunch(cli.cli, cli.provider, cli.hotkey);
-      await launchProvider(cli.cli, cli.provider, APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey));
+      const args = cli.extraArgs.length > 0 ? cli.extraArgs : APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey);
+      await launchProvider(cli.cli, cli.provider, args, null, { hotkey: cli.hotkey });
       return;
     }
 
@@ -1812,7 +2122,7 @@ async function runTUI() {
           ],
           interactive: true,
           pinContext: cli.value,
-          onPin: insertManualOrder,
+          onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
         },
       );
     } catch (e) {
@@ -1820,8 +2130,7 @@ async function runTUI() {
       throw e; // Ctrl+C → propagate to main()
     }
     const provider = providers.find((p) => p.id === selected.value);
-    recordLaunch(cli.value, provider.name, selected.hotkey);
-    await launchProvider(cli.value, provider.name, adapter.permissionArgs(selected.hotkey));
+    await launchProvider(cli.value, provider.name, adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
     return;
   }
 }
@@ -1831,7 +2140,10 @@ async function runTUI() {
 // syncFlag: null (default) = non-blocking stderr warning if drifted;
 //           "on"  (--sync)    = interactive confirm before launching;
 //           "off" (--no-sync) = fully silent, no warning at all.
-async function launchProvider(cmd, providerName, extraArgs, syncFlag = null) {
+// record: optional {hotkey} from the TUI quick/permission selection — the
+//         mode the user actually picked, preferred over inferring it back
+//         out of extraArgs (which quick-launch replays without flags).
+async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, record = null) {
   const adapter = APP_ADAPTERS[cmd];
   if (!adapter) {
     console.error(`✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`);
@@ -1857,6 +2169,12 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null) {
   const instanceDir = adapter.setupInstance(row.id);
   adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, commonSnippet, settings);
   recordInstanceBaseline(adapter, row.id, instanceDir, commonSnippet);
+  // Record AFTER prepare succeeded (a failed prep is not a launch) and BEFORE
+  // launch (adapter.launch execs and never returns). This is the single
+  // recording point — both TUI and command mode pass through here, and the
+  // extraArgs are stored so quick-launch replays the full original argv.
+  const hotkey = record?.hotkey !== undefined ? record.hotkey : adapter.inferHotkeyFromArgs?.(extraArgs);
+  recordLaunch(cmd, row.id, row.name, hotkey, extraArgs);
   adapter.launch(instanceDir, extraArgs);
 }
 

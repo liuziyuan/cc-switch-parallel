@@ -34,9 +34,13 @@ switch
 
 Shows a TUI — first select the CLI tool (claude / codex), then pick a provider, press Enter to launch.
 
-**Recent (top 5):** the CLI screen lists your 5 most-used launches for one-key quick launch (`a`–`g`). Normally ranked by use count automatically; on the provider screen you can press `t` then a digit `1`–`5` to pin the highlighted provider into that slot — existing entries shift down (the old #5 drops off). Pinning only reorders the list, it never launches. The pin is one-shot: once that provider is actually launched again it leaves the manual order and falls back to natural usage ranking. Pins are keyed by provider name, so renaming a provider in cc-switch releases its slot.
+**Recent (top 5):** the CLI screen lists your 5 most-used launches (`a s d f g` for one-key quick launch), ranked by use count with each row showing when it was last used (`· 2h`, `· 3d`, …). Command-mode launches (`switch "X" claude …`) count towards the ranking too, and a quick launch replays the recorded argv — if you launched with `--continue`, pressing the quick key launches with `--continue` again (rows carrying extra flags are marked `· +args`).
 
-Providers deleted in cc-switch stay listed but flagged red (`✗ missing`) — launching them is blocked; Enter (or their quick key) instead offers to remove them from Recent (`y` to confirm). You can also drop any entry manually: highlight it and press `x`, then `y`.
+**Pinning is persistent.** Highlight a Recent row and press `t` + `1`–`5` to pin it into that slot (or `t` on the provider screen); pinned rows show a `*` marker and keep their slot across launches until you press `u` to unpin. Entries are keyed by provider id: renaming a provider in cc-switch keeps its slot, history and count — Recent follows the new name automatically.
+
+Providers deleted in cc-switch stay listed but flagged red (`✗ missing`) — launching them is blocked; Enter (or their quick key) instead offers to remove them from Recent (`y` to confirm). Dead rows rank last so they never crowd out live ones, and `c` removes every dead entry in one go. You can also drop any entry manually: highlight it and press `x`, then `y`.
+
+A Full-auto quick-launch row (`⚠`) asks for confirmation before launching with `--dangerously-skip-permissions` — picking Full-auto on the provider screen doesn't, since that path already takes two deliberate keypresses.
 
 ### Command mode
 
