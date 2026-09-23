@@ -362,10 +362,25 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
       hit.provider = providerName;
       hit.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
     } else {
-      entries.push({
-        cli, providerId, provider: providerName, hotkey: hotkey ?? null,
-        extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
-      });
+      // Pin placeholders carry the exact signature hotkey:null + count:0 +
+      // lastUsed:0 (see insertManualOrder). Upgrade one in place instead of
+      // pushing a sibling entry — otherwise the first real launch of a pinned
+      // pair forks history into two rows. count>0 null-hotkey entries are real
+      // Default history, never placeholders — the count===0 guard protects them.
+      const ph = entries.find((e) =>
+        e.providerId === providerId && e.cli === cli && e.hotkey == null && (e.count || 0) === 0);
+      if (ph) {
+        ph.hotkey = hotkey ?? null;
+        ph.count = 1;
+        ph.lastUsed = now;
+        ph.provider = providerName;
+        ph.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
+      } else {
+        entries.push({
+          cli, providerId, provider: providerName, hotkey: hotkey ?? null,
+          extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
+        });
+      }
     }
     saveHistory(entries, order);
   } catch {
@@ -1842,6 +1857,15 @@ function tuiSelect(prompt, options, optsArg) {
         const n = parseInt(key, 10);
         if (!Number.isNaN(n) && n >= 1 && n <= 5) {
           const slot = opts.onPin(pinTarget, n);
+          // Provider layer: a pin used to strand the user back on the select
+          // list with no way to pick a launch mode — esc from there discards
+          // the selection entirely. Drop straight into the param region
+          // instead: the very next keypress (⏎/2/3) launches the pinned pair.
+          if (slot && interactive && hasHint) {
+            mode = "param";
+            render(mode, `✓ Pinned "${pinTarget.label}" to Recent #${slot} — pick launch mode`);
+            return;
+          }
           mode = "select";
           // CLI layer stays put after pinning — refresh so the new order is
           // visible immediately; the provider layer re-enters via esc anyway.
