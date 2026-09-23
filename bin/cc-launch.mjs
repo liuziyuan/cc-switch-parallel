@@ -317,6 +317,15 @@ function snapshotAliveByCli() {
   return byCli;
 }
 
+// Row strength for natural ranking and "which entry of a pair is displayed":
+// live before dead, then count, then recency. Shared by mergeTop5 and
+// setEntryHotkey (the latter needs the SAME displayed-entry choice, or an
+// edit would land on a different row than the one the user highlighted).
+function byStrength(a, b, aliveByCli) {
+  const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
+  return (liveness(b) - liveness(a)) || (b.count - a.count) || (b.lastUsed - a.lastUsed);
+}
+
 // Merge pinned slots with the natural count ranking. Rows are deduped per
 // pair: among a pair's permission-mode entries only the strongest
 // (count, lastUsed) shows — pinned in its slot, never again as a natural
@@ -327,12 +336,11 @@ function mergeTop5(entries, order, aliveByCli) {
   const valid = order.map((id) =>
     id && entries.some((e) => entryKey(e) === id) ? id : null);
   const pinnedSet = new Set(valid.filter(Boolean));
-  const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
-  const byStrength = (a, b) => (liveness(b) - liveness(a)) || (b.count - a.count) || (b.lastUsed - a.lastUsed);
-  const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(byStrength)[0];
+  const cmp = (a, b) => byStrength(a, b, aliveByCli);
+  const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(cmp)[0];
   const seen = new Set();
   const natural = [];
-  for (const e of [...entries].sort(byStrength)) {
+  for (const e of [...entries].sort(cmp)) {
     const k = entryKey(e);
     if (pinnedSet.has(k) || seen.has(k)) continue;
     seen.add(k);
