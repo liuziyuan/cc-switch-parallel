@@ -317,6 +317,15 @@ function snapshotAliveByCli() {
   return byCli;
 }
 
+// Row strength for natural ranking and "which entry of a pair is displayed":
+// live before dead, then count, then recency. Shared by mergeTop5 and
+// setEntryHotkey (the latter needs the SAME displayed-entry choice, or an
+// edit would land on a different row than the one the user highlighted).
+function byStrength(a, b, aliveByCli) {
+  const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
+  return (liveness(b) - liveness(a)) || (b.count - a.count) || (b.lastUsed - a.lastUsed);
+}
+
 // Merge pinned slots with the natural count ranking. Rows are deduped per
 // pair: among a pair's permission-mode entries only the strongest
 // (count, lastUsed) shows — pinned in its slot, never again as a natural
@@ -327,12 +336,11 @@ function mergeTop5(entries, order, aliveByCli) {
   const valid = order.map((id) =>
     id && entries.some((e) => entryKey(e) === id) ? id : null);
   const pinnedSet = new Set(valid.filter(Boolean));
-  const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
-  const byStrength = (a, b) => (liveness(b) - liveness(a)) || (b.count - a.count) || (b.lastUsed - a.lastUsed);
-  const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(byStrength)[0];
+  const cmp = (a, b) => byStrength(a, b, aliveByCli);
+  const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(cmp)[0];
   const seen = new Set();
   const natural = [];
-  for (const e of [...entries].sort(byStrength)) {
+  for (const e of [...entries].sort(cmp)) {
     const k = entryKey(e);
     if (pinnedSet.has(k) || seen.has(k)) continue;
     seen.add(k);
@@ -362,10 +370,25 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
       hit.provider = providerName;
       hit.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
     } else {
-      entries.push({
-        cli, providerId, provider: providerName, hotkey: hotkey ?? null,
-        extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
-      });
+      // Pin placeholders carry the exact signature hotkey:null + count:0 +
+      // lastUsed:0 (see insertManualOrder). Upgrade one in place instead of
+      // pushing a sibling entry — otherwise the first real launch of a pinned
+      // pair forks history into two rows. count>0 null-hotkey entries are real
+      // Default history, never placeholders — the count===0 guard protects them.
+      const ph = entries.find((e) =>
+        e.providerId === providerId && e.cli === cli && e.hotkey == null && (e.count || 0) === 0);
+      if (ph) {
+        ph.hotkey = hotkey ?? null;
+        ph.count = 1;
+        ph.lastUsed = now;
+        ph.provider = providerName;
+        ph.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
+      } else {
+        entries.push({
+          cli, providerId, provider: providerName, hotkey: hotkey ?? null,
+          extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
+        });
+      }
     }
     saveHistory(entries, order);
   } catch {
@@ -376,6 +399,52 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
 function top5(aliveByCli) {
   const { entries, order } = loadHistory();
   return mergeTop5(entries, order, aliveByCli);
+}
+
+// Remove every permission flag a launch argv might carry — both CLIs, both
+// spellings (separated `--permission-mode VALUE` and joined `=VALUE`), so the
+// non-permission tail (`--continue` etc.) survives a mode edit intact.
+function stripPermissionArgs(args) {
+  const single = new Set([
+    "--dangerously-skip-permissions",
+    "--approve-for-me",
+    "--dangerously-bypass-approvals-and-sandbox",
+  ]);
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (single.has(a)) continue;
+    if (a === "--permission-mode") { i++; continue; } // flag + separate value
+    if (a.startsWith("--permission-mode=")) continue; // joined = form
+    out.push(a);
+  }
+  return out;
+}
+
+// `e` edit: switch a Recent row's launch mode in place. Targets the DISPLAYED
+// entry of the pair (the strongest one — the same row mergeTop5 shows), keeps
+// its slot/count/lastUsed (a count-0 placeholder stays recognizable for
+// recordLaunch's upgrade path), and rebuilds extraArgs as
+// [non-permission tail, new permission flags] so quick-launch replays the
+// right argv. Returns the updated top5 rows, or null on failure.
+function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
+  if (_historyFrozen) return null;
+  try {
+    const { entries, order } = loadHistory();
+    const target = entries
+      .filter((e) => entryKey(e) === pairKey)
+      .sort((a, b) => byStrength(a, b, aliveByCli))[0];
+    if (!target) return null;
+    target.hotkey = hotkey ?? null; // undefined (Default) normalizes to null
+    target.extraArgs = [
+      ...stripPermissionArgs(Array.isArray(target.extraArgs) ? target.extraArgs : []),
+      ...(APP_ADAPTERS[cli]?.permissionArgs?.(hotkey ?? null) ?? []),
+    ];
+    saveHistory(entries, order);
+    return mergeTop5(entries, order, aliveByCli);
+  } catch {
+    return null;
+  }
 }
 
 // Release a pin slot (idempotent — unpinning an unpinned pair is a no-op).
@@ -1626,6 +1695,10 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
 //               the Recent region. quickPin is deliberately separate from
 //               pinContext so a CLI-layer `t` can never capture a plain CLI
 //               option (e.g. "claude") as a pin target.
+// onEditParam (CLI layer): `e` on a live Recent row re-enters the param region
+//               in edit context — ⏎/2/3 then calls onEditParam(q, hotkey)
+//               (q = the quick item; hotkey undefined = Default). Returns
+//               non-null on success, null on failure (notice shows the error).
 // onRefreshQuickItems(): rebuild quickItems after any history mutation so the
 //               shown order/dead/pinned state matches disk. Newly surfaced
 //               natural-filler rows need their dead flag from the caller's
@@ -1639,6 +1712,7 @@ function tuiSelect(prompt, options, optsArg) {
   const canRemove = typeof opts.onRemove === "function";
   const canCleanup = typeof opts.onCleanup === "function";
   const canUnpin = typeof opts.onUnpin === "function";
+  const canEditParam = typeof opts.onEditParam === "function"; // CLI layer `e`
   const pinOptions = !!opts.pinContext && typeof opts.onPin === "function"; // provider layer
   const pinQuick = !!opts.quickPin && typeof opts.onPin === "function"; // CLI layer
   const refreshQuick = typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
@@ -1654,6 +1728,7 @@ function tuiSelect(prompt, options, optsArg) {
     let lastDrawnLines = 0;
     let pinTarget = null; // {cli, providerId, provider, label} captured entering pin mode
     let confirmAction = null; // {kind:"remove"|"cleanup"|"launch", target} in confirm mode
+    let paramEdit = null; // {q} Recent row being mode-edited — param mode, edit context
 
     const hasHint = hotkeys.length > 0;
 
@@ -1709,9 +1784,15 @@ function tuiSelect(prompt, options, optsArg) {
       }
       if (m === "param") {
         lines.push("");
-        lines.push(
-          `  \x1b[1m\x1b[36m${fit(hotkeys.map((h) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
-        );
+        const head = paramEdit
+          ? `Edit "${paramEdit.q.provider}" · ${permLabel(paramEdit.q.hotkey)} → pick new mode`
+          : hotkeys.map((h) => `${h.key} ${h.label}`).join("   ");
+        lines.push(`  \x1b[1m\x1b[36m${fit(head, 4)}\x1b[0m`);
+        if (paramEdit) {
+          lines.push(
+            `  \x1b[1m\x1b[36m${fit(hotkeys.map((h) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
+          );
+        }
         lines.push(`  \x1b[90mesc ← back\x1b[0m`);
       } else if (m === "pin") {
         lines.push("");
@@ -1775,10 +1856,11 @@ function tuiSelect(prompt, options, optsArg) {
         if (quickItems.length > 0 && selected >= options.length) {
           if (pinQuick) parts.push("t pin");
           if (canUnpin && quickItems[selected - options.length]?.pinned) parts.push("u unpin");
+          if (canEditParam && !quickItems[selected - options.length]?.dead) parts.push("e edit");
           if (canRemove) parts.push("x rm");
         }
         const deadCount = quickItems.filter((q) => q.dead).length;
-        if (canCleanup && deadCount > 0) parts.push("c clean dead");
+        if (canCleanup && deadCount > 0) parts.push("c clean");
         parts.push("esc exit");
         lines.push(`  \x1b[90m${fit(parts.join("   "), 4)}\x1b[0m`);
       }
@@ -1813,20 +1895,34 @@ function tuiSelect(prompt, options, optsArg) {
 
       if (mode === "param") {
         // Param region: hotkey or Enter resolves with hotkey; esc goes back.
+        // Two contexts share the region: launching a highlighted option (the
+        // resolve path) and `e` mode-editing a Recent row (the paramEdit path —
+        // writes history, refreshes the row, stays in the TUI).
         if (key === "\x1b") {
           mode = "select";
+          paramEdit = null;
           render(mode);
           return;
         }
         const hit = hotkeys.find((h) => h.key === key);
-        if (hit) {
+        if (hit || key === "\r" || key === "\n") {
+          const hk = hit ? hit.key : undefined; // ⏎ = Default
+          if (paramEdit) {
+            const { q } = paramEdit;
+            paramEdit = null;
+            mode = "select";
+            const ok = opts.onEditParam(q, hk) !== null;
+            if (ok) refreshQuickItems();
+            render(
+              mode,
+              ok
+                ? `✓ "${q.provider}" → ${permLabel(hk)}${hk === "3" ? " — will confirm before launch" : ""}`
+                : `✗ Edit failed (history write error)`,
+            );
+            return;
+          }
           cleanup();
-          resolve({ ...options[selected], hotkey: hit.key });
-          return;
-        }
-        if (key === "\r" || key === "\n") {
-          cleanup();
-          resolve({ ...options[selected], hotkey: undefined });
+          resolve({ ...options[selected], hotkey: hk });
           return;
         }
         return; // ignore arrows/other keys in param mode
@@ -1842,6 +1938,15 @@ function tuiSelect(prompt, options, optsArg) {
         const n = parseInt(key, 10);
         if (!Number.isNaN(n) && n >= 1 && n <= 5) {
           const slot = opts.onPin(pinTarget, n);
+          // Provider layer: a pin used to strand the user back on the select
+          // list with no way to pick a launch mode — esc from there discards
+          // the selection entirely. Drop straight into the param region
+          // instead: the very next keypress (⏎/2/3) launches the pinned pair.
+          if (slot && interactive && hasHint) {
+            mode = "param";
+            render(mode, `✓ Pinned "${pinTarget.label}" to Recent #${slot} — pick launch mode`);
+            return;
+          }
           mode = "select";
           // CLI layer stays put after pinning — refresh so the new order is
           // visible immediately; the provider layer re-enters via esc anyway.
@@ -1955,6 +2060,18 @@ function tuiSelect(prompt, options, optsArg) {
         confirmAction = { kind: "remove", target: quickItems[selected - options.length] };
         mode = "confirm";
         render(mode);
+        return;
+      }
+      // `e`: edit the highlighted Recent row's launch mode (param region
+      // follows). Dead rows are silently ignored — they can't launch, so a
+      // mode is meaningless there.
+      if (canEditParam && key === "e" && quickItems.length > 0 && selected >= options.length) {
+        const q = quickItems[selected - options.length];
+        if (!q.dead) {
+          paramEdit = { q };
+          mode = "param";
+          render(mode);
+        }
         return;
       }
       // `u`: unpin the highlighted Recent row (idempotent; entry stays)
@@ -2084,8 +2201,17 @@ async function runTUI() {
     const cli = await tuiSelect("Select CLI tool", cliOptions, {
       quickItems: buildQuickItems(),
       quickPin: true,
+      // hotkeys power the `e` mode-edit param region (CLI-layer Enter never
+      // enters it: interactive=false), keyed off the same ⏎/2/3 hotkeys the
+      // provider layer uses.
+      hotkeys: [
+        { key: "⏎", label: "Default" },
+        { key: "2", label: "Semi-auto" },
+        { key: "3", label: "Full-auto ⚠" },
+      ],
       onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
       onUnpin: (key) => unpinPair(key, aliveByCli),
+      onEditParam: (q, hotkey) => setEntryHotkey(q.pairKey, hotkey, q.cli, aliveByCli),
       onRemove: (key) => removeHistoryPair(key, aliveByCli),
       onCleanup: () => removeAllDeadPairs(aliveByCli),
       onRefreshQuickItems: buildQuickItems,
