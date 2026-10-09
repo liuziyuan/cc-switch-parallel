@@ -1201,6 +1201,10 @@ function sessionIsAlive(session) {
 // session file is removed on a clean exit. A crashed parent (kill -9) leaves
 // the file behind — `switch ps` cleans those up as stale.
 function launchTracked(bin, extraArgs, instanceDir, envKey, onExit) {
+  // Belt-and-suspenders for the flowing-stdin hazard: any missed cleanup
+  // upstream would let the parent keep consuming (and discarding) keystrokes
+  // that belong to the spawned CLI. pause() is idempotent and cheap.
+  try { process.stdin.pause(); } catch {}
   const child = spawn(bin, extraArgs, {
     stdio: "inherit",
     env: { ...process.env, [envKey]: instanceDir },
@@ -1669,6 +1673,12 @@ function confirmSync(lines, question = "Sync these changes?") {
       const key = data.toString();
       process.stdin.setRawMode(false);
       process.stdin.removeListener("data", onData);
+      // pause() is required, not just removeListener: stdin stays in flowing
+      // mode after the earlier resume(), and a flowing stream with no data
+      // listeners still READS and DISCARDS tty bytes — the spawned CLI would
+      // lose keystrokes. (Masked for years by spawnSync freezing the event
+      // loop; surfaced when launch switched to async spawn.)
+      process.stdin.pause();
       process.stderr.write(`${key.trim()}\n`);
       resolve(/^y/i.test(key.trim()));
     };
@@ -2225,6 +2235,12 @@ function tuiSelect(prompt, options, optsArg) {
     function cleanup() {
       process.stdin.setRawMode(false);
       process.stdin.removeListener("data", onData);
+      // pause() is required, not just removeListener: stdin is still in
+      // flowing mode from the resume() at entry, and a flowing stream with no
+      // data listeners keeps READING tty bytes (discarding them) — the spawned
+      // CLI would lose keystrokes. Masked for years by spawnSync freezing the
+      // event loop; surfaced when launch switched to async spawn.
+      process.stdin.pause();
       if (lastDrawnLines > 0) {
         process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
       }
