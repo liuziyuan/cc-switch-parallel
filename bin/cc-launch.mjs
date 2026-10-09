@@ -4,13 +4,15 @@
 // Usage:
 //   switch                                 # TUI interactive mode: select CLI then provider
 //   switch update                          # Self-update to the latest npm version
+//   switch ps                              # List running switch-launched sessions
+//   switch customize <provider>            # Instance-only CLAUDE.md for a provider
 //   switch <provider> <cmd> [args...]     # Command mode: specify provider and CLI directly
 //
 // Reads provider config from ~/.cc-switch/cc-switch.db, generates isolated instance dirs,
 // and launches via CLAUDE_CONFIG_DIR / CODEX_HOME env var isolation.
 // Different terminals use their own provider configs without interference.
 
-import { execFileSync, execSync, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import {
   readFileSync,
   writeFileSync,
@@ -1015,16 +1017,20 @@ function ensureSymlink(target, linkPath) {
         if (readlinkSync(linkPath) === target) return;
         unlinkSync(linkPath);
       } else {
-        // Non-symlink real file/dir. Claude Code auto-creates empty dirs like
-        // plugins/ on first launch; these should be replaced by symlinks.
-        // But if it already has real content (non-empty), keep it and warn
-        // to avoid deleting user data.
-        const dirEntries = readdirSyncSafe(linkPath);
-        if (dirEntries && dirEntries.length > 0) {
-          console.error(`⚠ ${linkPath} already exists and is non-empty, skipping symlink (target: ${target})`);
-          return;
+        // Non-symlink real file/dir. Real FILES are deliberate content (a
+        // customized CLAUDE.md, user-placed config) — always keep them.
+        // Dirs: Claude Code auto-creates empty ones like plugins/ on first
+        // launch; those are replaced by symlinks, while non-empty dirs stay
+        // (warn) to avoid deleting user data.
+        if (stats.isDirectory()) {
+          const dirEntries = readdirSyncSafe(linkPath);
+          if (dirEntries && dirEntries.length > 0) {
+            console.error(`⚠ ${linkPath} already exists and is non-empty, skipping symlink (target: ${target})`);
+            return;
+          }
+          rmSync(linkPath, { recursive: true, force: true });
         }
-        rmSync(linkPath, { recursive: true, force: true });
+        return;
       }
     } catch (e) {
       console.error(`⚠ Failed to replace ${linkPath} with symlink: ${e.message}`);
@@ -1128,6 +1134,89 @@ function atomicWrite(path, data) {
   renameSync(tmp, path);
 }
 
+// ─── Tracked launch & session files ───────────────────────────────────
+
+// Per-instance record of a live switch-launched session, consumed by
+// `switch ps` and the TUI live marker. Lives inside the instance dir (same
+// precedent as settings.json), so `clean` removes it with the directory.
+const SESSION_FILENAME = ".cc-switch-session.json";
+const sessionFilePath = (instanceDir) => join(instanceDir, SESSION_FILENAME);
+
+// One ps(1) field lookup; null on any hiccup. Used for lstart (the PID-reuse
+// guard) and for the parent's tty.
+function psField(pid, field) {
+  try {
+    const r = spawnSync("ps", ["-p", String(pid), "-o", `${field}=`], { encoding: "utf8" });
+    return r.status === 0 ? (r.stdout || "").trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionFile(instanceDir, pid, bin, extraArgs) {
+  try {
+    atomicWrite(sessionFilePath(instanceDir), JSON.stringify({
+      pid,
+      lstart: psField(pid, "lstart"),
+      cli: bin,
+      providerId: basename(instanceDir),
+      startedAt: Date.now(),
+      extraArgs,
+      tty: psField(process.pid, "tty"),
+    }, null, 2));
+  } catch {
+    // best-effort: a tracking failure must never block the launch
+  }
+}
+
+function removeSessionFile(instanceDir) {
+  try { unlinkSync(sessionFilePath(instanceDir)); } catch {}
+}
+
+function readSessionFile(instanceDir) {
+  try {
+    const s = JSON.parse(readFileSync(sessionFilePath(instanceDir), "utf8"));
+    return isPlainObject(s) ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+// Alive = pid exists AND its recorded lstart matches (kill(0) alone would
+// false-positive once the OS reuses the pid).
+function sessionIsAlive(session) {
+  if (!session || typeof session.pid !== "number") return false;
+  try {
+    process.kill(session.pid, 0);
+  } catch {
+    return false;
+  }
+  if (!session.lstart) return true;
+  return psField(session.pid, "lstart") === session.lstart;
+}
+
+// Foreground replacement for the former spawnSync launch: stdio and exit-code
+// semantics unchanged, but the child's pid is recorded while it runs and the
+// session file is removed on a clean exit. A crashed parent (kill -9) leaves
+// the file behind — `switch ps` cleans those up as stale.
+function launchTracked(bin, extraArgs, instanceDir, envKey, onExit) {
+  const child = spawn(bin, extraArgs, {
+    stdio: "inherit",
+    env: { ...process.env, [envKey]: instanceDir },
+  });
+  if (child.pid) writeSessionFile(instanceDir, child.pid, bin, extraArgs);
+  child.on("error", (e) => {
+    removeSessionFile(instanceDir);
+    console.error(`✗ Failed to launch ${bin}: ${e.message}`);
+    process.exit(1);
+  });
+  child.on("exit", (code) => {
+    removeSessionFile(instanceDir);
+    try { onExit?.(code); } catch {}
+    process.exit(code || 0);
+  });
+}
+
 // ─── Sync state snapshot (config drift detection) ─────────────────────
 
 function sha256(str) {
@@ -1189,12 +1278,7 @@ const APP_ADAPTERS = {
 
     launch(instanceDir, extraArgs) {
       process.stderr.write(`\x1b[2mCLAUDE_CONFIG_DIR=${instanceDir} claude ${extraArgs.join(" ")}\x1b[0m\n`);
-      const result = spawnSync("claude", extraArgs, {
-        stdio: "inherit",
-        env: { ...process.env, CLAUDE_CONFIG_DIR: instanceDir },
-      });
-      normalizeInstalledPluginPaths();
-      process.exit(result.status || 0);
+      launchTracked("claude", extraArgs, instanceDir, "CLAUDE_CONFIG_DIR", () => normalizeInstalledPluginPaths());
     },
 
     permissionArgs(hotkey) {
@@ -1290,11 +1374,7 @@ const APP_ADAPTERS = {
 
     launch(instanceDir, extraArgs) {
       process.stderr.write(`\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`);
-      const result = spawnSync("codex", extraArgs, {
-        stdio: "inherit",
-        env: { ...process.env, CODEX_HOME: instanceDir },
-      });
-      process.exit(result.status || 0);
+      launchTracked("codex", extraArgs, instanceDir, "CODEX_HOME");
     },
 
     permissionArgs(hotkey) {
@@ -1573,15 +1653,15 @@ function snapshotSyncState(state, pluginSyncedCmds) {
   state.version = 2;
 }
 
-// Interactive yes/no confirm (TUI only). Returns true on "y", false otherwise.
-function confirmSync(lines) {
+// Interactive yes/no confirm (TTY only). Returns true on "y", false otherwise.
+function confirmSync(lines, question = "Sync these changes?") {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       resolve(false);
       return;
     }
     for (const line of lines) process.stderr.write(`  ${line}\n`);
-    process.stderr.write(`\n  \x1b[1mSync these changes?\x1b[0m [y/N] `);
+    process.stderr.write(`\n  \x1b[1m${question}\x1b[0m [y/N] `);
     process.stdin.setRawMode(true);
     process.stdin.resume();
     const onData = (data) => {
@@ -1831,7 +1911,7 @@ function tuiSelect(prompt, options, optsArg) {
             // still be wanted) but flag it red and make it non-launchable.
             // A pinned row keeps its manual slot — marked `*` so a persistent
             // pin never reads as "the ranking is broken".
-            const flag = q.dead ? `\x1b[31m ✗ missing\x1b[0m` : "";
+            const flag = q.dead ? `\x1b[31m ✗ missing\x1b[0m` : q.running ? `\x1b[32m ● live\x1b[0m` : "";
             const pin = q.pinned ? "*" : " ";
             const text = fit(`${q.key} ${pin}${q.label}`, 6);
             if (locked) {
@@ -2172,6 +2252,7 @@ async function runTUI() {
     // display names, so a cc-switch rename surfaces without touching history.
     // Fail-open: on DB error everything reads alive (launch fails loudly later).
     const aliveByCli = snapshotAliveByCli();
+    const runningSet = buildRunningSet();
     const buildQuickItems = () => {
       const { order } = loadHistory();
       return top5(aliveByCli).map((e, i) => {
@@ -2194,6 +2275,7 @@ async function runTUI() {
           pairKey: entryKey(e),
           dead: isDeadEntry(e, aliveByCli),
           pinned: order.includes(entryKey(e)),
+          running: runningSet.has(e.providerId),
         };
       });
     };
@@ -2328,6 +2410,74 @@ function collectInstances() {
   return instances;
 }
 
+// ─── switch ps ────────────────────────────────────────────────────────
+
+function formatDuration(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h${String(m % 60).padStart(2, "0")}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d${String(h % 24).padStart(2, "0")}h`;
+}
+
+// Live providerIds across all instances — feeds the TUI ● live marker.
+// Same per-iteration-snapshot pattern as snapshotAliveByCli.
+function buildRunningSet() {
+  const running = new Set();
+  for (const inst of collectInstances()) {
+    const session = readSessionFile(inst.path);
+    if (session && sessionIsAlive(session)) running.add(inst.name);
+  }
+  return running;
+}
+
+function runPs() {
+  const running = [];
+  for (const inst of collectInstances()) {
+    const session = readSessionFile(inst.path);
+    if (!session) continue; // not launched by switch
+    if (sessionIsAlive(session)) {
+      running.push({ inst, session });
+    } else {
+      // A crashed parent (kill -9) leaves no exit event behind — clean up here.
+      try { unlinkSync(sessionFilePath(inst.path)); } catch {}
+    }
+  }
+  if (!running.length) {
+    console.log("✓ No running instances");
+    return;
+  }
+  const rows = running.map(({ inst, session }) => {
+    let name = session.providerId || inst.name;
+    try {
+      const p = queryProviderById(inst.name, inst.appType);
+      if (p?.name) name = p.name;
+    } catch {} // dead DB row → fall back to the id
+    return {
+      cli: inst.appType,
+      name,
+      tty: session.tty || "-",
+      up: formatDuration(Date.now() - (session.startedAt || Date.now())),
+      args: Array.isArray(session.extraArgs) && session.extraArgs.length
+        ? ` ${session.extraArgs.join(" ")}`
+        : "",
+    };
+  });
+  const w = (xs) => Math.max(...xs.map((x) => x.length), 1);
+  const wCli = w(rows.map((r) => r.cli));
+  const wName = w(rows.map((r) => r.name));
+  const wTty = w(rows.map((r) => r.tty));
+  const wUp = w(rows.map((r) => r.up));
+  console.log("");
+  for (const r of rows) {
+    console.log(`  ${r.cli.padEnd(wCli)}  ${r.name.padEnd(wName)}  ${r.tty.padEnd(wTty)}  up ${r.up.padEnd(wUp)}  ${r.cli}${r.args}`);
+  }
+  console.log("");
+}
+
 // Drop the drift baselines of removed instance dirs, so stale-instance
 // prompts stop naming providers whose directories are gone (the dir name IS
 // the providerId — see setupInstance). Best-effort: a state-file hiccup must
@@ -2452,6 +2602,110 @@ async function runClean(args) {
   }
 }
 
+// ─── Instance-only CLAUDE.md (customize / uncustomize) ────────────────
+
+// claude-only: codex instructions (AGENTS.md) work differently.
+function findClaudeProviderOrExit(name, usage) {
+  if (!name) {
+    console.error(usage);
+    process.exit(1);
+  }
+  const row = queryProvider(name, "claude");
+  if (!row) {
+    console.error(`✗ Provider "${name}" not found (claude)`);
+    console.error(`  Available providers:`);
+    queryProvidersByApp("claude").forEach((p) => console.error(`    ${p.name}`));
+    process.exit(1);
+  }
+  return row;
+}
+
+const instanceClaudeMdPath = (providerId) => join(INSTANCES_DIR, "claude", providerId, "CLAUDE.md");
+
+// First run writes the import template (global CLAUDE.md via @import + an
+// instance-only section below) and opens the editor; later runs open the
+// existing file directly. The real file survives every later launch because
+// ensureSymlink preserves non-symlink files instead of re-linking the shared
+// global one.
+function runCustomize(args) {
+  const row = findClaudeProviderOrExit(args[0], "Usage: switch customize <provider>");
+  mkdirSync(join(INSTANCES_DIR, "claude", row.id), { recursive: true });
+  const file = instanceClaudeMdPath(row.id);
+  const stats = lstatSyncSafe(file);
+  if (stats?.isDirectory()) {
+    console.error(`✗ ${file} is a directory — refusing to touch it`);
+    process.exit(1);
+  }
+  if (!stats || stats.isSymbolicLink()) {
+    const globalMd = join(HOME, ".claude", "CLAUDE.md");
+    if (!existsSync(globalMd)) {
+      console.error(`⚠ ${globalMd} not found — the @import line will resolve once it exists`);
+    }
+    atomicWrite(file, [
+      `@${globalMd}`,
+      "",
+      "<!-- ── instance-only instructions (below this line) ── -->",
+      "<!-- delete this file to fall back to the shared global CLAUDE.md -->",
+      "",
+      "",
+    ].join("\n"));
+  }
+  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+  const r = spawnSync(editor, [file], { stdio: "inherit" });
+  if (r.error) {
+    console.error(`✗ Failed to open editor "${editor}": ${r.error.message}`);
+    console.error(`  Edit the file manually: ${file}`);
+    process.exit(1);
+  }
+  console.log(`✓ customized — applies to new sessions`);
+  process.exit(0);
+}
+
+async function runUncustomize(args) {
+  const yes = args.includes("--yes");
+  const row = findClaudeProviderOrExit(
+    args.find((a) => a !== "--yes"),
+    "Usage: switch uncustomize <provider> [--yes]",
+  );
+  const file = instanceClaudeMdPath(row.id);
+  const stats = lstatSyncSafe(file);
+  if (!stats) {
+    console.log(`not customized (no instance CLAUDE.md)`);
+    return;
+  }
+  if (stats.isSymbolicLink()) {
+    console.log(`not customized (CLAUDE.md is the shared global symlink)`);
+    return;
+  }
+  if (stats.isDirectory()) {
+    console.error(`✗ ${file} is a directory — refusing to touch it`);
+    process.exit(1);
+  }
+  if (!yes) {
+    if (!process.stdin.isTTY) {
+      console.error("✗ uncustomize requires an interactive terminal (or use --yes).");
+      process.exit(1);
+    }
+    const ok = await confirmSync(
+      [`Remove instance CLAUDE.md for "${row.name}"?`, `  ${file}`],
+      "Remove it?",
+    );
+    if (!ok) {
+      console.error("aborted");
+      process.exit(1);
+    }
+  }
+  try {
+    unlinkSync(file);
+  } catch (e) {
+    console.error(`✗ ${e.message}`);
+    process.exit(1);
+  }
+  setupClaudeInstance(row.id); // restore the shared symlink immediately
+  console.log(`✓ restored to shared global CLAUDE.md`);
+  process.exit(0);
+}
+
 function printHelp() {
   console.log(`cc-switch-parallel — launch Claude Code / Codex with per-provider isolated configs
 
@@ -2463,6 +2717,9 @@ Usage:
   switch sync                           Detect & sync config drift (plugins, common config)
   switch doctor                         Diagnose the environment
   switch clean [--all]                  Remove instance directories
+  switch ps                             List running switch-launched sessions
+  switch customize <provider>           Instance-only CLAUDE.md (opens editor)
+  switch uncustomize <provider> [--yes] Back to the shared global CLAUDE.md
   switch update                         Self-update to the latest npm version
   switch -v | --version                 Show version
 
@@ -2562,6 +2819,21 @@ async function main() {
 
   if (args[0] === "clean") {
     await runClean(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "ps") {
+    runPs();
+    return;
+  }
+
+  if (args[0] === "customize") {
+    runCustomize(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "uncustomize") {
+    await runUncustomize(args.slice(1));
     return;
   }
 
