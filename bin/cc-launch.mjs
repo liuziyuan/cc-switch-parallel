@@ -25,6 +25,7 @@ import {
   unlinkSync,
   renameSync,
   rmSync,
+  realpathSync,
 } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2733,6 +2734,19 @@ Examples:
 
 // ─── Main entry ────────────────────────────────────────────────────────
 
+// A volta-managed install (`volta install <pkg>`) execs this script from
+// ~/.volta/tools/image/packages/...; the copy `npm install -g` updates lives
+// under image/node/<ver>/lib/ instead, which the volta shim never reads — so
+// updating that copy silently does nothing for the shim. Detect it here so
+// `switch update` goes through volta itself.
+function isVoltaManagedInstall() {
+  try {
+    return realpathSync(process.argv[1] || "").includes("/.volta/tools/image/packages/");
+  } catch {
+    return false;
+  }
+}
+
 async function runUpdate() {
   const currentVersion = VERSION;
   console.log(`Current version: v${currentVersion}`);
@@ -2754,6 +2768,17 @@ async function runUpdate() {
   }
 
   console.log(`Updating to v${latestVersion}...`);
+
+  if (isVoltaManagedInstall()) {
+    const r = spawnSync("volta", ["install", `${NPM_PACKAGE_NAME}@latest`], { stdio: "inherit" });
+    if (r.status !== 0) {
+      console.error(`✗ Update failed — try running \`volta install ${NPM_PACKAGE_NAME}@latest\` manually.`);
+      process.exit(r.status || 1);
+    }
+    console.log(`✓ Updated to v${latestVersion}`);
+    process.exit(0);
+  }
+
   try {
     execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
   } catch (e) {
