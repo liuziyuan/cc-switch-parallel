@@ -62,12 +62,22 @@ switch --no-sync "P&G Nezha" codex       # launch silently, suppress the drift w
 ### Other commands
 
 ```bash
+switch ps         # List running switch-launched sessions
 switch sync       # Detect & sync config drift (plugins, common config)
 switch doctor     # Diagnose the environment (sqlite3, DB, binaries, …)
 switch clean      # Remove instance directories (interactive, or --all)
 switch update     # Self-update to the latest npm version
 switch --help     # List all commands
 ```
+
+`switch ps` prints one row per session — concurrent terminals on the same provider each get their own row, never overwriting each other:
+
+```
+  claude  P&G Nezha      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
+  claude  P&G Nezha      RFP2                ~/workspace/company/daneng/RFP2         up 2d
+```
+
+The third column is the tmux session name (falls back to the terminal tty when not inside tmux); the fourth is the project directory where the session was started (`~`-abbreviated).
 
 ## Config drift & sync
 
