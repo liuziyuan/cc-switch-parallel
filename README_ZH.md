@@ -62,12 +62,22 @@ switch --no-sync "P&G Nezha" codex       # 静默启动，抑制漂移警告
 ### 其他命令
 
 ```bash
+switch ps         # 列出正在运行的、由 switch 启动的会话
 switch sync       # 检测并同步配置漂移（插件、通用配置）
 switch doctor     # 诊断环境（sqlite3、数据库、二进制等）
 switch clean      # 删除实例目录（交互式，或 --all）
 switch update     # 自更新到最新 npm 版本
 switch --help     # 列出所有命令
 ```
+
+`switch ps` 每个会话一行 —— 同一 provider 并发跑多个终端时各占一行，互不覆盖：
+
+```
+  claude  P&G Nezha      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
+  claude  P&G Nezha      RFP2                ~/workspace/company/daneng/RFP2         up 2d
+```
+
+第三列是 tmux 会话名（不在 tmux 里运行时回退显示终端 tty），第四列是启动时所在的项目目录（`~` 缩写）。
 
 ## 配置漂移与同步
 

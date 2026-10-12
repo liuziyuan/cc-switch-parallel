@@ -1137,11 +1137,14 @@ function atomicWrite(path, data) {
 
 // ─── Tracked launch & session files ───────────────────────────────────
 
-// Per-instance record of a live switch-launched session, consumed by
-// `switch ps` and the TUI live marker. Lives inside the instance dir (same
-// precedent as settings.json), so `clean` removes it with the directory.
-const SESSION_FILENAME = ".cc-switch-session.json";
-const sessionFilePath = (instanceDir) => join(instanceDir, SESSION_FILENAME);
+// Records of live switch-launched sessions, consumed by `switch ps` and the
+// TUI live marker. One file per session (a provider can run concurrently in
+// several terminals), inside the instance dir (same precedent as
+// settings.json), so `clean` removes them with the directory.
+const SESSIONS_SUBDIR = ".cc-switch-sessions";
+const LEGACY_SESSION_FILENAME = ".cc-switch-session.json";
+const sessionsDir = (instanceDir) => join(instanceDir, SESSIONS_SUBDIR);
+const legacySessionFilePath = (instanceDir) => join(instanceDir, LEGACY_SESSION_FILENAME);
 
 // One ps(1) field lookup; null on any hiccup. Used for lstart (the PID-reuse
 // guard) and for the parent's tty.
@@ -1154,9 +1157,14 @@ function psField(pid, field) {
   }
 }
 
+// Writes this session's own file (named after pid+ms, so concurrent sessions
+// never collide) and returns its path — null on failure. Callers only ever
+// remove the path they got back, never a shared file.
 function writeSessionFile(instanceDir, pid, bin, extraArgs) {
   try {
-    atomicWrite(sessionFilePath(instanceDir), JSON.stringify({
+    let file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}.json`);
+    for (let n = 2; existsSync(file); n++) file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}-${n}.json`);
+    atomicWrite(file, JSON.stringify({
       pid,
       lstart: psField(pid, "lstart"),
       cli: bin,
@@ -1164,23 +1172,40 @@ function writeSessionFile(instanceDir, pid, bin, extraArgs) {
       startedAt: Date.now(),
       extraArgs,
       tty: psField(process.pid, "tty"),
+      cwd: process.cwd(),
     }, null, 2));
+    return file;
   } catch {
     // best-effort: a tracking failure must never block the launch
-  }
-}
-
-function removeSessionFile(instanceDir) {
-  try { unlinkSync(sessionFilePath(instanceDir)); } catch {}
-}
-
-function readSessionFile(instanceDir) {
-  try {
-    const s = JSON.parse(readFileSync(sessionFilePath(instanceDir), "utf8"));
-    return isPlainObject(s) ? s : null;
-  } catch {
     return null;
   }
+}
+
+function removeSessionFile(sessionFilePath) {
+  try { unlinkSync(sessionFilePath); } catch {}
+}
+
+// All sessions of an instance: the per-session files plus the legacy
+// single-file record from older versions. A file that fails to parse (parent
+// killed mid-write) yields { session: null } so the caller cleans it up.
+function readSessions(instanceDir) {
+  const out = [];
+  const names = readdirSyncSafe(sessionsDir(instanceDir)) || [];
+  for (const name of names) {
+    if (!name.endsWith(".json") || name.startsWith(".tmp.")) continue;
+    const path = join(sessionsDir(instanceDir), name);
+    try {
+      const s = JSON.parse(readFileSync(path, "utf8"));
+      out.push({ path, session: isPlainObject(s) ? s : null });
+    } catch {
+      out.push({ path, session: null });
+    }
+  }
+  try {
+    const s = JSON.parse(readFileSync(legacySessionFilePath(instanceDir), "utf8"));
+    if (isPlainObject(s)) out.push({ path: legacySessionFilePath(instanceDir), session: s });
+  } catch {}
+  return out;
 }
 
 // Alive = pid exists AND its recorded lstart matches (kill(0) alone would
@@ -1197,9 +1222,10 @@ function sessionIsAlive(session) {
 }
 
 // Foreground replacement for the former spawnSync launch: stdio and exit-code
-// semantics unchanged, but the child's pid is recorded while it runs and the
-// session file is removed on a clean exit. A crashed parent (kill -9) leaves
-// the file behind — `switch ps` cleans those up as stale.
+// semantics unchanged, but the child's pid is recorded while it runs and its
+// session file is removed on a clean exit — only its own, so concurrent
+// sessions of the same provider stay tracked. A crashed parent (kill -9)
+// leaves the file behind — `switch ps` cleans those up as stale.
 function launchTracked(bin, extraArgs, instanceDir, envKey, onExit) {
   // Belt-and-suspenders for the flowing-stdin hazard: any missed cleanup
   // upstream would let the parent keep consuming (and discarding) keystrokes
@@ -1209,14 +1235,14 @@ function launchTracked(bin, extraArgs, instanceDir, envKey, onExit) {
     stdio: "inherit",
     env: { ...process.env, [envKey]: instanceDir },
   });
-  if (child.pid) writeSessionFile(instanceDir, child.pid, bin, extraArgs);
+  const sessionFile = child.pid ? writeSessionFile(instanceDir, child.pid, bin, extraArgs) : null;
   child.on("error", (e) => {
-    removeSessionFile(instanceDir);
+    if (sessionFile) removeSessionFile(sessionFile);
     console.error(`✗ Failed to launch ${bin}: ${e.message}`);
     process.exit(1);
   });
   child.on("exit", (code) => {
-    removeSessionFile(instanceDir);
+    if (sessionFile) removeSessionFile(sessionFile);
     try { onExit?.(code); } catch {}
     process.exit(code || 0);
   });
@@ -2441,32 +2467,55 @@ function formatDuration(ms) {
 }
 
 // Live providerIds across all instances — feeds the TUI ● live marker.
-// Same per-iteration-snapshot pattern as snapshotAliveByCli.
+// Same per-iteration-snapshot pattern as snapshotAliveByCli. Read-only: any
+// session alive marks the provider; cleanup is `runPs`'s job.
 function buildRunningSet() {
   const running = new Set();
   for (const inst of collectInstances()) {
-    const session = readSessionFile(inst.path);
-    if (session && sessionIsAlive(session)) running.add(inst.name);
+    for (const { session } of readSessions(inst.path)) {
+      if (sessionIsAlive(session)) { running.add(inst.name); break; }
+    }
   }
   return running;
+}
+
+// tty → tmux session name, one lookup for the whole `ps` run. Empty map when
+// tmux is absent or errors — caller then falls back to the raw tty.
+function tmuxSessionByTty() {
+  const map = new Map();
+  try {
+    const r = spawnSync("tmux", ["list-panes", "-a", "-F", "#{pane_tty}\t#{session_name}"], { encoding: "utf8" });
+    if (r.status !== 0) return map;
+    for (const line of (r.stdout || "").split("\n")) {
+      // #{pane_tty} reports "/dev/ttysNNN"; ps(1) reports "ttysNNN". Normalize
+      // to the ps form so session.tty lookups hit.
+      const [tty, session] = line.split("\t");
+      if (tty && session) map.set(tty.replace(/^\/dev\//, ""), session);
+    }
+  } catch {}
+  return map;
 }
 
 function runPs() {
   const running = [];
   for (const inst of collectInstances()) {
-    const session = readSessionFile(inst.path);
-    if (!session) continue; // not launched by switch
-    if (sessionIsAlive(session)) {
-      running.push({ inst, session });
-    } else {
-      // A crashed parent (kill -9) leaves no exit event behind — clean up here.
-      try { unlinkSync(sessionFilePath(inst.path)); } catch {}
+    for (const { path, session } of readSessions(inst.path)) {
+      if (sessionIsAlive(session)) {
+        running.push({ inst, session });
+      } else {
+        // A crashed parent (kill -9) leaves no exit event behind — clean up
+        // here. Only the dead session's own file, never its siblings.
+        try { unlinkSync(path); } catch {}
+      }
     }
   }
   if (!running.length) {
     console.log("✓ No running instances");
     return;
   }
+  const tmuxByTty = tmuxSessionByTty();
+  const home = process.env.HOME;
+  const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
   const rows = running.map(({ inst, session }) => {
     let name = session.providerId || inst.name;
     try {
@@ -2476,7 +2525,8 @@ function runPs() {
     return {
       cli: inst.appType,
       name,
-      tty: session.tty || "-",
+      tmux: (session.tty && tmuxByTty.get(session.tty)) || session.tty || "-",
+      dir: shorten(session.cwd) || "-",
       up: formatDuration(Date.now() - (session.startedAt || Date.now())),
       args: Array.isArray(session.extraArgs) && session.extraArgs.length
         ? ` ${session.extraArgs.join(" ")}`
@@ -2486,11 +2536,12 @@ function runPs() {
   const w = (xs) => Math.max(...xs.map((x) => x.length), 1);
   const wCli = w(rows.map((r) => r.cli));
   const wName = w(rows.map((r) => r.name));
-  const wTty = w(rows.map((r) => r.tty));
+  const wTmux = w(rows.map((r) => r.tmux));
+  const wDir = w(rows.map((r) => r.dir));
   const wUp = w(rows.map((r) => r.up));
   console.log("");
   for (const r of rows) {
-    console.log(`  ${r.cli.padEnd(wCli)}  ${r.name.padEnd(wName)}  ${r.tty.padEnd(wTty)}  up ${r.up.padEnd(wUp)}  ${r.cli}${r.args}`);
+    console.log(`  ${r.cli.padEnd(wCli)}  ${r.name.padEnd(wName)}  ${r.tmux.padEnd(wTmux)}  ${r.dir.padEnd(wDir)}  up ${r.up.padEnd(wUp)}  ${r.cli}${r.args}`);
   }
   console.log("");
 }
