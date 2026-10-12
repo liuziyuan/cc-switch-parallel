@@ -81,10 +81,16 @@ The third column is the tmux session name (falls back to the terminal tty when n
 
 ## Config drift & sync
 
+**The mental model: config flows down on launch, and what you change inside a session should come back up.** `switch` generates each instance's config from cc-switch's database on every launch — edits made inside a Claude session are the one exception, and the sync flow exists to capture them. The upward channel covers **every field** of a Claude instance's `settings.json`: beyond plugin state, env, permissions, hooks, statusLine etc. are detected, displayed, and written back per field. Changes are shown as dotted field paths, and on confirmation are written back with a **smart split**: fields that already exist in the common config go into `common_config_claude` (otherwise the next launch would overwrite them with common's stale value), everything else goes into that provider's own config.
+
+Even if you never sync, `switch` **backs up** an instance's `settings.json` to `~/.cc-switch/backups/claude/<provider-id>/` (10 most recent kept) right before overwriting it, and warns on stderr which fields are about to be lost — edits never vanish silently. Upgrade note: this requires the v3 baseline (`preparedSettings`); edits made before the upgrade can't be recognized and are only covered by the backup.
+
 `switch` keeps a snapshot (`~/.cc-switch/sync-state.json`) of the config it last saw, and detects two kinds of drift on every launch:
 
 - **Downward** — cc-switch's *common config* (`common_config_claude` / `common_config_codex`) changed in the desktop app. Staleness is tracked **per instance**: the warning names exactly which providers still run the old config. Confirming the sync (y) regenerates those instances' config files in place and refreshes their baselines, so the warning goes away; **already-running sessions** still need a restart to pick up the new config (that's what "restart to apply" in the prompt means). `switch clean` also drops a removed instance's baseline, so stale warnings stop naming deleted providers.
-- **Upward** — a plugin/skill was installed, removed, or toggled inside a `switch`-launched Claude session (`/plugin`). `switch` warns you and can write the change back into cc-switch's `common_config_claude.enabledPlugins`. When multiple instances disagree, only instances whose plugin state was actually edited get a vote (a stale mirror of the old common config doesn't); among edited instances the most recent change wins.
+- **Upward** — edits made inside a `switch`-launched Claude session, captured via two channels:
+  - **Plugins**: installed, removed, or toggled (`/plugin`), written back into `common_config_claude.enabledPlugins`. When multiple instances disagree, only instances whose plugin state was actually edited get a vote (a stale mirror of the old common config doesn't); among edited instances the most recent change wins.
+  - **Settings fields**: non-plugin fields (env, permissions, hooks, statusLine …) are shown as a leaf-level diff (arrays compare whole-block — element-level merging has no reliable primitive under RFC 7396) and written back with the smart split on confirmation. Arbitration mirrors the plugin channel: mirror instances get no vote; the winner per field is the most recently edited instance (mtime). Known limitation: a field that exists in the common config is always written to common — it would reach every common-config consumer even if you meant to change one provider, because that's the only write that survives the merge order.
 
 In **TUI mode** drift is shown before the CLI selector and you can confirm the sync inline. In **command mode** it's a non-blocking warning on stderr — run `switch sync` to review and apply, pass `--sync` to confirm inline before launching, or `--no-sync` to suppress the warning entirely. The first run silently records a baseline, so existing plugins are never reported as "new".
 
@@ -123,7 +129,7 @@ const APP_ADAPTERS = {
 };
 ```
 
-`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Optional `detectPluginDrift` / `syncPluginsBack` (Claude only today) add per-CLI plugin sync; optional `readInstancePluginState` lets the per-instance drift baseline record that CLI's plugin state.
+`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Optional `detectPluginDrift` / `syncPluginsBack` (Claude only today) add per-CLI plugin sync; optional `detectSettingsDrift` / `syncSettingsBack` (Claude only today) add the settings-field upward channel; optional `readInstancePluginState` lets the per-instance drift baseline record that CLI's plugin state, and optional `readInstanceSettingsSnapshot` lets it record the full settings prepare just handed down (v3 — the basis of the overwrite guard and the settings-field sync).
 
 ## Requirements
 

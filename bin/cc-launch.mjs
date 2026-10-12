@@ -118,8 +118,11 @@ function queryDB(sql) {
 
 // Write helper for SQLite (mirrors queryDB without -json / JSON.parse).
 // Used by runtime-preference recycling to atomically patch common_config_claude.
+// ".timeout 3000" is a sqlite3 dot-command setting the busy timeout — the
+// 2s `timeout` option below only bounds the PROCESS, and can't make sqlite
+// wait out a lock held by the cc-switch desktop app mid-write.
 function execDB(sql) {
-  execFileSync("sqlite3", [DB_PATH, sql], {
+  execFileSync("sqlite3", [DB_PATH, ".timeout 3000", sql], {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
     timeout: 2000,
@@ -179,6 +182,19 @@ function patchCommonConfigClaude(patchObj) {
   const patchLit = sqlQuote(JSON.stringify(patchObj));
   execDB(
     `UPDATE settings SET value = json_patch(value, json(${patchLit})) WHERE key = ${sqlQuote(key)}`,
+  );
+}
+
+// Atomically merge a patch into one provider's settings_config via sqlite
+// json_patch (RFC 7396 — same contract as patchCommonConfigClaude, but the
+// target is providers.settings_config, a TEXT column holding JSON). A single
+// UPDATE is atomic, so concurrent launches can't lose updates on disjoint
+// keys. Only updates an existing row — never INSERTs a provider.
+function patchProviderSettingsConfig(providerId, appType, patchObj) {
+  const patchLit = sqlQuote(JSON.stringify(patchObj));
+  execDB(
+    `UPDATE providers SET settings_config = json_patch(settings_config, json(${patchLit})) ` +
+    `WHERE id = ${sqlQuote(providerId)} AND app_type = ${sqlQuote(appType)}`,
   );
 }
 
@@ -597,6 +613,91 @@ function jsonIsSubset(target, source) {
     );
   }
   return target === source;
+}
+
+// Strict structural equality for the instance-settings guard & diff: objects
+// recurse per key; arrays are atomic, order-sensitive leaves. The array
+// semantics are deliberate — settings arrays like permissions.allow or hooks
+// have no reliable element-level merge under RFC 7396 (json_patch has no
+// array patch primitive), so "did the user change this array" is answered
+// whole-block. jsonIsSubset is the WRONG tool here: its fuzzy array matching
+// (every source item matches SOME target item) would call different arrays
+// equal, which is exactly the false negative the overwrite guard must never
+// produce.
+function deepEqualJson(a, b) {
+  if (a === b) return true;
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ak = Object.keys(a);
+    const bk = Object.keys(b);
+    if (ak.length !== bk.length) return false;
+    for (const k of ak) {
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!deepEqualJson(a[k], b[k])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Leaf-level diff of two parsed settings objects, from a baseline to the
+// current state: [{path, op: "add"|"change"|"remove", from, to}] where path
+// is a dotted key path ("env.ANTHROPIC_AUTH_TOKEN"). Objects recurse per
+// key; arrays are atomic — the path stops at the array's key and from/to
+// carry the whole array (same semantics as deepEqualJson, so "what changed"
+// and "is it equal" can never disagree).
+// Removal folding: a level whose changes are ALL removes collapses into
+// ONE remove at the subtree root — otherwise a json_patch built from
+// per-leaf nulls would leave empty-object husks behind ({"hooks": {}}
+// after deleting every hook). Folded only when the level is exclusively
+// removal (any add/change keeps per-leaf granularity so mixed edits stay
+// visible).
+// Callers filter the enabledPlugins subtree themselves — the plugin channel
+// owns that path, and this function must not know about channels.
+function diffSettingsLeaves(baseline, current, prefix = "") {
+  const changes = [];
+  const b = isPlainObject(baseline) ? baseline : {};
+  const c = isPlainObject(current) ? current : {};
+
+  const keys = new Set([...Object.keys(b), ...Object.keys(c)]);
+  for (const k of keys) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    const inB = Object.prototype.hasOwnProperty.call(b, k);
+    const inC = Object.prototype.hasOwnProperty.call(c, k);
+    if (inB && inC) {
+      const bv = b[k];
+      const cv = c[k];
+      if (isPlainObject(bv) && isPlainObject(cv)) {
+        changes.push(...diffSettingsLeaves(bv, cv, path));
+      } else if (!deepEqualJson(bv, cv)) {
+        // Arrays & scalars are leaves; deepEqualJson's non-object branch is
+        // strict ===, which is the right comparison for both.
+        changes.push({ path, op: "change", from: bv, to: cv });
+      }
+    } else if (inC) {
+      changes.push({ path, op: "add", from: undefined, to: c[k] });
+    } else {
+      changes.push({ path, op: "remove", from: b[k], to: undefined });
+    }
+  }
+
+  // Fold an all-remove level into a single root remove. Trigger only when
+  // every change below this prefix is a remove AND they all hang off ONE
+  // key of this prefix (a mixed subtree keeps leaf granularity). The folded
+  // "from" is rebuilt so the display line can still show what was deleted.
+  if (prefix && changes.length > 0 && changes.every((ch) => ch.op === "remove")) {
+    const roots = new Set(changes.map((ch) => ch.path.split(".")[prefix.split(".").length]));
+    if (roots.size === 1) {
+      const from = {};
+      for (const ch of changes) {
+        const rel = ch.path.slice(prefix.length + 1).split(".");
+        let cur = from;
+        for (let i = 0; i < rel.length - 1; i++) cur = cur[rel[i]] = cur[rel[i]] || {};
+        cur[rel[rel.length - 1]] = ch.from;
+      }
+      return [{ path: prefix, op: "remove", from, to: undefined }];
+    }
+  }
+  return changes;
 }
 
 // ─── TOML utils (port of Rust merge_toml_table_like) ───────────────────
@@ -1135,6 +1236,53 @@ function atomicWrite(path, data) {
   renameSync(tmp, path);
 }
 
+// ─── Instance settings backups (overwrite guard) ──────────────────────
+
+// Copy an instance's settings.json to ~/.cc-switch/backups/<appType>/<id>/
+// right before the launch path overwrites it, and prune to the most recent
+// BACKUP_KEEP copies. Kept OUTSIDE the instance dir on purpose: `switch
+// clean` removes instance dirs wholesale, so a backup living there would be
+// deleted by the very flow that needs it; a sibling .bak file also risks
+// being picked up by Claude Code when it scans its config dir. Best-effort —
+// returns the backup path, or null on failure (the guard prints a louder
+// warning then, but never blocks the launch).
+const BACKUPS_DIR = join(CC_SWITCH_DIR, "backups");
+const BACKUP_KEEP = 10;
+const backupDirFor = (appType, providerId) => join(BACKUPS_DIR, appType, providerId);
+
+function backupInstanceSettings(appType, providerId, instanceDir) {
+  try {
+    const src = join(instanceDir, "settings.json");
+    if (!existsSync(src)) return null;
+    const dir = backupDirFor(appType, providerId);
+    mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
+    const dest = join(dir, `settings.json.${ts}`);
+    atomicWrite(dest, readFileSync(src, "utf8"));
+    const keep = (readdirSyncSafe(dir) || [])
+      .filter((n) => n.startsWith("settings.json."))
+      .sort()
+      .slice(0, -BACKUP_KEEP);
+    for (const name of keep) { try { unlinkSync(join(dir, name)); } catch {} }
+    return dest;
+  } catch {
+    return null;
+  }
+}
+
+// Remove the backup tree of instances whose provider row is gone — called
+// from clean's baseline pruning, same best-effort contract (a state-file
+// hiccup must not fail the clean itself).
+function pruneInstanceSettingsBackups(instances) {
+  try {
+    for (const { name, appType } of instances) {
+      rmSync(backupDirFor(appType, name), { recursive: true, force: true });
+    }
+  } catch {
+    // best-effort: unreadable backup dir — stays behind, harmless.
+  }
+}
+
 // ─── Tracked launch & session files ───────────────────────────────────
 
 // Records of live switch-launched sessions, consumed by `switch ps` and the
@@ -1276,6 +1424,84 @@ function shallowEqualPlugins(a, b) {
   return true;
 }
 
+// ─── Overwrite guard (launch-time safety net) ─────────────────────────
+// Called immediately before prepare() overwrites an instance's settings.json
+// (launch path AND refreshStaleInstances — the latter is an existing blind
+// spot: a confirmed sync regenerates OTHER stale instances in place, silently
+// wiping their own unsynced edits). Detects edits beyond enabledPlugins (the
+// plugin channel reports those separately — double-reporting teaches users
+// to ignore warnings), backs the file up, and warns. Never blocks the launch:
+// same philosophy as command-mode drift warnings.
+
+// Filter the enabledPlugins subtree out of a leaf-diff (the plugin channel
+// owns that path — the field channel must neither report nor vote on it).
+function isPluginChannelPath(path) {
+  return path === "enabledPlugins" || path.startsWith("enabledPlugins.");
+}
+
+// Format one diff entry as a display line for the warning/prompt lists.
+function formatSettingsChangeLine(ch, target) {
+  const mark = ch.op === "add" ? "+" : ch.op === "remove" ? "-" : "~";
+  const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
+  const targetTag = target === "common" ? " \x1b[2m(→ common config)\x1b[0m" : " \x1b[2m(→ provider)\x1b[0m";
+  return `${color}${mark} settings\x1b[0m ${ch.path}${targetTag}`;
+}
+
+function guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSnippet) {
+  try {
+    if (adapter.appType !== "claude") return; // v3 guard is claude-only this cycle
+    const current = adapter.readInstanceSettingsSnapshot(instanceDir);
+    if (!current) return; // missing/corrupt — nothing to protect
+
+    const state = loadSyncState();
+    const entry = state.instances?.claude?.[row.id];
+
+    // v2 → v3 upgrade: no preparedSettings yet. Recompute what prepare WOULD
+    // write from the current DB and compare. Equal → the file is a faithful
+    // mirror, silently backfill the v3 baseline (one-time, self-healing).
+    // Not equal → ambiguous (user edits, or the common config changed in the
+    // desktop app since — the latter is legitimate downward drift): we can't
+    // tell, so NO warning (avoid false alarms during the upgrade window),
+    // just one silent backup + a dim note. After this launch the baseline is
+    // v3 either way and future guards are exact.
+    if (!isPlainObject(entry?.preparedSettings)) {
+      const effective = buildClaudeEffectiveSettings(
+        JSON.parse(row.settings_config || "{}"), JSON.parse(row.meta || "{}"), commonSnippet,
+      );
+      const backfilled = deepEqualJson(effective, current);
+      if (!backfilled) {
+        const bak = backupInstanceSettings("claude", row.id, instanceDir);
+        process.stderr.write(`\x1b[2msettings.json for "${row.name}" differs from the cc-switch config; a backup was saved${bak ? ` (${bak})` : " (backup FAILED)"} before overwriting.\x1b[0m\n`);
+      }
+      return;
+    }
+
+    const changes = diffSettingsLeaves(entry.preparedSettings, current).filter(
+      (ch) => !isPluginChannelPath(ch.path),
+    );
+    if (changes.length === 0) return; // faithful mirror — overwrite silently
+
+    const bak = backupInstanceSettings("claude", row.id, instanceDir);
+    process.stderr.write(`\x1b[33m⚠ Instance settings.json for "${row.name}" has edits that will be overwritten:\x1b[0m\n`);
+    const shown = changes.slice(0, 10);
+    for (const ch of shown) {
+      const mark = ch.op === "add" ? "\x1b[32m+\x1b[0m" : ch.op === "remove" ? "\x1b[31m-\x1b[0m" : "\x1b[33m~\x1b[0m";
+      process.stderr.write(`    ${mark} ${ch.path}\n`);
+    }
+    if (changes.length > shown.length) {
+      process.stderr.write(`    … and ${changes.length - shown.length} more\n`);
+    }
+    process.stderr.write(
+      bak
+        ? `  Backup saved: ${bak}\n`
+        : `  \x1b[31mBackup FAILED — edits will be lost.\x1b[0m\n`,
+    );
+    process.stderr.write(`  Run \x1b[1mswitch sync\x1b[0m to merge these edits back into cc-switch before they are lost.\n`);
+  } catch {
+    // best-effort: guard must never block a launch.
+  }
+}
+
 // ─── App adapters (per-CLI strategy) ──────────────────────────────────
 // Each CLI implements a small adapter so adding a new CLI (e.g. gemini) means
 // adding one object here — runTUI / launchProvider / main stay generic. Fields:
@@ -1290,6 +1516,14 @@ function shallowEqualPlugins(a, b) {
 //   permissionArgs() map permission hotkey → CLI argv
 // Optional (claude only): detectPluginDrift() / syncPluginsBack() — plugin
 //   config drift detection & write-back into common_config (added in sync flow).
+// Optional (claude only): detectSettingsDrift() / syncSettingsBack() — the
+//   settings-field upward channel: full leaf-level diff of each instance's
+//   runtime settings.json against its recorded baseline, arbitrated across
+//   instances, then split between common_config and provider settings_config.
+// Optional (claude only): readInstanceSettingsSnapshot() — let the baseline
+//   record the full parsed settings prepare just wrote (v3); without it an
+//   adapter stays v2-shaped and skips the guard + settings-field sync.
+//   readInstancePluginState() lets the baseline record plugin state.
 const APP_ADAPTERS = {
   claude: {
     appType: "claude",
@@ -1333,9 +1567,20 @@ const APP_ADAPTERS = {
     // Read the enabledPlugins this instance's settings.json currently holds
     // (used by recordInstanceBaseline() to snapshot per-instance provenance).
     readInstancePluginState(instanceDir) {
+      const snap = this.readInstanceSettingsSnapshot(instanceDir);
+      if (!snap) return null;
+      return isPlainObject(snap.enabledPlugins) ? snap.enabledPlugins : {};
+    },
+
+    // Read the full parsed settings.json this instance currently holds. Used
+    // by buildInstanceBaselineEntry() right after prepare — the file on disk
+    // at that moment IS what we handed down, so the recorded snapshot is the
+    // ground truth the overwrite guard and the settings-field sync diff
+    // against. Returns null on missing/corrupt file (treated as "no v3
+    // baseline" by every consumer — never a drift report).
+    readInstanceSettingsSnapshot(instanceDir) {
       try {
-        const s = JSON.parse(readFileSync(join(instanceDir, "settings.json"), "utf8"));
-        return isPlainObject(s.enabledPlugins) ? s.enabledPlugins : {};
+        return JSON.parse(readFileSync(join(instanceDir, "settings.json"), "utf8"));
       } catch {
         return null;
       }
@@ -1364,6 +1609,109 @@ const APP_ADAPTERS = {
     // Write-back: apply the plugin patch into common_config_claude.
     syncPluginsBack(drift) {
       applyEnabledPluginsPatch(drift.patch);
+    },
+
+    // Upward drift, channel 2: non-plugin settings fields edited inside a
+    // session. Leaf-level diff of every instance's runtime settings.json
+    // against its v3 baseline (instances without one are skipped — pre-v3
+    // edits can't be told apart from mirrors), arbitrated across instances,
+    // then smart-split between common config and provider settings_config.
+    // Mirrors computeEnabledPluginsPatch's arbitration: a faithful mirror
+    // gets no vote; among voting instances the most recent edit (mtime) wins
+    // per path; the plugin channel's subtree is excluded so the two channels
+    // never double-report or double-vote.
+    // Returns { instances: [{providerId, name, changes, mtimeMs}],
+    //           commonPatch, providerPatches, conflicts: {path: count} } or null.
+    detectSettingsDrift(state) {
+      const dir = join(INSTANCES_DIR, "claude");
+      const baselines = state?.instances?.claude || {};
+      if (!existsSync(dir)) return null;
+
+      // Parse the current common snippet once; used both for split decisions
+      // and for "already equal in DB" filtering.
+      let commonObj = {};
+      try {
+        const snip = queryCommonConfig("claude");
+        if (snip) commonObj = JSON.parse(snip);
+      } catch {}
+
+      const candidates = [];
+      for (const name of readdirSyncSafe(dir) || []) {
+        try {
+          const settingsPath = join(dir, name, "settings.json");
+          const current = JSON.parse(readFileSync(settingsPath, "utf8"));
+          const baseline = baselines[name]?.preparedSettings;
+          if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
+          if (deepEqualJson(current, baseline)) continue; // unchanged mirror
+          const changes = diffSettingsLeaves(baseline, current).filter(
+            (ch) => !isPluginChannelPath(ch.path),
+          );
+          if (changes.length === 0) continue; // only plugin edits — channel 1's beat
+          let mtimeMs = 0;
+          try { mtimeMs = lstatSync(settingsPath).mtimeMs; } catch {}
+          candidates.push({ providerId: name, changes, mtimeMs });
+        } catch {
+          // missing/corrupt instance settings — skip
+        }
+      }
+      if (candidates.length === 0) return null;
+
+      // Per-path vote: a candidate that never changed a path relative to ITS
+      // OWN baseline has no say on that path (it only diverges from the
+      // group, not from what it was given). Winner = newest mtime.
+      const votes = new Map(); // path → [{candidate, change}]
+      for (const cand of candidates) {
+        for (const ch of cand.changes) {
+          if (!votes.has(ch.path)) votes.set(ch.path, []);
+          votes.get(ch.path).push({ cand, ch });
+        }
+      }
+      const commonPatch = {};
+      const providerPatches = {};
+      const conflicts = {};
+      const reported = [];
+      for (const [path, voters] of votes.entries()) {
+        voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
+        const winner = voters[voters.length - 1];
+        if (voters.length > 1) conflicts[path] = voters.length;
+
+        const row = queryProviderById(winner.cand.providerId, "claude");
+        const providerSettings = row ? JSON.parse(row.settings_config || "{}") : null;
+        if (!providerSettings) continue; // provider row gone — provider-target path is dropped
+
+        const { commonPatch: cp, providerPatch: pp } = splitChangesByTarget(
+          [winner.ch], winner.cand.providerId, commonObj, providerSettings,
+        );
+        Object.assign(commonPatch, cp);
+        // pp is ONE change's nested patch object (path-keyed), not {pid: patch} —
+        // merge it under the WINNING provider's id.
+        if (Object.keys(pp).length) {
+          providerPatches[winner.cand.providerId] = jsonDeepMerge(
+            providerPatches[winner.cand.providerId] || {}, pp,
+          );
+        }
+        reported.push({ providerId: winner.cand.providerId, change: winner.ch });
+      }
+      if (!Object.keys(commonPatch).length && !Object.keys(providerPatches).length) return null;
+
+      // Display-facing: one entry per candidate instance with its (filtered)
+      // changes, plus the name resolution for the prompt lines.
+      const nameById = new Map(queryProvidersByApp("claude").map((p) => [p.id, p.name]));
+      const instances = candidates.map((c) => ({
+        providerId: c.providerId,
+        name: nameById.get(c.providerId) || c.providerId,
+        changes: c.changes,
+        mtimeMs: c.mtimeMs,
+      }));
+      return { instances, commonPatch, providerPatches, conflicts };
+    },
+
+    // Write-back: apply the split patches. Runs in detectAndPromptSync's
+    // confirmed branch AFTER the plugin channel and BEFORE
+    // refreshStaleInstances — the write-back makes other instances stale,
+    // and refresh rebuilds their baselines so this prompt doesn't re-fire.
+    syncSettingsBack(drift) {
+      applySettingsFieldPatches(drift.commonPatch, drift.providerPatches);
     },
   },
 
@@ -1529,6 +1877,127 @@ function applyEnabledPluginsPatch(patch) {
   }
 }
 
+// ─── Settings-field upward channel (detect → arbitrate → split → write) ─
+
+// Does a dotted path exist in the parsed common-config snippet? The parent
+// object existing is enough — smart-split routes a field to common only when
+// common already owns that key, otherwise prepare's jsonDeepMerge(effective,
+// commonSource) wouldn't have sourced it from common in the first place.
+function pathExistsInSnippet(snippetObj, path) {
+  if (!isPlainObject(snippetObj) || !path) return false;
+  const parts = path.split(".");
+  let cur = snippetObj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!isPlainObject(cur) || !(parts[i] in cur)) return false;
+    cur = cur[parts[i]];
+  }
+  return isPlainObject(cur) && (parts[parts.length - 1] in cur);
+}
+
+// Rebuild a nested patch object from leaf-level changes (RFC 7396: remove =
+// null; deep adds materialize intermediate objects; inner nulls survive
+// deepEqual-style folds because diffSettingsLeaves already collapsed them).
+function buildPatchFromChanges(changes) {
+  const patch = {};
+  for (const ch of changes) {
+    const parts = ch.path.split(".");
+    let cur = patch;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!isPlainObject(cur[parts[i]])) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = ch.op === "remove" ? null : ch.to;
+  }
+  return patch;
+}
+
+// Read the value at a dotted path inside a parsed object (undefined if absent).
+function getPathValue(obj, path) {
+  let cur = obj;
+  for (const part of path.split(".")) {
+    if (!isPlainObject(cur) || !(part in cur)) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
+// Write-back orchestration for the settings-field channel. Common and each
+// provider patch go through SEPARATE try blocks: one DB hiccup must not
+// abort the rest, and — unlike the plugin channel's silent best-effort —
+// failures are REPORTED, because the user just explicitly confirmed these
+// writes; losing one silently is worse than an error line.
+function applySettingsFieldPatches(commonPatch, providerPatches) {
+  if (commonPatch && Object.keys(commonPatch).length) {
+    try {
+      patchCommonConfigClaude(commonPatch);
+    } catch (e) {
+      process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
+    }
+  }
+  for (const [providerId, patchObj] of Object.entries(providerPatches || {})) {
+    if (!patchObj || !Object.keys(patchObj).length) continue;
+    try {
+      patchProviderSettingsConfig(providerId, "claude", patchObj);
+    } catch (e) {
+      process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} settings: ${e.message}\x1b[0m\n`);
+    }
+  }
+}
+
+// Apply the smart split to one instance's winning changes: a path that
+// exists in the parsed common snippet goes to commonPatch (else next prepare
+// would overwrite the provider row with common's stale value — the change
+// would be lost); everything else goes to this provider's patch. Entries
+// already equal to the current DB value are dropped (avoids pointless writes
+// and phantom "refreshed" reports).
+function splitChangesByTarget(changes, providerId, commonObj, providerSettings) {
+  const commonPatch = {};
+  const providerPatch = {};
+  for (const ch of changes) {
+    if (pathExistsInSnippet(commonObj, ch.path)) {
+      if (!deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)) {
+        buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to);
+      }
+    } else {
+      const cur = getPathValue(providerSettings, ch.path);
+      if (!deepEqualJson(cur, ch.op === "remove" ? undefined : ch.to)) {
+        buildNestedAssign(providerPatch, ch.path, ch.op === "remove" ? null : ch.to);
+      }
+    }
+  }
+  return { commonPatch, providerPatch };
+}
+
+// Assign a value at a dotted path inside a patch object, creating
+// intermediate objects as needed (inverse of getPathValue for patch
+// construction; separate from buildPatchFromChanges because this works on a
+// shared, partially-populated patch across changes).
+function buildNestedAssign(patch, path, value) {
+  const parts = path.split(".");
+  let cur = patch;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!isPlainObject(cur[parts[i]])) cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+// List every path of a patch object, INCLUDING intermediate ones: a change's
+// path may stop at an object (e.g. an added statusLine), which materializes
+// as a nested object in the patch — listing only leaves would yield
+// statusLine.type and never match the change's statusLine. Nulls are leaves
+// (RFC 7396 removals). Used to tag sync-prompt lines with their write target.
+function collectPatchPaths(patch, prefix = "") {
+  const out = [];
+  if (!isPlainObject(patch)) return out;
+  for (const [k, v] of Object.entries(patch)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    out.push(path);
+    if (v !== null && isPlainObject(v)) out.push(...collectPatchPaths(v, path));
+  }
+  return out;
+}
+
 // Rewrite any per-instance-prefixed installPath in the shared
 // installed_plugins.json back to the global ~/.claude/plugins path. cc-switch
 // points CLAUDE_CONFIG_DIR at a per-instance dir, so Claude Code records newly
@@ -1622,13 +2091,13 @@ function refreshStaleInstances(state, staleByApp) {
         const settingsConfig = JSON.parse(row.settings_config || "{}");
         const meta = JSON.parse(row.meta || "{}");
         const instanceDir = adapter.setupInstance(row.id);
+        // Guard BEFORE prepare overwrites — this refresh path historically
+        // wiped other instances' own unsynced edits with zero warning.
+        guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSnippet);
         adapter.prepare(instanceDir, row.id, settingsConfig, meta, row.category, commonSnippet, settings);
-        const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
-        if (adapter.readInstancePluginState) {
-          const ep = adapter.readInstancePluginState(instanceDir);
-          if (ep) entry.enabledPlugins = ep;
-        }
-        state.instances[appType][row.id] = entry;
+        state.instances[appType][row.id] = buildInstanceBaselineEntry(
+          adapter, instanceDir, commonSnippet,
+        );
         refreshed.push(row.name);
       } catch {
         // best-effort: keep the old baseline so the drift stays visible.
@@ -1636,6 +2105,28 @@ function refreshStaleInstances(state, staleByApp) {
     }
   }
   return refreshed;
+}
+
+// Build one baseline entry for an instance whose config was just (re)generated.
+// Shared by recordInstanceBaseline (launch path) and refreshStaleInstances
+// (sync path) — both must record the IDENTICAL structure or the two paths'
+// drift behavior forks. The snapshot fields are read back from the file
+// prepare just wrote, so they are ground truth, not a re-derivation. v3 adds
+// preparedSettings (the full parsed settings as handed down) — the basis for
+// the overwrite guard and the settings-field sync diff. Adapters without
+// readInstanceSettingsSnapshot (codex) record v2-shaped entries and simply
+// don't participate in settings-field sync.
+function buildInstanceBaselineEntry(adapter, instanceDir, commonSnippet) {
+  const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
+  if (adapter.readInstanceSettingsSnapshot) {
+    const snap = adapter.readInstanceSettingsSnapshot(instanceDir);
+    if (snap) entry.preparedSettings = snap;
+  }
+  if (adapter.readInstancePluginState) {
+    const ep = adapter.readInstancePluginState(instanceDir);
+    if (ep) entry.enabledPlugins = ep;
+  }
+  return entry;
 }
 
 // Record per-instance provenance right after (re)generating an instance's
@@ -1649,13 +2140,10 @@ function recordInstanceBaseline(adapter, providerId, instanceDir, commonSnippet)
     const state = loadSyncState();
     state.instances = state.instances || {};
     state.instances[adapter.appType] = state.instances[adapter.appType] || {};
-    const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
-    if (adapter.readInstancePluginState) {
-      const ep = adapter.readInstancePluginState(instanceDir);
-      if (ep) entry.enabledPlugins = ep;
-    }
-    state.instances[adapter.appType][providerId] = entry;
-    state.version = 2;
+    state.instances[adapter.appType][providerId] = buildInstanceBaselineEntry(
+      adapter, instanceDir, commonSnippet,
+    );
+    state.version = 3;
     saveSyncState(state);
   } catch {
     // best-effort: DB/disk hiccup — the next launch will retry.
@@ -1681,7 +2169,7 @@ function snapshotSyncState(state, pluginSyncedCmds) {
     } catch {}
     state.claude.enabledPlugins = enabled;
   }
-  state.version = 2;
+  state.version = 3;
 }
 
 // Interactive yes/no confirm (TTY only). Returns true on "y", false otherwise.
@@ -1741,9 +2229,19 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     }
   }
 
+  // Channel 2: non-plugin settings fields (claude only, v3 baselines).
+  const settingsDrifts = {};
+  for (const [cmd, adapter] of Object.entries(APP_ADAPTERS)) {
+    if (adapter.detectSettingsDrift) {
+      const d = adapter.detectSettingsDrift(state);
+      if (d) settingsDrifts[cmd] = d;
+    }
+  }
+
   const hasCommon = Object.keys(commonDrift).length > 0;
   const hasPlugin = Object.keys(pluginDrifts).length > 0;
-  if (!hasCommon && !hasPlugin) return { synced: false, drifted: false };
+  const hasSettings = Object.keys(settingsDrifts).length > 0;
+  if (!hasCommon && !hasPlugin && !hasSettings) return { synced: false, drifted: false };
 
   if (quiet) return { synced: false, drifted: true };
 
@@ -1751,6 +2249,30 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   const lines = [];
   for (const [appType, names] of Object.entries(commonDrift)) {
     lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
+  }
+  for (const d of Object.values(settingsDrifts)) {
+    // Per-instance settings lines, target-tagged so the user knows where each
+    // edit lands BEFORE confirming. Only winning paths (the ones in the
+    // patches) are shown; mirror-instance noise is already filtered upstream.
+    const providerPatchByPath = new Map();
+    for (const [pid, patchObj] of Object.entries(d.providerPatches || {})) {
+      collectPatchPaths(patchObj, "").forEach((p) => providerPatchByPath.set(p, pid));
+    }
+    const commonPaths = new Set(collectPatchPaths(d.commonPatch || {}, ""));
+    for (const inst of d.instances) {
+      const shown = inst.changes.slice(0, 15);
+      for (const ch of shown) {
+        const target = commonPaths.has(ch.path) ? "common" : providerPatchByPath.has(ch.path) ? "provider" : null;
+        if (!target) continue; // losing vote / already equal in DB — not written
+        lines.push(formatSettingsChangeLine(ch, target));
+      }
+      if (inst.changes.length > shown.length) {
+        lines.push(`\x1b[2m… and ${inst.changes.length - shown.length} more fields for ${inst.name}\x1b[0m`);
+      }
+    }
+    for (const [path, count] of Object.entries(d.conflicts || {})) {
+      lines.push(`\x1b[2m(${count} instances disagree on ${path} — most recent edit wins)\x1b[0m`);
+    }
   }
   for (const d of Object.values(pluginDrifts)) {
     const changedKeys = new Set([...d.added, ...d.removed]);
@@ -1777,6 +2299,14 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     for (const [cmd, d] of Object.entries(pluginDrifts)) {
       APP_ADAPTERS[cmd]?.syncPluginsBack?.(d);
       syncedCmds.push(cmd);
+    }
+    // Settings-field write-back runs AFTER the plugin channel and BEFORE
+    // refreshStaleInstances — same ordering constraint as below: the write
+    // just changed common_config / provider rows, so every instance the
+    // write-back made stale must be refreshed in this same run or the prompt
+    // would re-fire.
+    for (const [cmd, d] of Object.entries(settingsDrifts)) {
+      APP_ADAPTERS[cmd]?.syncSettingsBack?.(d);
     }
     // Order matters: the plugin write-back above just changed common_config,
     // so staleness is recomputed AFTER it. Every stale instance — the ones
@@ -2418,6 +2948,9 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
   const settings = loadSettings();
 
   const instanceDir = adapter.setupInstance(row.id);
+  // Guard BEFORE prepare overwrites settings.json — user edits beyond plugins
+  // get a warning + backup instead of vanishing silently.
+  guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSnippet);
   adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, commonSnippet, settings);
   recordInstanceBaseline(adapter, row.id, instanceDir, commonSnippet);
   // Record AFTER prepare succeeded (a failed prep is not a launch) and BEFORE
@@ -2645,6 +3178,7 @@ async function runClean(args) {
   if (args.includes("--all") || args.includes("--yes")) {
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
     pruneInstanceBaselines(instances);
+    pruneInstanceSettingsBackups(instances);
     console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
     return;
   }
@@ -2662,10 +3196,13 @@ async function runClean(args) {
   if (choice.value === "__all__") {
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
     pruneInstanceBaselines(instances);
+    pruneInstanceSettingsBackups(instances);
     console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
   } else {
     rmSync(choice.value, { recursive: true, force: true });
-    pruneInstanceBaselines(instances.filter((i) => i.path === choice.value));
+    const removed = instances.filter((i) => i.path === choice.value);
+    pruneInstanceBaselines(removed);
+    pruneInstanceSettingsBackups(removed);
     console.log(`✓ Removed ${choice.value}`);
   }
 }
@@ -2782,7 +3319,7 @@ Usage:
   switch <provider> <cmd> [args...]     Launch a provider directly
   switch --sync <provider> <cmd> [...]  Same, but confirm config drift first
   switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
-  switch sync                           Detect & sync config drift (plugins, common config)
+  switch sync                           Detect & sync config drift (plugins, settings fields, common config)
   switch doctor                         Diagnose the environment
   switch clean [--all]                  Remove instance directories
   switch ps                             List running switch-launched sessions
