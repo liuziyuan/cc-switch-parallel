@@ -597,6 +597,34 @@ function jsonDeepMerge(target, source) {
   return target;
 }
 
+// 1:1 port of the upstream Rust json_deep_merge (services/provider/live.rs,
+// 69ff69d^): two plain objects recurse per key of source (missing keys are
+// inserted, existing keys recurse); EVERY other shape — scalar vs object,
+// object vs scalar, arrays, type mismatches — falls through to a full source
+// overwrite. The old jsonDeepMerge above got that fallthrough wrong (the
+// target kept its value), which inverted the common-over-provider semantics
+// of buildClaudeEffectiveSettings. Do NOT "fix" jsonDeepMerge in place:
+// detectSettingsDrift's providerPatches accumulation still calls it and
+// relies on target-wins for merging nested patches. Two functions, two
+// contracts, kept separate on purpose.
+// Contract: returns the merged value; the caller must assign it back
+// (`x = mergeCommonOverProvider(x, src)`) because the scalar-overwrite
+// branch cannot mutate the caller's binding. source is always a JSON.parse
+// result, so jsonDeepClone (JSON round-trip) is safe on every branch.
+function mergeCommonOverProvider(target, source) {
+  if (!isPlainObject(target) || !isPlainObject(source)) {
+    return jsonDeepClone(source);
+  }
+  for (const [key, sourceValue] of Object.entries(source)) {
+    if (Object.prototype.hasOwnProperty.call(target, key)) {
+      target[key] = mergeCommonOverProvider(target[key], sourceValue);
+    } else {
+      target[key] = jsonDeepClone(sourceValue);
+    }
+  }
+  return target;
+}
+
 function jsonIsSubset(target, source) {
   if (isPlainObject(source)) {
     if (!isPlainObject(target)) return false;
@@ -626,6 +654,19 @@ function jsonIsSubset(target, source) {
 // produce.
 function deepEqualJson(a, b) {
   if (a === b) return true;
+  // Arrays: still atomic leaves for DIFF purposes (a changed array is one
+  // whole-block change), but equality is CONTENT equality, element-wise —
+  // baseline and runtime settings come from two separate JSON.parse calls,
+  // so `a === b` would call two identical arrays unequal and turn every
+  // unchanged permissions.allow/hooks block into a phantom diff (false
+  // overwrite-guard warnings, idempotent-but-noisy sync writes).
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqualJson(a[i], b[i])) return false;
+    }
+    return true;
+  }
   if (isPlainObject(a) && isPlainObject(b)) {
     const ak = Object.keys(a);
     const bk = Object.keys(b);
@@ -645,12 +686,13 @@ function deepEqualJson(a, b) {
 // key; arrays are atomic — the path stops at the array's key and from/to
 // carry the whole array (same semantics as deepEqualJson, so "what changed"
 // and "is it equal" can never disagree).
-// Removal folding: a level whose changes are ALL removes collapses into
-// ONE remove at the subtree root — otherwise a json_patch built from
-// per-leaf nulls would leave empty-object husks behind ({"hooks": {}}
-// after deleting every hook). Folded only when the level is exclusively
-// removal (any add/change keeps per-leaf granularity so mixed edits stay
-// visible).
+// NO removal folding here: folded subtree removes once made "delete one key"
+// read as "delete the whole parent" — a folded {env:null} patch wiped every
+// SIBLING the user never touched from common_config (unrecoverable: the
+// overwrite-guard backup only covers instance files, not the DB row), and
+// the folded parent path also bypassed the sensitive-key gate. Diffing stays
+// per-leaf; empty-husk prevention moved to foldAllNullSubtrees at patch
+// build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
 function diffSettingsLeaves(baseline, current, prefix = "") {
@@ -677,24 +719,6 @@ function diffSettingsLeaves(baseline, current, prefix = "") {
       changes.push({ path, op: "add", from: undefined, to: c[k] });
     } else {
       changes.push({ path, op: "remove", from: b[k], to: undefined });
-    }
-  }
-
-  // Fold an all-remove level into a single root remove. Trigger only when
-  // every change below this prefix is a remove AND they all hang off ONE
-  // key of this prefix (a mixed subtree keeps leaf granularity). The folded
-  // "from" is rebuilt so the display line can still show what was deleted.
-  if (prefix && changes.length > 0 && changes.every((ch) => ch.op === "remove")) {
-    const roots = new Set(changes.map((ch) => ch.path.split(".")[prefix.split(".").length]));
-    if (roots.size === 1) {
-      const from = {};
-      for (const ch of changes) {
-        const rel = ch.path.slice(prefix.length + 1).split(".");
-        let cur = from;
-        for (let i = 0; i < rel.length - 1; i++) cur = cur[rel[i]] = cur[rel[i]] || {};
-        cur[rel[rel.length - 1]] = ch.from;
-      }
-      return [{ path: prefix, op: "remove", from, to: undefined }];
     }
   }
   return changes;
@@ -794,7 +818,7 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet) {
   if (providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)) {
     try {
       const source = JSON.parse(commonSnippet.trim());
-      jsonDeepMerge(effective, source);
+      effective = mergeCommonOverProvider(effective, source);
     } catch (e) {
       console.error(`⚠ Common config merge failed: ${e.message}`);
     }
@@ -1443,7 +1467,10 @@ function isPluginChannelPath(path) {
 function formatSettingsChangeLine(ch, target) {
   const mark = ch.op === "add" ? "+" : ch.op === "remove" ? "-" : "~";
   const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
-  const targetTag = target === "common" ? " \x1b[2m(→ common config)\x1b[0m" : " \x1b[2m(→ provider)\x1b[0m";
+  const targetTag =
+    target === "common" ? " \x1b[2m(→ common config)\x1b[0m"
+    : target === "blocked" ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
+    : " \x1b[2m(→ provider)\x1b[0m";
   return `${color}${mark} settings\x1b[0m ${ch.path}${targetTag}`;
 }
 
@@ -1669,6 +1696,7 @@ const APP_ADAPTERS = {
       const commonPatch = {};
       const providerPatches = {};
       const conflicts = {};
+      const rejectedPaths = [];
       const reported = [];
       for (const [path, voters] of votes.entries()) {
         voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
@@ -1679,10 +1707,11 @@ const APP_ADAPTERS = {
         const providerSettings = row ? JSON.parse(row.settings_config || "{}") : null;
         if (!providerSettings) continue; // provider row gone — provider-target path is dropped
 
-        const { commonPatch: cp, providerPatch: pp } = splitChangesByTarget(
+        const { commonPatch: cp, providerPatch: pp, rejected: rj } = splitChangesByTarget(
           [winner.ch], winner.cand.providerId, commonObj, providerSettings,
         );
         Object.assign(commonPatch, cp);
+        if (rj.length) rejectedPaths.push(...rj.map((ch) => ch.path));
         // pp is ONE change's nested patch object (path-keyed), not {pid: patch} —
         // merge it under the WINNING provider's id.
         if (Object.keys(pp).length) {
@@ -1692,7 +1721,9 @@ const APP_ADAPTERS = {
         }
         reported.push({ providerId: winner.cand.providerId, change: winner.ch });
       }
-      if (!Object.keys(commonPatch).length && !Object.keys(providerPatches).length) return null;
+      // All-rejected drift must still surface: every change was refused, but
+      // the prompt has to say so instead of going silent.
+      if (!Object.keys(commonPatch).length && !Object.keys(providerPatches).length && !rejectedPaths.length) return null;
 
       // Display-facing: one entry per candidate instance with its (filtered)
       // changes, plus the name resolution for the prompt lines.
@@ -1703,7 +1734,7 @@ const APP_ADAPTERS = {
         changes: c.changes,
         mtimeMs: c.mtimeMs,
       }));
-      return { instances, commonPatch, providerPatches, conflicts };
+      return { instances, commonPatch, providerPatches, conflicts, rejected: rejectedPaths };
     },
 
     // Write-back: apply the split patches. Runs in detectAndPromptSync's
@@ -1894,6 +1925,34 @@ function pathExistsInSnippet(snippetObj, path) {
   return isPlainObject(cur) && (parts[parts.length - 1] in cur);
 }
 
+// Sensitive-key gate for the smart split's common direction — 1:1 port of
+// Rust ProviderService::is_sensitive_config_key. Deliberately over-broad:
+// blocking one shareable key only costs that key not being shared (small,
+// recoverable), while leaking one credential into common_config reaches
+// EVERY provider that consumes the snippet (unrecoverable). Pattern classes,
+// not name enumeration — enumerating `*_API_KEY` would miss the next one.
+function isSensitiveConfigKey(name) {
+  const upper = String(name).toUpperCase();
+  const SENSITIVE_SUFFIXES = [
+    "_KEY", "_API_KEY", "_ACCESS_KEY", "_ACCESS_KEY_ID", "_KEY_ID",
+    "_PRIVATE_KEY", "_APIKEY", "_ACCESSKEY", "_SECRETKEY", "_APITOKEN",
+    "_AUTH_TOKEN", "_TOKEN", "_PAT", "_PWD", "_PASS", "_PASSPHRASE",
+    "_CREDS", "_CUSTOM_HEADERS",
+  ];
+  const SENSITIVE_EXACT = ["APIKEY", "API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS", "HEADERS"];
+  const SENSITIVE_CONTAINS = ["SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY", "BEARER_TOKEN", "COOKIE", "AUTHORIZATION"];
+  return SENSITIVE_EXACT.includes(upper)
+    || SENSITIVE_SUFFIXES.some((s) => upper.endsWith(s))
+    || SENSITIVE_CONTAINS.some((c) => upper.includes(c));
+}
+
+// Dotted-path variant for the smart split: every segment of a change path is
+// a map key at some nesting level, and Rust strips sensitive keys at EVERY
+// level — so a hit on any segment routes the change out of common's direction.
+function isSensitiveConfigPath(path) {
+  return String(path || "").split(".").some((seg) => isSensitiveConfigKey(seg));
+}
+
 // Rebuild a nested patch object from leaf-level changes (RFC 7396: remove =
 // null; deep adds materialize intermediate objects; inner nulls survive
 // deepEqual-style folds because diffSettingsLeaves already collapsed them).
@@ -1944,17 +2003,61 @@ function applySettingsFieldPatches(commonPatch, providerPatches) {
   }
 }
 
+// Collapse a patch subtree into one null (RFC 7396 whole-subtree remove)
+// ONLY when the patch deletes every key the target object actually holds at
+// that level. Per-leaf nulls alone would leave empty husks ({"hooks": {}}
+// after deleting every hook), but an unconditional all-null-in-patch fold
+// would delete siblings the user never touched — the patch does not carry
+// them, so "all-null inside the patch" is NOT "all gone in the target";
+// the fold must consult the object the patch will be applied to. The TOP
+// level never folds: an RFC 7396 patch IS an object, a top-level null is
+// an invalid patch.
+function foldRemovalPatch(patch, target) {
+  if (!isPlainObject(patch)) return;
+  for (const k of Object.keys(patch)) {
+    const pv = patch[k];
+    if (!isPlainObject(pv)) continue; // leaves (values and nulls) stay as-is
+    const targetChild = isPlainObject(target) ? target[k] : undefined;
+    foldRemovalPatch(pv, targetChild);
+    const pvKeys = Object.keys(pv);
+    if (
+      pvKeys.length > 0 &&
+      pvKeys.every((key) => pv[key] === null) &&
+      isPlainObject(targetChild) &&
+      Object.keys(targetChild).length === pvKeys.length &&
+      pvKeys.every((key) => key in targetChild)
+    ) {
+      patch[k] = null;
+    }
+  }
+}
+
 // Apply the smart split to one instance's winning changes: a path that
 // exists in the parsed common snippet goes to commonPatch (else next prepare
 // would overwrite the provider row with common's stale value — the change
 // would be lost); everything else goes to this provider's patch. Entries
 // already equal to the current DB value are dropped (avoids pointless writes
 // and phantom "refreshed" reports).
+// Sensitive gate (common direction ONLY): an add/change to a path whose name
+// matches isSensitiveConfigPath is refused into commonPatch — it goes
+// NOWHERE (not the provider row either: common already owns the key, so the
+// next prepare would clobber the provider copy anyway and the "saved" edit
+// would silently revert). The edit stays in the instance file; the launch
+// guard warns before it is ever overwritten. remove stays allowed: deleting
+// a sensitive key FROM common clears a historical leak. providerPatch is
+// never gated — provider rows are per-provider secrets by construction.
+// Returns { commonPatch, providerPatch, rejected } — rejected carries the
+// refused changes so the prompt can say so BEFORE the user confirms.
 function splitChangesByTarget(changes, providerId, commonObj, providerSettings) {
   const commonPatch = {};
   const providerPatch = {};
+  const rejected = [];
   for (const ch of changes) {
     if (pathExistsInSnippet(commonObj, ch.path)) {
+      if (ch.op !== "remove" && isSensitiveConfigPath(ch.path)) {
+        rejected.push(ch);
+        continue;
+      }
       if (!deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)) {
         buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to);
       }
@@ -1965,7 +2068,13 @@ function splitChangesByTarget(changes, providerId, commonObj, providerSettings) 
       }
     }
   }
-  return { commonPatch, providerPatch };
+  // Husk prevention + precise removals: a subtree the patch empties
+  // COMPLETELY (all of the target's keys are being removed) folds to one
+  // null so json_patch deletes it whole with no {} husk; partially-emptied
+  // subtrees stay per-leaf so untouched siblings in the target survive.
+  foldRemovalPatch(commonPatch, commonObj);
+  foldRemovalPatch(providerPatch, providerSettings);
+  return { commonPatch, providerPatch, rejected };
 }
 
 // Assign a value at a dotted path inside a patch object, creating
@@ -2259,10 +2368,13 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
       collectPatchPaths(patchObj, "").forEach((p) => providerPatchByPath.set(p, pid));
     }
     const commonPaths = new Set(collectPatchPaths(d.commonPatch || {}, ""));
+    const blockedPaths = new Set(d.rejected || []);
     for (const inst of d.instances) {
       const shown = inst.changes.slice(0, 15);
       for (const ch of shown) {
-        const target = commonPaths.has(ch.path) ? "common" : providerPatchByPath.has(ch.path) ? "provider" : null;
+        const target = blockedPaths.has(ch.path) ? "blocked"
+          : commonPaths.has(ch.path) ? "common"
+          : providerPatchByPath.has(ch.path) ? "provider" : null;
         if (!target) continue; // losing vote / already equal in DB — not written
         lines.push(formatSettingsChangeLine(ch, target));
       }
@@ -3536,7 +3648,27 @@ async function main() {
   await launchProvider(cmd, providerName, extraArgs, syncFlag);
 }
 
-main().catch((e) => {
-  console.error(`✗ ${e.message}`);
-  process.exit(1);
+// ─── CLI entry ─────────────────────────────────────────────────────────
+// Guarded so test/*.test.mjs can import this file as a plain ESM module:
+// `node --test` imports it with CC_LAUNCH_SKIP_MAIN set, and the top level
+// is side-effect-free apart from main() itself.
+if (!process.env.CC_LAUNCH_SKIP_MAIN) {
+  main().catch((e) => {
+    console.error(`✗ ${e.message}`);
+    process.exit(1);
+  });
+}
+
+// Test-only export surface. A static export costs nothing at CLI runtime;
+// the bag stays frozen so callers can't reach into the module's internals.
+export const __test = Object.freeze({
+  mergeCommonOverProvider,
+  jsonDeepMerge,
+  deepEqualJson,
+  isSensitiveConfigKey,
+  isSensitiveConfigPath,
+  splitChangesByTarget,
+  pathExistsInSnippet,
+  foldRemovalPatch,
+  diffSettingsLeaves,
 });
