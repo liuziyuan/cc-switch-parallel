@@ -1,6 +1,6 @@
 {
   "name": "cc-switch-parallel",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Launch Claude Code and Codex with per-provider isolated configs — run multiple providers in parallel terminals without switching",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "build": "node build.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
