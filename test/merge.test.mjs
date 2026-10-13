@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 const { __test } = await import("../bin/cc-launch.mjs");
-const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson } = __test;
+const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson, foldRemovalPatch, diffSettingsLeaves } = __test;
 
 // mergeCommonOverProvider must reproduce the upstream Rust json_deep_merge
 // (services/provider/live.rs@69ff69d^): objects recurse per source key;
@@ -93,4 +93,56 @@ test("deepEqualJson: arrays differ on length, order, or element content", () => 
   assert.equal(deepEqualJson([1, 2], [2, 1]), false); // order-sensitive
   assert.equal(deepEqualJson([{ k: 1 }], [{ k: 2 }]), false); // nested objects compared
   assert.equal(deepEqualJson([{ k: 1 }], [{ k: 1 }]), true);
+});
+
+// ─── diffSettingsLeaves: no removal folding ────────────────────────────
+// Deleting ONE key of a subtree must diff as that leaf only — folding used
+// to collapse it into a whole-subtree remove, and the {parent:null} patch
+// then wiped untouched siblings from common_config (unrecoverable: the DB
+// row has no backup).
+
+test("diffSettingsLeaves: deleting one key of a subtree stays a leaf remove", () => {
+  const baseline = { env: { TOKEN: "t", KEEP_ME: "v" } };
+  const current = { env: { KEEP_ME: "v" } };
+  assert.deepEqual(diffSettingsLeaves(baseline, current), [
+    { path: "env.TOKEN", op: "remove", from: "t", to: undefined },
+  ]);
+});
+
+test("diffSettingsLeaves: mixed add/remove inside one subtree stays per-leaf", () => {
+  const baseline = { env: { A: 1 } };
+  const current = { env: { B: 2 } };
+  assert.deepEqual(diffSettingsLeaves(baseline, current), [
+    { path: "env.A", op: "remove", from: 1, to: undefined },
+    { path: "env.B", op: "add", from: undefined, to: 2 },
+  ]);
+});
+
+// ─── foldRemovalPatch: husk prevention, target-aware ───────────────────
+// A subtree folds to one whole-remove null ONLY when the patch deletes
+// every key the target holds there — patch-internal all-null is NOT
+// enough, because the patch doesn't carry untouched siblings.
+
+test("subtree fully removed in target folds to one null (no empty husks)", () => {
+  const p = { hooks: { a: null, b: null } };
+  foldRemovalPatch(p, { hooks: { a: 1, b: 2 } });
+  assert.deepEqual(p, { hooks: null });
+});
+
+test("subtree with surviving target siblings stays per-leaf", () => {
+  const p = { env: { TOKEN: null } };
+  foldRemovalPatch(p, { env: { TOKEN: "t", KEEP_ME: "v" } });
+  assert.deepEqual(p, { env: { TOKEN: null } });
+});
+
+test("top level never folds (RFC 7396 patches are objects)", () => {
+  const p = { a: null, b: null };
+  foldRemovalPatch(p, { a: 1, b: 2 });
+  assert.deepEqual(p, { a: null, b: null });
+});
+
+test("fold is idempotent-safe on non-object patch or missing target", () => {
+  const p = { env: { X: null } };
+  foldRemovalPatch(p, undefined); // target row gone: stays per-leaf
+  assert.deepEqual(p, { env: { X: null } });
 });

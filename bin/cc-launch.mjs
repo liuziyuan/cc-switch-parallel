@@ -686,12 +686,13 @@ function deepEqualJson(a, b) {
 // key; arrays are atomic — the path stops at the array's key and from/to
 // carry the whole array (same semantics as deepEqualJson, so "what changed"
 // and "is it equal" can never disagree).
-// Removal folding: a level whose changes are ALL removes collapses into
-// ONE remove at the subtree root — otherwise a json_patch built from
-// per-leaf nulls would leave empty-object husks behind ({"hooks": {}}
-// after deleting every hook). Folded only when the level is exclusively
-// removal (any add/change keeps per-leaf granularity so mixed edits stay
-// visible).
+// NO removal folding here: folded subtree removes once made "delete one key"
+// read as "delete the whole parent" — a folded {env:null} patch wiped every
+// SIBLING the user never touched from common_config (unrecoverable: the
+// overwrite-guard backup only covers instance files, not the DB row), and
+// the folded parent path also bypassed the sensitive-key gate. Diffing stays
+// per-leaf; empty-husk prevention moved to foldAllNullSubtrees at patch
+// build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
 function diffSettingsLeaves(baseline, current, prefix = "") {
@@ -718,24 +719,6 @@ function diffSettingsLeaves(baseline, current, prefix = "") {
       changes.push({ path, op: "add", from: undefined, to: c[k] });
     } else {
       changes.push({ path, op: "remove", from: b[k], to: undefined });
-    }
-  }
-
-  // Fold an all-remove level into a single root remove. Trigger only when
-  // every change below this prefix is a remove AND they all hang off ONE
-  // key of this prefix (a mixed subtree keeps leaf granularity). The folded
-  // "from" is rebuilt so the display line can still show what was deleted.
-  if (prefix && changes.length > 0 && changes.every((ch) => ch.op === "remove")) {
-    const roots = new Set(changes.map((ch) => ch.path.split(".")[prefix.split(".").length]));
-    if (roots.size === 1) {
-      const from = {};
-      for (const ch of changes) {
-        const rel = ch.path.slice(prefix.length + 1).split(".");
-        let cur = from;
-        for (let i = 0; i < rel.length - 1; i++) cur = cur[rel[i]] = cur[rel[i]] || {};
-        cur[rel[rel.length - 1]] = ch.from;
-      }
-      return [{ path: prefix, op: "remove", from, to: undefined }];
     }
   }
   return changes;
@@ -2020,6 +2003,35 @@ function applySettingsFieldPatches(commonPatch, providerPatches) {
   }
 }
 
+// Collapse a patch subtree into one null (RFC 7396 whole-subtree remove)
+// ONLY when the patch deletes every key the target object actually holds at
+// that level. Per-leaf nulls alone would leave empty husks ({"hooks": {}}
+// after deleting every hook), but an unconditional all-null-in-patch fold
+// would delete siblings the user never touched — the patch does not carry
+// them, so "all-null inside the patch" is NOT "all gone in the target";
+// the fold must consult the object the patch will be applied to. The TOP
+// level never folds: an RFC 7396 patch IS an object, a top-level null is
+// an invalid patch.
+function foldRemovalPatch(patch, target) {
+  if (!isPlainObject(patch)) return;
+  for (const k of Object.keys(patch)) {
+    const pv = patch[k];
+    if (!isPlainObject(pv)) continue; // leaves (values and nulls) stay as-is
+    const targetChild = isPlainObject(target) ? target[k] : undefined;
+    foldRemovalPatch(pv, targetChild);
+    const pvKeys = Object.keys(pv);
+    if (
+      pvKeys.length > 0 &&
+      pvKeys.every((key) => pv[key] === null) &&
+      isPlainObject(targetChild) &&
+      Object.keys(targetChild).length === pvKeys.length &&
+      pvKeys.every((key) => key in targetChild)
+    ) {
+      patch[k] = null;
+    }
+  }
+}
+
 // Apply the smart split to one instance's winning changes: a path that
 // exists in the parsed common snippet goes to commonPatch (else next prepare
 // would overwrite the provider row with common's stale value — the change
@@ -2056,6 +2068,12 @@ function splitChangesByTarget(changes, providerId, commonObj, providerSettings) 
       }
     }
   }
+  // Husk prevention + precise removals: a subtree the patch empties
+  // COMPLETELY (all of the target's keys are being removed) folds to one
+  // null so json_patch deletes it whole with no {} husk; partially-emptied
+  // subtrees stay per-leaf so untouched siblings in the target survive.
+  foldRemovalPatch(commonPatch, commonObj);
+  foldRemovalPatch(providerPatch, providerSettings);
   return { commonPatch, providerPatch, rejected };
 }
 
@@ -3651,4 +3669,6 @@ export const __test = Object.freeze({
   isSensitiveConfigPath,
   splitChangesByTarget,
   pathExistsInSnippet,
+  foldRemovalPatch,
+  diffSettingsLeaves,
 });

@@ -82,7 +82,9 @@ test("removing a sensitive key FROM common stays allowed (leak cleanup)", () => 
   const changes = [{ path: "env.ANTHROPIC_AUTH_TOKEN", op: "remove", from: "old", to: undefined }];
   const commonObj = { env: { ANTHROPIC_AUTH_TOKEN: "old" } };
   const out = splitChangesByTarget(changes, PROVIDER_ID, commonObj, {});
-  assert.deepEqual(out.commonPatch, { env: { ANTHROPIC_AUTH_TOKEN: null } }); // RFC 7396 remove
+  // env holds ONLY the deleted key, so the patch folds to a whole-subtree
+  // remove — no {"env":{}} husk left behind.
+  assert.deepEqual(out.commonPatch, { env: null }); // RFC 7396 remove
   assert.deepEqual(out.providerPatch, {});
   assert.deepEqual(out.rejected, []);
 });
@@ -119,4 +121,25 @@ test("entries already equal to the DB value produce no patch and no rejection", 
   assert.deepEqual(out.providerPatch, {});
   // equal-value sensitive entries never reach the gate, so nothing is rejected
   assert.deepEqual(out.rejected, []);
+});
+
+test("removing one env key leaves its siblings in the patch (no collateral delete)", () => {
+  // The old folded whole-subtree remove produced {env:null} and wiped
+  // KEEP_ME from common_config; the patch must stay per-leaf here.
+  const changes = [{ path: "env.ANTHROPIC_AUTH_TOKEN", op: "remove", from: "old", to: undefined }];
+  const commonObj = { env: { ANTHROPIC_AUTH_TOKEN: "old", KEEP_ME: "v" } };
+  const out = splitChangesByTarget(changes, PROVIDER_ID, commonObj, {});
+  assert.deepEqual(out.commonPatch, { env: { ANTHROPIC_AUTH_TOKEN: null } });
+  assert.deepEqual(out.rejected, []);
+});
+
+test("deleting EVERY key of a subtree folds the patch to a whole-tree null", () => {
+  // Husk prevention: per-leaf nulls alone would leave {"hooks":{}} behind.
+  const changes = [
+    { path: "hooks.Stop", op: "remove", from: { a: 1 }, to: undefined },
+    { path: "hooks.PreToolUse", op: "remove", from: { b: 2 }, to: undefined },
+  ];
+  const commonObj = { hooks: { Stop: { a: 1 }, PreToolUse: { b: 2 } } };
+  const out = splitChangesByTarget(changes, PROVIDER_ID, commonObj, {});
+  assert.deepEqual(out.commonPatch, { hooks: null });
 });
