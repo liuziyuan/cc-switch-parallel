@@ -597,6 +597,46 @@ function jsonDeepMerge(target, source) {
   return target;
 }
 
+// JSON round-trip normalizer for cross-parse comparisons. smol-toml can
+// produce Date/NaN instances; two parse calls of the SAME text yield
+// structurally equal but reference-distinct values, and deepEqualJson's
+// `===` leaf check would call them unequal — a full false-drift. Round-
+// tripping BOTH sides (snapshot and recomputed baseline) through this
+// makes equality deterministic: Date → ISO string, NaN/Infinity → null,
+// top-level undefined → null. Circular structures throw → null (a corrupt
+// document is "no snapshot", never a drift report).
+function jsonNormalize(value) {
+  try {
+    return JSON.parse(JSON.stringify(value ?? null));
+  } catch {
+    return null;
+  }
+}
+
+// True RFC 7396 merge-patch application — the thing jsonDeepMerge above
+// deliberately is NOT (it drops the recursive return value in the `key in
+// target` branch, so a null never deletes). Contract: non-object patch →
+// whole-value replace; object patch → null deletes the key, plain objects
+// recurse, everything else (arrays included — they are scalars under
+// 7396) overwrites. Mutates target and returns it, like jsonDeepMerge.
+// Used by the TOML write-back path; jsonDeepMerge keeps its own
+// target-wins contract for providerPatches accumulation — two functions,
+// two contracts, kept separate on purpose.
+function applyMergePatch(target, patch) {
+  if (!isPlainObject(patch)) return jsonDeepClone(patch ?? null);
+  if (!isPlainObject(target)) target = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete target[key];
+    } else if (isPlainObject(value)) {
+      target[key] = applyMergePatch(isPlainObject(target[key]) ? target[key] : {}, value);
+    } else {
+      target[key] = jsonDeepClone(value);
+    }
+  }
+  return target;
+}
+
 // 1:1 port of the upstream Rust json_deep_merge (services/provider/live.rs,
 // 69ff69d^): two plain objects recurse per key of source (missing keys are
 // inserted, existing keys recurse); EVERY other shape — scalar vs object,
@@ -754,6 +794,17 @@ function tomlIsSubset(target, source) {
     }
   }
   return true;
+}
+
+// Codex write-back core (pure): apply an RFC 7396 patch to a TOML document
+// IN TEXT form — parse, patch, re-serialize. The re-serialization loses
+// comments and reorders keys; that cost is accepted and documented at the
+// confirmation prompt, because no format-preserving TOML editor exists in
+// the JS ecosystem and this is a single-file CLI. Throws on parse failure —
+// the DB write-back shells let that surface as a reported error, never a
+// silent partial write.
+function applyTomlPatchText(tomlText, patchObj) {
+  return stringifyToml(applyMergePatch(parseToml(tomlText || ""), jsonDeepClone(patchObj)));
 }
 
 // ─── Common config detection (port of Rust provider_uses_common_config) ─
@@ -1235,6 +1286,10 @@ const CODEX_SHARED_PATHS = [
   ".personality_migration", // migration marker
   ".sandbox_migration",     // migration marker
   "version.json",           // version-check cache
+  "AGENTS.md",              // global instructions ($CODEX_HOME/AGENTS.md); a
+                            // customize'd instance replaces this symlink with
+                            // a real file — ensureSymlink never overwrites
+                            // real files, and uncustomize restores the link.
 ];
 
 function setupCodexInstance(providerId) {
@@ -1274,17 +1329,17 @@ const BACKUPS_DIR = join(CC_SWITCH_DIR, "backups");
 const BACKUP_KEEP = 10;
 const backupDirFor = (appType, providerId) => join(BACKUPS_DIR, appType, providerId);
 
-function backupInstanceSettings(appType, providerId, instanceDir) {
+function backupInstanceSettings(appType, providerId, instanceDir, fileName = "settings.json") {
   try {
-    const src = join(instanceDir, "settings.json");
+    const src = join(instanceDir, fileName);
     if (!existsSync(src)) return null;
     const dir = backupDirFor(appType, providerId);
     mkdirSync(dir, { recursive: true });
     const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
-    const dest = join(dir, `settings.json.${ts}`);
+    const dest = join(dir, `${fileName}.${ts}`);
     atomicWrite(dest, readFileSync(src, "utf8"));
     const keep = (readdirSyncSafe(dir) || [])
-      .filter((n) => n.startsWith("settings.json."))
+      .filter((n) => n.startsWith(`${fileName}.`))
       .sort()
       .slice(0, -BACKUP_KEEP);
     for (const name of keep) { try { unlinkSync(join(dir, name)); } catch {} }
@@ -1474,42 +1529,51 @@ function formatSettingsChangeLine(ch, target) {
   return `${color}${mark} settings\x1b[0m ${ch.path}${targetTag}`;
 }
 
-function guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSnippet) {
+// Overwrite guard, CLI-agnostic: right before prepare regenerates an
+// instance's main config file, diff what sits on disk against the recorded
+// baseline. Unsynchronized edits get a warning + a backup instead of
+// vanishing silently. Capability-probed (C2 + C3), never appType-branched —
+// an adapter without both is v2-shaped and skips the guard entirely.
+function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings) {
   try {
-    if (adapter.appType !== "claude") return; // v3 guard is claude-only this cycle
+    if (!adapter.readInstanceSettingsSnapshot || !adapter.computeEffectiveSettings) return;
     const current = adapter.readInstanceSettingsSnapshot(instanceDir);
     if (!current) return; // missing/corrupt — nothing to protect
 
     const state = loadSyncState();
-    const entry = state.instances?.claude?.[row.id];
+    const entry = state.instances?.[adapter.appType]?.[row.id];
 
-    // v2 → v3 upgrade: no preparedSettings yet. Recompute what prepare WOULD
-    // write from the current DB and compare. Equal → the file is a faithful
-    // mirror, silently backfill the v3 baseline (one-time, self-healing).
-    // Not equal → ambiguous (user edits, or the common config changed in the
-    // desktop app since — the latter is legitimate downward drift): we can't
-    // tell, so NO warning (avoid false alarms during the upgrade window),
-    // just one silent backup + a dim note. After this launch the baseline is
-    // v3 either way and future guards are exact.
+    // Upgrade window (v2-shaped entry: no preparedSettings baseline yet —
+    // includes every codex instance recorded before baselines existed).
+    // Recompute what prepare WOULD write from the current DB and compare.
+    // Equal → the file is a faithful mirror, silently backfill the baseline
+    // (one-time, self-healing — the real write happens in
+    // recordInstanceBaseline right after). Not equal → ambiguous (user
+    // edits, or the common config changed in the desktop app since — the
+    // latter is legitimate downward drift): we can't tell, so NO warning
+    // (avoid false alarms during the upgrade window), just one silent
+    // backup + a dim note. After this launch the baseline is v3 either way
+    // and future guards are exact.
     if (!isPlainObject(entry?.preparedSettings)) {
-      const effective = buildClaudeEffectiveSettings(
-        JSON.parse(row.settings_config || "{}"), JSON.parse(row.meta || "{}"), commonSnippet,
+      const effective = adapter.computeEffectiveSettings(
+        JSON.parse(row.settings_config || "{}"), JSON.parse(row.meta || "{}"),
+        row.category, commonSnippet, row.id, settings,
       );
-      const backfilled = deepEqualJson(effective, current);
+      const backfilled = effective != null && deepEqualJson(effective, current);
       if (!backfilled) {
-        const bak = backupInstanceSettings("claude", row.id, instanceDir);
-        process.stderr.write(`\x1b[2msettings.json for "${row.name}" differs from the cc-switch config; a backup was saved${bak ? ` (${bak})` : " (backup FAILED)"} before overwriting.\x1b[0m\n`);
+        const bak = backupInstanceSettings(adapter.appType, row.id, instanceDir, adapter.instanceSettingsFileName);
+        process.stderr.write(`\x1b[2m${adapter.instanceSettingsFileName} for "${row.name}" differs from the cc-switch config; a backup was saved${bak ? ` (${bak})` : " (backup FAILED)"} before overwriting.\x1b[0m\n`);
       }
       return;
     }
 
     const changes = diffSettingsLeaves(entry.preparedSettings, current).filter(
-      (ch) => !isPluginChannelPath(ch.path),
+      (ch) => !adapter.channelOwnedPath?.(ch.path),
     );
     if (changes.length === 0) return; // faithful mirror — overwrite silently
 
-    const bak = backupInstanceSettings("claude", row.id, instanceDir);
-    process.stderr.write(`\x1b[33m⚠ Instance settings.json for "${row.name}" has edits that will be overwritten:\x1b[0m\n`);
+    const bak = backupInstanceSettings(adapter.appType, row.id, instanceDir, adapter.instanceSettingsFileName);
+    process.stderr.write(`\x1b[33m⚠ Instance ${adapter.instanceSettingsFileName} for "${row.name}" has edits that will be overwritten:\x1b[0m\n`);
     const shown = changes.slice(0, 10);
     for (const ch of shown) {
       const mark = ch.op === "add" ? "\x1b[32m+\x1b[0m" : ch.op === "remove" ? "\x1b[31m-\x1b[0m" : "\x1b[33m~\x1b[0m";
@@ -1541,16 +1605,43 @@ function guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSni
 //   prepare()        generate & write the instance's config files
 //   launch()         spawnSync the CLI and exit
 //   permissionArgs() map permission hotkey → CLI argv
-// Optional (claude only): detectPluginDrift() / syncPluginsBack() — plugin
-//   config drift detection & write-back into common_config (added in sync flow).
-// Optional (claude only): detectSettingsDrift() / syncSettingsBack() — the
-//   settings-field upward channel: full leaf-level diff of each instance's
-//   runtime settings.json against its recorded baseline, arbitrated across
-//   instances, then split between common_config and provider settings_config.
-// Optional (claude only): readInstanceSettingsSnapshot() — let the baseline
-//   record the full parsed settings prepare just wrote (v3); without it an
-//   adapter stays v2-shaped and skips the guard + settings-field sync.
-//   readInstancePluginState() lets the baseline record plugin state.
+// Optional capability interfaces — the guard and sync flows NEVER branch on
+// appType; they capability-probe these. An adapter lacking an interface is
+// "v2-shaped" for that layer and simply skips it:
+//   instanceSettingsFileName   name of the instance's main config file
+//                              (guard backups, drift mtime). [C1]
+//   readInstanceSettingsSnapshot(dir) → parsed semantic tree of the main
+//                              config as it sits on disk NOW; null = missing
+//                              or corrupt. MUST be jsonNormalize()-ed so two
+//                              parses compare equal under deepEqualJson.
+//                              Contract: right after prepare, the file IS
+//                              the ground truth of what was handed down.
+//                              Without it an adapter skips the overwrite
+//                              guard and the settings-field sync. [C2]
+//   computeEffectiveSettings(settingsConfig, meta, category, commonSnippet,
+//                              providerId, settings) → the semantic tree
+//                              prepare WOULD write, normalized identically
+//                              to C2 — lets the guard's backfill branch
+//                              recompute without a snapshot. [C3]
+//   parseCommonSnippet(text) → parsed common-config snippet, or null. [C4]
+//   providerDocFromSettingsConfig(settingsConfigObj) → the diffable provider
+//                              config document extracted from the DB row's
+//                              parsed settings_config. [C5]
+//   channelOwnedPath(path) → paths owned by a dedicated channel (claude:
+//                              the plugin channel); the field channel must
+//                              yield them to avoid double reporting. [C6]
+//   syncSettingsBack(drift) → write confirmed {commonPatch, providerPatches}
+//                              back into the DB. [C7]
+//   instructions         instance-level instruction-file capability for
+//                              customize/uncustomize: { fileName,
+//                              globalPath(), missingGlobalWarn(p),
+//                              buildTemplate(globalText, globalPathDisplay),
+//                              refreshSnapshot?(existing, globalText,
+//                              globalPathDisplay) — null = don't touch }. [C8]
+//   fullAutoFlag         the CLI's full-auto permission flag, used verbatim
+//                              in TUI confirmation copy. [C9]
+// Claude-only channel (no codex counterpart — Codex has no plugin concept):
+//   detectPluginDrift() / syncPluginsBack() / readInstancePluginState().
 const APP_ADAPTERS = {
   claude: {
     appType: "claude",
@@ -1559,6 +1650,10 @@ const APP_ADAPTERS = {
     bin: "claude",
     envVar: "CLAUDE_CONFIG_DIR",
     commonConfigKey: "common_config_claude",
+
+    // Capability interfaces [C1][C9] — see the comment block above the table.
+    instanceSettingsFileName: "settings.json",
+    fullAutoFlag: "--dangerously-skip-permissions",
 
     setupInstance: setupClaudeInstance,
 
@@ -1613,6 +1708,40 @@ const APP_ADAPTERS = {
       }
     },
 
+    // Semantic tree prepare WOULD write (guard backfill branch) — the JSON
+    // source is naturally normalized, so no jsonNormalize needed here. [C3]
+    computeEffectiveSettings(settingsConfig, meta, _category, commonSnippet, _providerId, _settings) {
+      return jsonNormalize(buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet));
+    },
+
+    // [C6] — claude's settings_config IS the diffable document.
+    parseCommonSnippet(text) {
+      try { return JSON.parse(text); } catch { return null; }
+    },
+    providerDocFromSettingsConfig(settingsConfigObj) {
+      return isPlainObject(settingsConfigObj) ? settingsConfigObj : null;
+    },
+    channelOwnedPath: isPluginChannelPath,
+
+    // [C8] Instance instruction file. The @import line is LIVE — global
+    // edits flow through without touching the instance file, so there is
+    // no snapshot region and no refreshSnapshot.
+    instructions: {
+      fileName: "CLAUDE.md",
+      globalPath() { return join(HOME, ".claude", "CLAUDE.md"); },
+      missingGlobalWarn(p) { return `⚠ ${p} not found — the @import line will resolve once it exists`; },
+      buildTemplate(_globalText, globalPath) {
+        return [
+          `@${globalPath}`,
+          "",
+          "<!-- ── instance-only instructions (below this line) ── -->",
+          "<!-- delete this file to fall back to the shared global CLAUDE.md -->",
+          "",
+          "",
+        ].join("\n");
+      },
+    },
+
     // Upward drift: plugin installs/removals/toggles since the last sync.
     // Returns { added, removed, toggled, patch, installedKeys } or null.
     detectPluginDrift(state) {
@@ -1649,92 +1778,14 @@ const APP_ADAPTERS = {
     // never double-report or double-vote.
     // Returns { instances: [{providerId, name, changes, mtimeMs}],
     //           commonPatch, providerPatches, conflicts: {path: count} } or null.
+    // Upward drift of non-plugin fields — thin delegation to the shared
+    // generic pipeline below (extracted verbatim from this adapter when
+    // codex joined the capability set; the leaf diff, per-path mtime
+    // arbitration, and the smart split are CLI-agnostic). Call shape
+    // matters: `this` relies on method invocation (the APP_ADAPTERS loop),
+    // so don't destructure the adapter out of the table.
     detectSettingsDrift(state) {
-      const dir = join(INSTANCES_DIR, "claude");
-      const baselines = state?.instances?.claude || {};
-      if (!existsSync(dir)) return null;
-
-      // Parse the current common snippet once; used both for split decisions
-      // and for "already equal in DB" filtering.
-      let commonObj = {};
-      try {
-        const snip = queryCommonConfig("claude");
-        if (snip) commonObj = JSON.parse(snip);
-      } catch {}
-
-      const candidates = [];
-      for (const name of readdirSyncSafe(dir) || []) {
-        try {
-          const settingsPath = join(dir, name, "settings.json");
-          const current = JSON.parse(readFileSync(settingsPath, "utf8"));
-          const baseline = baselines[name]?.preparedSettings;
-          if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
-          if (deepEqualJson(current, baseline)) continue; // unchanged mirror
-          const changes = diffSettingsLeaves(baseline, current).filter(
-            (ch) => !isPluginChannelPath(ch.path),
-          );
-          if (changes.length === 0) continue; // only plugin edits — channel 1's beat
-          let mtimeMs = 0;
-          try { mtimeMs = lstatSync(settingsPath).mtimeMs; } catch {}
-          candidates.push({ providerId: name, changes, mtimeMs });
-        } catch {
-          // missing/corrupt instance settings — skip
-        }
-      }
-      if (candidates.length === 0) return null;
-
-      // Per-path vote: a candidate that never changed a path relative to ITS
-      // OWN baseline has no say on that path (it only diverges from the
-      // group, not from what it was given). Winner = newest mtime.
-      const votes = new Map(); // path → [{candidate, change}]
-      for (const cand of candidates) {
-        for (const ch of cand.changes) {
-          if (!votes.has(ch.path)) votes.set(ch.path, []);
-          votes.get(ch.path).push({ cand, ch });
-        }
-      }
-      const commonPatch = {};
-      const providerPatches = {};
-      const conflicts = {};
-      const rejectedPaths = [];
-      const reported = [];
-      for (const [path, voters] of votes.entries()) {
-        voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
-        const winner = voters[voters.length - 1];
-        if (voters.length > 1) conflicts[path] = voters.length;
-
-        const row = queryProviderById(winner.cand.providerId, "claude");
-        const providerSettings = row ? JSON.parse(row.settings_config || "{}") : null;
-        if (!providerSettings) continue; // provider row gone — provider-target path is dropped
-
-        const { commonPatch: cp, providerPatch: pp, rejected: rj } = splitChangesByTarget(
-          [winner.ch], winner.cand.providerId, commonObj, providerSettings,
-        );
-        Object.assign(commonPatch, cp);
-        if (rj.length) rejectedPaths.push(...rj.map((ch) => ch.path));
-        // pp is ONE change's nested patch object (path-keyed), not {pid: patch} —
-        // merge it under the WINNING provider's id.
-        if (Object.keys(pp).length) {
-          providerPatches[winner.cand.providerId] = jsonDeepMerge(
-            providerPatches[winner.cand.providerId] || {}, pp,
-          );
-        }
-        reported.push({ providerId: winner.cand.providerId, change: winner.ch });
-      }
-      // All-rejected drift must still surface: every change was refused, but
-      // the prompt has to say so instead of going silent.
-      if (!Object.keys(commonPatch).length && !Object.keys(providerPatches).length && !rejectedPaths.length) return null;
-
-      // Display-facing: one entry per candidate instance with its (filtered)
-      // changes, plus the name resolution for the prompt lines.
-      const nameById = new Map(queryProvidersByApp("claude").map((p) => [p.id, p.name]));
-      const instances = candidates.map((c) => ({
-        providerId: c.providerId,
-        name: nameById.get(c.providerId) || c.providerId,
-        changes: c.changes,
-        mtimeMs: c.mtimeMs,
-      }));
-      return { instances, commonPatch, providerPatches, conflicts, rejected: rejectedPaths };
+      return detectConfigDriftGeneric(this, state);
     },
 
     // Write-back: apply the split patches. Runs in detectAndPromptSync's
@@ -1742,7 +1793,7 @@ const APP_ADAPTERS = {
     // refreshStaleInstances — the write-back makes other instances stale,
     // and refresh rebuilds their baselines so this prompt doesn't re-fire.
     syncSettingsBack(drift) {
-      applySettingsFieldPatches(drift.commonPatch, drift.providerPatches);
+      applyClaudeSettingsFieldPatches(drift.commonPatch, drift.providerPatches);
     },
   },
 
@@ -1754,6 +1805,30 @@ const APP_ADAPTERS = {
     envVar: "CODEX_HOME",
     commonConfigKey: "common_config_codex",
 
+    // Capability interfaces [C1][C2][C3][C4][C5][C7][C9] — see the comment
+    // block above the table. Codex has no plugin concept, so C6 stays
+    // unimplemented and the plugin channel never engages for this adapter.
+    instanceSettingsFileName: "config.toml",
+    fullAutoFlag: "--dangerously-bypass-approvals-and-sandbox",
+    // common_config_codex is a TOML text: write-back re-serializes the whole
+    // document (parse → patch → stringify), so comments/formatting are lost.
+    // Surfaced at the sync prompt; no format-preserving TOML editor exists.
+    rewritesCommonOnSync: true,
+
+    parseCommonSnippet(text) {
+      try { return jsonNormalize(parseToml(text || "")); } catch { return null; }
+    },
+    // The diffable document is the `config` TOML inside the settings_config
+    // JSON envelope ({config, auth, modelCatalog}) — auth and modelCatalog
+    // are out of the field channel's scope.
+    providerDocFromSettingsConfig(settingsConfigObj) {
+      try {
+        return jsonNormalize(parseToml(settingsConfigObj?.config || ""));
+      } catch {
+        return null;
+      }
+    },
+
     setupInstance: setupCodexInstance,
 
     prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
@@ -1764,16 +1839,38 @@ const APP_ADAPTERS = {
 
       const authPath = join(instanceDir, "auth.json");
       const globalAuthPath = join(HOME, ".codex", "auth.json");
-      if (!apiKey && !codexAuthHasLoginMaterial(auth)) {
+      const hasLoginMaterial = codexAuthHasLoginMaterial(auth);
+      if (!apiKey && !hasLoginMaterial) {
+        // No credentials in the DB: share whatever the global auth holds.
         if (existsSync(globalAuthPath)) {
           ensureSymlink(globalAuthPath, authPath);
         } else {
           atomicWrite(authPath, JSON.stringify({}, null, 2));
         }
+      } else if (!apiKey && hasLoginMaterial && !settings.preserveCodexOfficialAuthOnSwitch) {
+        // PURE OAuth credentials (no OPENAI_API_KEY — note that the login-
+        // material check is true for ANY non-empty auth, so the apiKey guard
+        // must come first or API-key auth would get linked too): link the
+        // GLOBAL auth file — the same shape as claude's .credentials.json. The CLI rotates tokens
+        // by rewriting auth.json mid-session; a per-instance copy dies on
+        // the next prepare, which resurrects the DB's stale refresh token
+        // and forces a re-login. One shared live file makes the rotation
+        // permanent. First run seeds the global file from the DB's stored
+        // login material; from then on the DB copy is never handed down
+        // again. Trade-off (documented in the README): providers with
+        // DIFFERENT ChatGPT accounts can no longer hold independent logins;
+        // `preserveCodexOfficialAuthOnSwitch` keeps the legacy per-instance
+        // behavior for those who need it.
+        if (!existsSync(globalAuthPath)) {
+          atomicWrite(globalAuthPath, JSON.stringify(auth, null, 2));
+        }
+        ensureSymlink(globalAuthPath, authPath);
       } else {
+        // API-key credentials (or the preserve opt-out): a deterministic DB
+        // artifact the CLI never rewrites — an independent file is correct.
         const authContent = apiKey
           ? { OPENAI_API_KEY: apiKey }
-          : codexAuthHasLoginMaterial(auth) ? auth : {};
+          : hasLoginMaterial ? auth : {};
         atomicWrite(authPath, JSON.stringify(authContent, null, 2));
       }
 
@@ -1785,6 +1882,34 @@ const APP_ADAPTERS = {
     launch(instanceDir, extraArgs) {
       process.stderr.write(`\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`);
       launchTracked("codex", extraArgs, instanceDir, "CODEX_HOME");
+    },
+
+    // Semantic tree prepare WOULD write: run buildCodexConfig and parse the
+    // TOML it produces, normalized identically to the C2 snapshot so the
+    // guard's backfill comparison is deterministic. [C3]
+    computeEffectiveSettings(settingsConfig, meta, category, commonSnippet, providerId, settings) {
+      try {
+        const { configText } = buildCodexConfig(
+          settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
+        );
+        return jsonNormalize(parseToml(configText));
+      } catch {
+        return null;
+      }
+    },
+
+    // Parsed semantic tree of the instance's config.toml as it sits on disk
+    // NOW. TOML comments/whitespace are not semantic — smol-toml may also
+    // yield Date/NaN instances, hence the jsonNormalize round-trip (same
+    // normalization on the C3 side). Returns null on missing/corrupt file
+    // (treated as "no v3 baseline" by every consumer — never a drift
+    // report). [C2]
+    readInstanceSettingsSnapshot(instanceDir) {
+      try {
+        return jsonNormalize(parseToml(readFileSync(join(instanceDir, "config.toml"), "utf8")));
+      } catch {
+        return null;
+      }
     },
 
     permissionArgs(hotkey) {
@@ -1799,8 +1924,126 @@ const APP_ADAPTERS = {
       if (args.includes("--approve-for-me")) return "2";
       return undefined;
     },
+
+    // Same shared pipeline as claude's — method-invocation `this` binding.
+    detectSettingsDrift(state) {
+      return detectConfigDriftGeneric(this, state);
+    },
+
+    // [C7] Write-back goes through the TOML shells below: sqlite's
+    // json_patch cannot touch TOML, so common_config_codex and each
+    // provider's settings_config.config are read-patched-written with a
+    // compare-and-swap on the original text.
+    syncSettingsBack(drift) {
+      applyCodexSettingsFieldPatches(drift);
+    },
+
+    // [C8] Instance instruction file. Codex has no @import mechanism — the
+    // template embeds a MARKED snapshot of the global file (refreshable by
+    // re-running customize) above the instance-only section.
+    instructions: {
+      fileName: "AGENTS.md",
+      globalPath() { return join(HOME, ".codex", "AGENTS.md"); },
+      missingGlobalWarn(p) { return `⚠ ${p} not found — the snapshot block will note it until it exists`; },
+      buildTemplate(globalText, globalPath) {
+        return buildCodexInstructionsTemplate(globalText, globalPath);
+      },
+      refreshSnapshot(existingText, newGlobalText, globalPath) {
+        return refreshCodexInstructionsSnapshot(existingText, newGlobalText, globalPath);
+      },
+    },
   },
 };
+
+// Settings-field upward drift, CLI-agnostic — extracted verbatim from the
+// claude adapter when codex joined the C1-C5 capability set. The leaf diff,
+// per-path mtime arbitration, and the smart split are shared unchanged; the
+// adapter supplies only instance dir, baseline map, common-snippet parsing
+// [C4], provider-document extraction [C5], and the channel filter [C6].
+// Reads instance files + DB; writes nothing.
+function detectConfigDriftGeneric(adapter, state) {
+  const dir = join(INSTANCES_DIR, adapter.appType);
+  const baselines = state?.instances?.[adapter.appType] || {};
+  if (!existsSync(dir)) return null;
+
+  // Parse the current common snippet once; used both for split decisions
+  // and for "already equal in DB" filtering.
+  const commonObj = adapter.parseCommonSnippet(queryCommonConfig(adapter.appType)) ?? {};
+
+  const candidates = [];
+  for (const name of readdirSyncSafe(dir) || []) {
+    try {
+      const instDir = join(dir, name);
+      const current = adapter.readInstanceSettingsSnapshot(instDir);
+      const baseline = baselines[name]?.preparedSettings;
+      if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
+      if (current === null || deepEqualJson(current, baseline)) continue; // unchanged/corrupt mirror
+      const changes = diffSettingsLeaves(baseline, current).filter(
+        (ch) => !adapter.channelOwnedPath?.(ch.path),
+      );
+      if (changes.length === 0) continue; // only channel-owned edits
+      let mtimeMs = 0;
+      try { mtimeMs = lstatSync(join(instDir, adapter.instanceSettingsFileName)).mtimeMs; } catch {}
+      candidates.push({ providerId: name, changes, mtimeMs });
+    } catch {
+      // missing/corrupt instance config — skip
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  // Per-path vote: a candidate that never changed a path relative to ITS
+  // OWN baseline has no say on that path (it only diverges from the
+  // group, not from what it was given). Winner = newest mtime.
+  const votes = new Map(); // path → [{candidate, change}]
+  for (const cand of candidates) {
+    for (const ch of cand.changes) {
+      if (!votes.has(ch.path)) votes.set(ch.path, []);
+      votes.get(ch.path).push({ cand, ch });
+    }
+  }
+  const commonPatch = {};
+  const providerPatches = {};
+  const conflicts = {};
+  const rejectedPaths = [];
+  for (const [path, voters] of votes.entries()) {
+    voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
+    const winner = voters[voters.length - 1];
+    if (voters.length > 1) conflicts[path] = voters.length;
+
+    const row = queryProviderById(winner.cand.providerId, adapter.appType);
+    const providerSettings = row
+      ? adapter.providerDocFromSettingsConfig(JSON.parse(row.settings_config || "{}"))
+      : null;
+    if (!providerSettings) continue; // provider row gone — provider-target path is dropped
+
+    const { commonPatch: cp, providerPatch: pp, rejected: rj } = splitChangesByTarget(
+      [winner.ch], winner.cand.providerId, commonObj, providerSettings,
+    );
+    Object.assign(commonPatch, cp);
+    if (rj.length) rejectedPaths.push(...rj.map((ch) => ch.path));
+    // pp is ONE change's nested patch object (path-keyed), not {pid: patch} —
+    // merge it under the WINNING provider's id.
+    if (Object.keys(pp).length) {
+      providerPatches[winner.cand.providerId] = jsonDeepMerge(
+        providerPatches[winner.cand.providerId] || {}, pp,
+      );
+    }
+  }
+  // All-rejected drift must still surface: every change was refused, but
+  // the prompt has to say so instead of going silent.
+  if (!Object.keys(commonPatch).length && !Object.keys(providerPatches).length && !rejectedPaths.length) return null;
+
+  // Display-facing: one entry per candidate instance with its (filtered)
+  // changes, plus the name resolution for the prompt lines.
+  const nameById = new Map(queryProvidersByApp(adapter.appType).map((p) => [p.id, p.name]));
+  const instances = candidates.map((c) => ({
+    providerId: c.providerId,
+    name: nameById.get(c.providerId) || c.providerId,
+    changes: c.changes,
+    mtimeMs: c.mtimeMs,
+  }));
+  return { instances, commonPatch, providerPatches, conflicts, rejected: rejectedPaths };
+}
 
 // Set of plugin keys ("name@source") with a user-scope install record — the
 // source of truth for "what's installed at user level".
@@ -1953,23 +2196,6 @@ function isSensitiveConfigPath(path) {
   return String(path || "").split(".").some((seg) => isSensitiveConfigKey(seg));
 }
 
-// Rebuild a nested patch object from leaf-level changes (RFC 7396: remove =
-// null; deep adds materialize intermediate objects; inner nulls survive
-// deepEqual-style folds because diffSettingsLeaves already collapsed them).
-function buildPatchFromChanges(changes) {
-  const patch = {};
-  for (const ch of changes) {
-    const parts = ch.path.split(".");
-    let cur = patch;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!isPlainObject(cur[parts[i]])) cur[parts[i]] = {};
-      cur = cur[parts[i]];
-    }
-    cur[parts[parts.length - 1]] = ch.op === "remove" ? null : ch.to;
-  }
-  return patch;
-}
-
 // Read the value at a dotted path inside a parsed object (undefined if absent).
 function getPathValue(obj, path) {
   let cur = obj;
@@ -1980,12 +2206,15 @@ function getPathValue(obj, path) {
   return cur;
 }
 
-// Write-back orchestration for the settings-field channel. Common and each
-// provider patch go through SEPARATE try blocks: one DB hiccup must not
-// abort the rest, and — unlike the plugin channel's silent best-effort —
-// failures are REPORTED, because the user just explicitly confirmed these
-// writes; losing one silently is worse than an error line.
-function applySettingsFieldPatches(commonPatch, providerPatches) {
+// Write-back orchestration for the settings-field channel, CLAUDE flavor:
+// common_config via json_patch (single-statement atomic) and each provider's
+// settings_config likewise. (Codex has its own shell — applyCodexSettings-
+// FieldPatches — because TOML cannot go through sqlite's json_patch.)
+// Common and each provider patch go through SEPARATE try blocks: one DB
+// hiccup must not abort the rest, and — unlike the plugin channel's silent
+// best-effort — failures are REPORTED, because the user just explicitly
+// confirmed these writes; losing one silently is worse than an error line.
+function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
   if (commonPatch && Object.keys(commonPatch).length) {
     try {
       patchCommonConfigClaude(commonPatch);
@@ -1999,6 +2228,94 @@ function applySettingsFieldPatches(commonPatch, providerPatches) {
       patchProviderSettingsConfig(providerId, "claude", patchObj);
     } catch (e) {
       process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} settings: ${e.message}\x1b[0m\n`);
+    }
+  }
+}
+
+// ─── Codex write-back (TOML) ───────────────────────────────────────────
+// sqlite's json_patch only speaks JSON; common_config_codex is a TOML text
+// and each codex provider's settings_config carries the config as a TOML
+// string inside a JSON envelope. The equivalent of claude's single-statement
+// atomic json_patch is therefore a read-modify-write anchored by a
+// COMPARE-AND-SWAP: the UPDATE's WHERE clause requires the column to still
+// hold the exact text we read, and `SELECT changes()` confirms the row was
+// actually replaced. A concurrent writer (the desktop app) between our read
+// and write yields 0 rows → re-read, re-patch, retry. No partial writes, no
+// lost updates; two failed retries surface as a reported error (same
+// report-don't-swallow contract as applyClaudeSettingsFieldPatches above).
+
+function execDBWithChanges(sql) {
+  try {
+    // Trailing semicolon is REQUIRED: without it the appended SELECT would
+    // parse as one (invalid) statement and the whole batch would error out
+    // into the catch below — a silent always-0 that fails every CAS.
+    const out = execFileSync("sqlite3", [DB_PATH, ".timeout 3000", `${sql};\nSELECT changes();`], {
+      encoding: "utf8",
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const n = parseInt(String(out).trim(), 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function patchCodexCommonConfig(patchObj) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const cur = queryCommonConfig("codex");
+    if (cur === null || cur === undefined) {
+      throw new Error("common_config_codex row does not exist in the settings table");
+    }
+    const next = applyTomlPatchText(cur, patchObj);
+    const n = execDBWithChanges(
+      `UPDATE settings SET value = ${sqlQuote(next)} WHERE key = 'common_config_codex' AND value = ${sqlQuote(cur)}`,
+    );
+    if (n === 1) return;
+  }
+  throw new Error("common_config_codex kept changing under us (desktop app writing concurrently?) — run switch sync again");
+}
+
+function patchCodexProviderConfig(providerId, patchObj) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const row = queryProviderById(providerId, "codex");
+    if (!row) return; // provider gone — nothing to write (mirrors the generic drift drop)
+    const original = row.settings_config;
+    let sc;
+    try {
+      sc = JSON.parse(original || "{}");
+    } catch {
+      throw new Error(`provider "${providerId}" settings_config is not valid JSON`);
+    }
+    // Patch ONLY the config document; auth and modelCatalog pass through
+    // untouched — the field channel never owns them.
+    sc.config = applyTomlPatchText(sc.config || "", patchObj);
+    const casClause = original == null ? "settings_config IS NULL" : `settings_config = ${sqlQuote(original)}`;
+    const n = execDBWithChanges(
+      `UPDATE providers SET settings_config = ${sqlQuote(JSON.stringify(sc))} WHERE id = ${sqlQuote(providerId)} AND app_type = 'codex' AND ${casClause}`,
+    );
+    if (n === 1) return;
+  }
+  throw new Error(`provider "${providerId}" config kept changing under us — run switch sync again`);
+}
+
+// Thin shell mirroring applyClaudeSettingsFieldPatches: same separate
+// try-blocks, same report-don't-swallow error style.
+function applyCodexSettingsFieldPatches(drift) {
+  if (drift.commonPatch && Object.keys(drift.commonPatch).length) {
+    try {
+      patchCodexCommonConfig(drift.commonPatch);
+    } catch (e) {
+      process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
+    }
+  }
+  for (const [providerId, patchObj] of Object.entries(drift.providerPatches || {})) {
+    if (!patchObj || !Object.keys(patchObj).length) continue;
+    try {
+      patchCodexProviderConfig(providerId, patchObj);
+    } catch (e) {
+      process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} config: ${e.message}\x1b[0m\n`);
     }
   }
 }
@@ -2079,8 +2396,8 @@ function splitChangesByTarget(changes, providerId, commonObj, providerSettings) 
 
 // Assign a value at a dotted path inside a patch object, creating
 // intermediate objects as needed (inverse of getPathValue for patch
-// construction; separate from buildPatchFromChanges because this works on a
-// shared, partially-populated patch across changes).
+// construction; works on a shared, partially-populated patch across
+// changes — unlike a fresh-patch builder).
 function buildNestedAssign(patch, path, value) {
   const parts = path.split(".");
   let cur = patch;
@@ -2202,7 +2519,7 @@ function refreshStaleInstances(state, staleByApp) {
         const instanceDir = adapter.setupInstance(row.id);
         // Guard BEFORE prepare overwrites — this refresh path historically
         // wiped other instances' own unsynced edits with zero warning.
-        guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSnippet);
+        guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings);
         adapter.prepare(instanceDir, row.id, settingsConfig, meta, row.category, commonSnippet, settings);
         state.instances[appType][row.id] = buildInstanceBaselineEntry(
           adapter, instanceDir, commonSnippet,
@@ -2221,10 +2538,11 @@ function refreshStaleInstances(state, staleByApp) {
 // (sync path) — both must record the IDENTICAL structure or the two paths'
 // drift behavior forks. The snapshot fields are read back from the file
 // prepare just wrote, so they are ground truth, not a re-derivation. v3 adds
-// preparedSettings (the full parsed settings as handed down) — the basis for
-// the overwrite guard and the settings-field sync diff. Adapters without
-// readInstanceSettingsSnapshot (codex) record v2-shaped entries and simply
-// don't participate in settings-field sync.
+// preparedSettings (the full parsed config as handed down — settings.json
+// for claude, config.toml's semantic tree for codex) — the basis for the
+// overwrite guard and the settings-field sync diff. Adapters without
+// readInstanceSettingsSnapshot record v2-shaped entries and simply don't
+// participate in settings-field sync.
 function buildInstanceBaselineEntry(adapter, instanceDir, commonSnippet) {
   const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
   if (adapter.readInstanceSettingsSnapshot) {
@@ -2319,13 +2637,17 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
 
   // First run: no plugin baseline yet — establish it silently so subsequent
   // plugin changes are detectable (don't report existing plugins as "added"
-  // on the very first sync). Common-config staleness needs no such bootstrap:
-  // it's tracked per instance and instances without a recorded baseline are
-  // simply skipped by detectCommonConfigDrift until they're next launched.
+  // on the very first sync). The plugin baseline is claude's concept (codex
+  // has no plugin channel), but this early-return must NOT skip the rest of
+  // the flow: common-config drift for EVERY app is checked below, and
+  // skipping it here used to hide codex staleness on the first run.
   if (!state?.claude?.installedPluginKeys) {
     snapshotSyncState(state, ["claude"]);
     saveSyncState(state);
-    return { synced: false, drifted: false };
+    // fall through: the plugin baseline is now established, so the plugin
+    // channel below won't misreport pre-existing plugins as "added" — but
+    // per-instance baselines are simply absent until each instance is next
+    // launched, and instances without one are skipped, not flagged.
   }
 
   const commonDrift = detectCommonConfigDrift(state);
@@ -2338,7 +2660,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     }
   }
 
-  // Channel 2: non-plugin settings fields (claude only, v3 baselines).
+  // Channel 2: non-plugin config fields (every adapter with C2-C5; v3 baselines).
   const settingsDrifts = {};
   for (const [cmd, adapter] of Object.entries(APP_ADAPTERS)) {
     if (adapter.detectSettingsDrift) {
@@ -2359,7 +2681,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   for (const [appType, names] of Object.entries(commonDrift)) {
     lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
   }
-  for (const d of Object.values(settingsDrifts)) {
+  for (const [cmd, d] of Object.entries(settingsDrifts)) {
     // Per-instance settings lines, target-tagged so the user knows where each
     // edit lands BEFORE confirming. Only winning paths (the ones in the
     // patches) are shown; mirror-instance noise is already filtered upstream.
@@ -2384,6 +2706,11 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     }
     for (const [path, count] of Object.entries(d.conflicts || {})) {
       lines.push(`\x1b[2m(${count} instances disagree on ${path} — most recent edit wins)\x1b[0m`);
+    }
+    // Adapters whose common snippet is a re-serialized document (codex TOML)
+    // lose comments/formatting on write-back — say so BEFORE the confirm.
+    if (APP_ADAPTERS[cmd]?.rewritesCommonOnSync && Object.keys(d.commonPatch || {}).length) {
+      lines.push(`\x1b[2m(note: write-back rewrites common config (${cmd}) — comments and formatting in the TOML will be lost)\x1b[0m`);
     }
   }
   for (const d of Object.values(pluginDrifts)) {
@@ -2563,9 +2890,10 @@ function tuiSelect(prompt, options, optsArg) {
         const { kind, target } = confirmAction;
         let head;
         if (kind === "launch") {
-          // One keypress away from --dangerously-skip-permissions — the only
+          // One keypress away from the adapter's full-auto flag — the only
           // confirm in the TUI that guards a launch rather than a deletion.
-          head = `\x1b[33m⚠ "${target.provider}" would launch Full-auto (--dangerously-skip-permissions)\x1b[0m — launch?`;
+          const flag = APP_ADAPTERS[target.cli]?.fullAutoFlag ?? "--dangerously-skip-permissions";
+          head = `\x1b[33m⚠ "${target.provider}" would launch Full-auto (${flag})\x1b[0m — launch?`;
         } else if (kind === "cleanup") {
           head = `Remove ${target.count} dead ${target.count === 1 ? "entry" : "entries"} from Recent?`;
         } else if (target.dead) {
@@ -3060,9 +3388,9 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
   const settings = loadSettings();
 
   const instanceDir = adapter.setupInstance(row.id);
-  // Guard BEFORE prepare overwrites settings.json — user edits beyond plugins
-  // get a warning + backup instead of vanishing silently.
-  guardClaudeSettingsBeforeOverwrite(adapter, row, instanceDir, commonSnippet);
+  // Guard BEFORE prepare overwrites the main config file — user edits beyond
+  // plugins get a warning + backup instead of vanishing silently.
+  guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings);
   adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, commonSnippet, settings);
   recordInstanceBaseline(adapter, row.id, instanceDir, commonSnippet);
   // Record AFTER prepare succeeded (a failed prep is not a launch) and BEFORE
@@ -3262,6 +3590,34 @@ function runDoctor() {
   const instances = collectInstances();
   add("instance dirs", true, `${instances.length} instance(s)`);
 
+  // instructions files (per-adapter, capability-driven): the global file's
+  // readability, plus every existing instance instructions file being either
+  // the shared symlink or a real file — a BROKEN symlink means the global
+  // moved and the instance is silently without instructions. (Codex's global
+  // AGENTS.md loading itself has a known upstream reliability issue —
+  // openai/codex#8759 — so surface the file state explicitly here.)
+  for (const adapter of Object.values(APP_ADAPTERS)) {
+    if (!adapter.instructions) continue;
+    const globalPath = adapter.instructions.globalPath();
+    const globalOk = existsSync(globalPath);
+    add(
+      `${adapter.appType} global ${adapter.instructions.fileName}`,
+      globalOk,
+      globalOk ? globalPath : `${globalPath} not found (instances fall back to empty snapshots)`,
+    );
+    let broken = [];
+    for (const inst of collectInstances().filter((i) => i.appType === adapter.appType)) {
+      const p = instanceInstructionsPath(adapter.appType, inst.name);
+      const st = lstatSyncSafe(p);
+      if (st?.isSymbolicLink() && !existsSync(p)) broken.push(inst.name);
+    }
+    add(
+      `${adapter.appType} instance ${adapter.instructions.fileName} links`,
+      broken.length === 0,
+      broken.length === 0 ? "all symlinks resolve" : `broken symlink(s): ${broken.join(", ")}`,
+    );
+  }
+
   // sync state
   add("sync-state.json", existsSync(SYNC_STATE_PATH), existsSync(SYNC_STATE_PATH) ? "present" : "not yet created (first run)");
 
@@ -3319,53 +3675,115 @@ async function runClean(args) {
   }
 }
 
-// ─── Instance-only CLAUDE.md (customize / uncustomize) ────────────────
+// ─── Instance-only instructions file (customize / uncustomize) ────────
 
-// claude-only: codex instructions (AGENTS.md) work differently.
-function findClaudeProviderOrExit(name, usage) {
-  if (!name) {
+// Marks the boundary between the refreshable global snapshot and the
+// user's instance-only section in a codex AGENTS.md template.
+const CODEX_INSTRUCTIONS_INSTANCE_MARK =
+  "<!-- ── instance-only instructions (below this line) ── -->";
+
+// Pure arg parsing, shared by customize/uncustomize: an explicit app name is
+// consumed only when it names an adapter AND a provider name follows;
+// otherwise the command defaults to claude (backward compatible with the
+// claude-only syntax). A bare "claude"/"codex" is ambiguous — an app name
+// without a provider — so the caller must ask for
+// `switch customize claude claude` explicitly in that corner case.
+function parseCustomizeArgs(args) {
+  const rest = args.filter((a) => a !== "--yes");
+  if (rest.length === 0) return null;
+  if (APP_ADAPTERS[rest[0]]) {
+    if (rest.length < 2) return null; // app named but no provider
+    return { cmd: rest[0], providerName: rest[1] };
+  }
+  return { cmd: "claude", providerName: rest[0] };
+}
+
+function instanceInstructionsPath(appType, providerId) {
+  return join(INSTANCES_DIR, appType, providerId, APP_ADAPTERS[appType].instructions.fileName);
+}
+
+function findCustomizeProviderOrExit(cmd, providerName, usage) {
+  if (!providerName) {
     console.error(usage);
     process.exit(1);
   }
-  const row = queryProvider(name, "claude");
+  const adapter = APP_ADAPTERS[cmd];
+  const row = queryProvider(providerName, adapter.appType);
   if (!row) {
-    console.error(`✗ Provider "${name}" not found (claude)`);
+    console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
     console.error(`  Available providers:`);
-    queryProvidersByApp("claude").forEach((p) => console.error(`    ${p.name}`));
+    queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
     process.exit(1);
   }
   return row;
 }
 
-const instanceClaudeMdPath = (providerId) => join(INSTANCES_DIR, "claude", providerId, "CLAUDE.md");
+// Codex has no @import mechanism, so an instance AGENTS.md must EMBED the
+// global content: a marked snapshot block on top (refreshable), the user's
+// instance-only section below (preserved byte-for-byte across refreshes).
+function buildCodexInstructionsTemplate(globalText, globalPathDisplay) {
+  const body = (globalText || "").trimEnd();
+  return [
+    `<!-- cc-switch: snapshot of ${globalPathDisplay} — re-run \`switch customize codex <provider>\` to refresh this block -->`,
+    body || "(global AGENTS.md is missing or empty — this snapshot will stay as-is until refreshed)",
+    "",
+    CODEX_INSTRUCTIONS_INSTANCE_MARK,
+    "<!-- delete this file to fall back to the shared global AGENTS.md -->",
+    "",
+    "",
+  ].join("\n");
+}
 
-// First run writes the import template (global CLAUDE.md via @import + an
-// instance-only section below) and opens the editor; later runs open the
-// existing file directly. The real file survives every later launch because
-// ensureSymlink preserves non-symlink files instead of re-linking the shared
-// global one.
+// Rewrite ONLY the snapshot region; anything below the instance marker is
+// kept byte-for-byte. Returns null when the file doesn't carry our marker
+// (a hand-written file) — the caller must not touch it.
+function refreshCodexInstructionsSnapshot(existingText, newGlobalText, globalPathDisplay) {
+  const instanceIdx = existingText.indexOf(CODEX_INSTRUCTIONS_INSTANCE_MARK);
+  if (instanceIdx < 0) return null;
+  const tail = existingText.slice(instanceIdx);
+  const body = (newGlobalText || "").trimEnd();
+  return [
+    `<!-- cc-switch: snapshot of ${globalPathDisplay} — re-run \`switch customize codex <provider>\` to refresh this block -->`,
+    body || "(global AGENTS.md is missing or empty — this snapshot will stay as-is until refreshed)",
+    "",
+    tail,
+  ].join("\n");
+}
+
+// First run writes the template (claude: live @import; codex: marked
+// snapshot + instance section) and opens the editor; later runs open the
+// existing file directly — and, for adapters with refreshSnapshot, first
+// refresh the snapshot region in place. The real file survives every later
+// launch because ensureSymlink preserves non-symlink files instead of
+// re-linking the shared global one.
 function runCustomize(args) {
-  const row = findClaudeProviderOrExit(args[0], "Usage: switch customize <provider>");
-  mkdirSync(join(INSTANCES_DIR, "claude", row.id), { recursive: true });
-  const file = instanceClaudeMdPath(row.id);
+  const parsed = parseCustomizeArgs(args);
+  const usage = "Usage: switch customize [claude|codex] <provider>";
+  if (!parsed) {
+    console.error(usage);
+    process.exit(1);
+  }
+  const adapter = APP_ADAPTERS[parsed.cmd];
+  const inst = adapter.instructions;
+  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerName, usage);
+  mkdirSync(join(INSTANCES_DIR, adapter.appType, row.id), { recursive: true });
+  const file = instanceInstructionsPath(adapter.appType, row.id);
   const stats = lstatSyncSafe(file);
   if (stats?.isDirectory()) {
     console.error(`✗ ${file} is a directory — refusing to touch it`);
     process.exit(1);
   }
+  const globalPath = inst.globalPath();
+  let globalText = "";
+  try { globalText = readFileSync(globalPath, "utf8"); } catch {}
   if (!stats || stats.isSymbolicLink()) {
-    const globalMd = join(HOME, ".claude", "CLAUDE.md");
-    if (!existsSync(globalMd)) {
-      console.error(`⚠ ${globalMd} not found — the @import line will resolve once it exists`);
+    if (!existsSync(globalPath)) {
+      console.error(inst.missingGlobalWarn(globalPath));
     }
-    atomicWrite(file, [
-      `@${globalMd}`,
-      "",
-      "<!-- ── instance-only instructions (below this line) ── -->",
-      "<!-- delete this file to fall back to the shared global CLAUDE.md -->",
-      "",
-      "",
-    ].join("\n"));
+    atomicWrite(file, inst.buildTemplate(globalText, globalPath));
+  } else if (inst.refreshSnapshot) {
+    const refreshed = inst.refreshSnapshot(readFileSync(file, "utf8"), globalText, globalPath);
+    if (refreshed !== null) atomicWrite(file, refreshed);
   }
   const editor = process.env.VISUAL || process.env.EDITOR || "vi";
   const r = spawnSync(editor, [file], { stdio: "inherit" });
@@ -3380,18 +3798,23 @@ function runCustomize(args) {
 
 async function runUncustomize(args) {
   const yes = args.includes("--yes");
-  const row = findClaudeProviderOrExit(
-    args.find((a) => a !== "--yes"),
-    "Usage: switch uncustomize <provider> [--yes]",
-  );
-  const file = instanceClaudeMdPath(row.id);
+  const parsed = parseCustomizeArgs(args);
+  const usage = "Usage: switch uncustomize [claude|codex] <provider> [--yes]";
+  if (!parsed) {
+    console.error(usage);
+    process.exit(1);
+  }
+  const adapter = APP_ADAPTERS[parsed.cmd];
+  const inst = adapter.instructions;
+  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerName, usage);
+  const file = instanceInstructionsPath(adapter.appType, row.id);
   const stats = lstatSyncSafe(file);
   if (!stats) {
-    console.log(`not customized (no instance CLAUDE.md)`);
+    console.log(`not customized (no instance ${inst.fileName})`);
     return;
   }
   if (stats.isSymbolicLink()) {
-    console.log(`not customized (CLAUDE.md is the shared global symlink)`);
+    console.log(`not customized (${inst.fileName} is the shared global symlink)`);
     return;
   }
   if (stats.isDirectory()) {
@@ -3404,7 +3827,7 @@ async function runUncustomize(args) {
       process.exit(1);
     }
     const ok = await confirmSync(
-      [`Remove instance CLAUDE.md for "${row.name}"?`, `  ${file}`],
+      [`Remove instance ${inst.fileName} for "${row.name}"?`, `  ${file}`],
       "Remove it?",
     );
     if (!ok) {
@@ -3418,8 +3841,8 @@ async function runUncustomize(args) {
     console.error(`✗ ${e.message}`);
     process.exit(1);
   }
-  setupClaudeInstance(row.id); // restore the shared symlink immediately
-  console.log(`✓ restored to shared global CLAUDE.md`);
+  adapter.setupInstance(row.id); // restore the shared symlink immediately
+  console.log(`✓ restored to shared global ${inst.fileName}`);
   process.exit(0);
 }
 
@@ -3435,8 +3858,8 @@ Usage:
   switch doctor                         Diagnose the environment
   switch clean [--all]                  Remove instance directories
   switch ps                             List running switch-launched sessions
-  switch customize <provider>           Instance-only CLAUDE.md (opens editor)
-  switch uncustomize <provider> [--yes] Back to the shared global CLAUDE.md
+  switch customize [claude|codex] <provider>   Instance-only instructions file (CLAUDE.md / AGENTS.md; opens editor)
+  switch uncustomize [claude|codex] <provider> [--yes]  Back to the shared global instructions file
   switch update                         Self-update to the latest npm version
   switch -v | --version                 Show version
 
@@ -3664,6 +4087,9 @@ if (!process.env.CC_LAUNCH_SKIP_MAIN) {
 export const __test = Object.freeze({
   mergeCommonOverProvider,
   jsonDeepMerge,
+  applyMergePatch,
+  jsonNormalize,
+  applyTomlPatchText,
   deepEqualJson,
   isSensitiveConfigKey,
   isSensitiveConfigPath,
@@ -3671,4 +4097,9 @@ export const __test = Object.freeze({
   pathExistsInSnippet,
   foldRemovalPatch,
   diffSettingsLeaves,
+  guardInstanceConfigBeforeOverwrite,
+  parseCustomizeArgs,
+  buildCodexInstructionsTemplate,
+  refreshCodexInstructionsSnapshot,
+  APP_ADAPTERS,
 });

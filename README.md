@@ -63,9 +63,11 @@ switch --no-sync "P&G Nezha" codex       # launch silently, suppress the drift w
 
 ```bash
 switch ps         # List running switch-launched sessions
-switch sync       # Detect & sync config drift (plugins, common config)
-switch doctor     # Diagnose the environment (sqlite3, DB, binaries, …)
+switch sync       # Detect & sync config drift (plugins, config fields, common config)
+switch doctor     # Diagnose the environment (sqlite3, DB, binaries, instructions files, …)
 switch clean      # Remove instance directories (interactive, or --all)
+switch customize [claude|codex] <provider>          # Instance-only CLAUDE.md / AGENTS.md (opens editor)
+switch uncustomize [claude|codex] <provider> [--yes] # Back to the shared global file
 switch update     # Self-update to the latest npm version
 switch --help     # List all commands
 ```
@@ -81,16 +83,18 @@ The third column is the tmux session name (falls back to the terminal tty when n
 
 ## Config drift & sync
 
-**The mental model: config flows down on launch, and what you change inside a session should come back up.** `switch` generates each instance's config from cc-switch's database on every launch — edits made inside a Claude session are the one exception, and the sync flow exists to capture them. The upward channel covers **every field** of a Claude instance's `settings.json`: beyond plugin state, env, permissions, hooks, statusLine etc. are detected, displayed, and written back per field. Changes are shown as dotted field paths, and on confirmation are written back with a **smart split**: fields that already exist in the common config go into `common_config_claude` (otherwise the next launch would overwrite them with common's stale value), everything else goes into that provider's own config.
+**The mental model: config flows down on launch, and what you change inside a session should come back up.** `switch` generates each instance's config from cc-switch's database on every launch — edits made inside a session are the one exception, and the sync flow exists to capture them. The upward channel covers **every field** of a Claude instance's `settings.json` and of a Codex instance's `config.toml`: beyond plugin state, env, permissions, hooks, statusLine, models, approval policies etc. are detected, displayed, and written back per field. Changes are shown as dotted field paths, and on confirmation are written back with a **smart split**: fields that already exist in the common config go into `common_config_<app>` (otherwise the next launch would overwrite them with common's stale value), everything else goes into that provider's own config. For Codex the common side is a TOML document, so a confirmed common-direction write re-serializes it — comments and formatting in `common_config_codex` are lost (the prompt tells you before you confirm).
 
-Even if you never sync, `switch` **backs up** an instance's `settings.json` to `~/.cc-switch/backups/claude/<provider-id>/` (10 most recent kept) right before overwriting it, and warns on stderr which fields are about to be lost — edits never vanish silently. Upgrade note: this requires the v3 baseline (`preparedSettings`); edits made before the upgrade can't be recognized and are only covered by the backup.
+Even if you never sync, `switch` **backs up** an instance's main config file (`settings.json` / `config.toml`) to `~/.cc-switch/backups/<app>/<provider-id>/` (10 most recent kept) right before overwriting it, and warns on stderr which fields are about to be lost — edits never vanish silently. Upgrade note: this requires the per-instance baseline (`preparedSettings`); edits made before the upgrade can't be recognized and are only covered by the backup.
+
+Codex credential files get the same treatment as Claude's: an OAuth/ChatGPT-login instance symlinks the **shared global** `~/.codex/auth.json` (the first launch seeds it from the DB), so token rotations the CLI performs mid-session survive every relaunch — a per-instance copy would be overwritten with the stale DB token and force a re-login. API-key instances keep an isolated real file. `settings.preserveCodexOfficialAuthOnSwitch` opts out and restores the legacy per-instance copy. Trade-off: providers with **different** ChatGPT accounts can no longer hold independent logins.
 
 `switch` keeps a snapshot (`~/.cc-switch/sync-state.json`) of the config it last saw, and detects two kinds of drift on every launch:
 
 - **Downward** — cc-switch's *common config* (`common_config_claude` / `common_config_codex`) changed in the desktop app. Staleness is tracked **per instance**: the warning names exactly which providers still run the old config. Confirming the sync (y) regenerates those instances' config files in place and refreshes their baselines, so the warning goes away; **already-running sessions** still need a restart to pick up the new config (that's what "restart to apply" in the prompt means). `switch clean` also drops a removed instance's baseline, so stale warnings stop naming deleted providers.
-- **Upward** — edits made inside a `switch`-launched Claude session, captured via two channels:
-  - **Plugins**: installed, removed, or toggled (`/plugin`), written back into `common_config_claude.enabledPlugins`. When multiple instances disagree, only instances whose plugin state was actually edited get a vote (a stale mirror of the old common config doesn't); among edited instances the most recent change wins.
-  - **Settings fields**: non-plugin fields (env, permissions, hooks, statusLine …) are shown as a leaf-level diff (arrays compare whole-block — element-level merging has no reliable primitive under RFC 7396) and written back with the smart split on confirmation. Arbitration mirrors the plugin channel: mirror instances get no vote; the winner per field is the most recently edited instance (mtime). Known limitation: a field that exists in the common config is always written to common — it would reach every common-config consumer even if you meant to change one provider, because that's the only write that survives the merge order. Exception: credential-style sensitive keys (`*_TOKEN` / `*_KEY` / `*SECRET*` …) are never written back into the common config — the edit stays in the instance, update it in the desktop app instead; deleting a sensitive key from the common config is still allowed. Credential-named sensitive fields (`*_TOKEN` / `*_KEY` / `*SECRET*` etc.) are never written back into the common config — the edit stays in the instance and must be updated in the desktop app; removing a sensitive key FROM the common config remains allowed.
+- **Upward** — edits made inside a `switch`-launched session, captured via two channels:
+  - **Plugins** (Claude only — Codex has no plugin concept): installed, removed, or toggled (`/plugin`), written back into `common_config_claude.enabledPlugins`. When multiple instances disagree, only instances whose plugin state was actually edited get a vote (a stale mirror of the old common config doesn't); among edited instances the most recent change wins.
+  - **Config fields**: non-plugin fields (env, permissions, hooks, statusLine … for Claude; models, approval policies, MCP servers … for Codex) are shown as a leaf-level diff (arrays compare whole-block — element-level merging has no reliable primitive under RFC 7396) and written back with the smart split on confirmation. Arbitration mirrors the plugin channel: mirror instances get no vote; the winner per field is the most recently edited instance (mtime). Known limitation: a field that exists in the common config is always written to common — it would reach every common-config consumer even if you meant to change one provider, because that's the only write that survives the merge order. Exception: credential-style sensitive keys (`*_TOKEN` / `*_KEY` / `*SECRET*` …) are never written back into the common config — the edit stays in the instance, update it in the desktop app instead; deleting a sensitive key from the common config is still allowed. The Codex write-back goes through compare-and-swap on the stored TOML/JSON text, so a concurrent desktop-app edit can never be clobbered — worst case you're asked to re-run `switch sync`.
 
 In **TUI mode** drift is shown before the CLI selector and you can confirm the sync inline. In **command mode** it's a non-blocking warning on stderr — run `switch sync` to review and apply, pass `--sync` to confirm inline before launching, or `--no-sync` to suppress the warning entirely. The first run silently records a baseline, so existing plugins are never reported as "new".
 
@@ -112,6 +116,15 @@ In **TUI mode** drift is shown before the CLI selector and you can confirm the s
   ├── projects → ~/.claude/projects                      (symlink, shared)
   ├── plugins → ~/.claude/plugins                         (symlink, shared)
   └── ...other symlinks (skills, cache, commands, etc.)
+
+~/.cc-switch/instances/codex/<provider-id>/
+  ├── config.toml             ← generated from DB (isolated per provider)
+  ├── auth.json → ~/.codex/auth.json    (symlink for OAuth logins — one live,
+  │                              token-rotation-safe copy; real per-instance
+  │                              file for API-key providers)
+  ├── AGENTS.md → ~/.codex/AGENTS.md    (symlink, shared — customize swaps it
+  │                              for an editable per-instance file)
+  └── ...other symlinks (skills, rules, caches, etc.)
 ```
 
 Each instance is ~8KB — the heavy data (plugins, session history, credentials) is symlinked, not copied.
@@ -129,7 +142,15 @@ const APP_ADAPTERS = {
 };
 ```
 
-`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Optional `detectPluginDrift` / `syncPluginsBack` (Claude only today) add per-CLI plugin sync; optional `detectSettingsDrift` / `syncSettingsBack` (Claude only today) add the settings-field upward channel; optional `readInstancePluginState` lets the per-instance drift baseline record that CLI's plugin state, and optional `readInstanceSettingsSnapshot` lets it record the full settings prepare just handed down (v3 — the basis of the overwrite guard and the settings-field sync).
+`setupInstance` creates the instance dir + symlinks, `prepare` generates the config files, `launch` spawns the CLI, `permissionArgs` maps the permission hotkey. Everything else is **capability-driven**: the overwrite guard, the sync flows, backups, and customize never branch on `appType` — an adapter opts in per layer by declaring the interface:
+
+- `instanceSettingsFileName` / `readInstanceSettingsSnapshot` / `computeEffectiveSettings` — per-instance baseline + overwrite guard (backup, warning, self-healing backfill)
+- `parseCommonSnippet` / `providerDocFromSettingsConfig` / `channelOwnedPath` / `detectSettingsDrift` / `syncSettingsBack` — the config-field upward channel; `detectSettingsDrift` is one line delegating to the shared `detectConfigDriftGeneric` pipeline (leaf diff, mtime arbitration, smart split), only the write-back differs per storage format (JSON `json_patch` for Claude; compare-and-swap TOML re-serialization for Codex)
+- `detectPluginDrift` / `syncPluginsBack` / `readInstancePluginState` — plugin channel (Claude only; Codex has no plugin concept)
+- `instructions` — customize/uncustomize support (CLAUDE.md via a live `@import`; AGENTS.md via a refreshable marked snapshot, since Codex has no import mechanism)
+- `fullAutoFlag` — the flag shown verbatim in the TUI's full-auto confirmation
+
+An adapter without an interface is simply "v2-shaped" for that layer and skips it — adding Gemini means filling in the rows you want, not touching the guard/sync machinery.
 
 ## Requirements
 
