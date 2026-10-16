@@ -118,6 +118,30 @@ test("injection: user-authored statusLine becomes the wrapper's relay source", (
   assert.ok(script.includes(JSON.stringify("echo my-own-statusline")), "relay command inlined");
 });
 
+test("injection: malformed explicit statusLine (missing/blank command) still injects, no relay", () => {
+  // command missing entirely
+  cleanInstance("p-malformed");
+  const e1 = buildClaudeEffectiveSettings(
+    { statusLine: { type: "command" } }, {}, "", "Prov", "p-malformed",
+  );
+  assert.ok(e1.statusLine.command.includes("statusline-wrapper.mjs"));
+  assert.equal(e1.statusLine.type, "command");
+  assert.ok(
+    readFileSync(instanceFile("p-malformed"), "utf8").includes("const RELAY_COMMAND = null"),
+    "no relay inlined for a commandless entry",
+  );
+
+  // whitespace-only command — same treatment
+  cleanInstance("p-blank");
+  const e2 = buildClaudeEffectiveSettings(
+    { statusLine: { type: "command", command: "   " } }, {}, "", "Prov", "p-blank",
+  );
+  assert.ok(e2.statusLine.command.includes("statusline-wrapper.mjs"));
+  assert.ok(
+    readFileSync(instanceFile("p-blank"), "utf8").includes("const RELAY_COMMAND = null"),
+  );
+});
+
 test("injection: skipped when no provider identity is passed", () => {
   const effective = buildClaudeEffectiveSettings({}, {}, "");
   assert.equal(effective.statusLine, undefined);
