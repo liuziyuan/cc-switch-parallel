@@ -203,6 +203,42 @@ test("wrapper: glue works behind the relay's own ANSI codes (claude-hud shape)",
   );
 });
 
+test("wrapper: glue walks past leading indent (real claude-hud output)", () => {
+  cleanInstance("p-glue-indent");
+  writeGlobalSettings({
+    type: "command",
+    command: "printf '  [glm-5.3-flash[1m]] │ proj\\n'",
+  });
+  buildClaudeEffectiveSettings({}, {}, "", "Zhipu GLM en", "p-glue-indent");
+
+  const r = runWrapper(
+    "p-glue-indent",
+    JSON.stringify({ model: { display_name: "glm-5.3-flash[1m]" } }),
+  );
+  assert.equal(r.status, 0, r.stderr);
+  const firstLine = r.stdout.split("\n")[0];
+  // glued tag, relay's leading indent dropped
+  assert.ok(
+    firstLine.endsWith("Zhipu GLM en]\x1b[0m[glm-5.3-flash[1m]] │ proj"),
+    firstLine,
+  );
+});
+
+test("wrapper: JSON-bearing line with model name inside does not glue", () => {
+  cleanInstance("p-no-glue-json");
+  writeGlobalSettings({ type: "command", command: "cat" });
+  buildClaudeEffectiveSettings({}, {}, "", "Prov", "p-no-glue-json");
+
+  const stdin = JSON.stringify({ model: { display_name: "Opus" } });
+  const r = runWrapper("p-no-glue-json", stdin);
+  assert.equal(r.status, 0, r.stderr);
+  // `cat` relays the raw JSON — "Opus" appears mid-line behind display_name's
+  // own letters, so the tag must fall back to spaced, not glue mid-token.
+  const firstLine = r.stdout.split("\n")[0];
+  assert.ok(firstLine.includes("[Prov]"), firstLine);
+  assert.ok(firstLine.endsWith(`\x1b[0m ${stdin}`), firstLine);
+});
+
 test("wrapper: bare model at line start stays spaced, not glued", () => {
   cleanInstance("p-bare-model");
   writeGlobalSettings({ type: "command", command: "echo 'Opus | proj'" });
