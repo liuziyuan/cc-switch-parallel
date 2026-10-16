@@ -83,7 +83,7 @@ switch --help     # 列出所有命令
 
 ## 配置漂移与同步
 
-**心智模型：配置在启动时向下下发，你在会话里改的东西应该能被收回来。** `switch` 每次启动都从 cc-switch 数据库生成各实例的配置——会话内的改动是唯一的例外，同步机制就是为收编它而存在的。上行通道覆盖 Claude 实例 `settings.json` 与 Codex 实例 `config.toml` 的**全部字段**：插件状态之外的 env、permissions、hooks、statusLine、模型、审批策略等都会被检测、展示、按字段归属写回。改动展示为字段路径（dotted path），确认后按**智能拆分**写回——通用配置里已有的字段写回 `common_config_<app>`（否则下次启动时通用配置的旧值会盖掉它），其余写回该 provider 的配置。Codex 的通用配置是 TOML 文档，确认通用方向的写回会重新序列化整个文档——`common_config_codex` 里的注释与排版会丢失（确认前提示会明确告知）。
+**心智模型：配置在启动时向下下发，你在会话里改的东西应该能被收回来。** `switch` 每次启动都从 cc-switch 数据库生成各实例的配置——会话内的改动是唯一的例外，同步机制就是为收编它而存在的。上行通道覆盖 Claude 实例 `settings.json` 与 Codex 实例 `config.toml` 的**全部字段**：插件状态与生成的 statusLine（两者均为 channel 专属，见下文）之外的 env、permissions、hooks、模型、审批策略等都会被检测、展示、按字段归属写回。改动展示为字段路径（dotted path），确认后按**智能拆分**写回——通用配置里已有的字段写回 `common_config_<app>`（否则下次启动时通用配置的旧值会盖掉它），其余写回该 provider 的配置。Codex 的通用配置是 TOML 文档，确认通用方向的写回会重新序列化整个文档——`common_config_codex` 里的注释与排版会丢失（确认前提示会明确告知）。
 
 即使你不做同步，`switch` 在覆盖实例主配置文件（`settings.json` / `config.toml`）之前也会自动把它**备份**到 `~/.cc-switch/backups/<app>/<provider-id>/`（保留最近 10 份），并在 stderr 警告即将被覆盖的字段——改动永不静默丢失。升级说明：本机制需要实例级基线（`preparedSettings`）；升级前做出的会话内改动无法被识别，只会被备份兜底。
 
@@ -94,9 +94,18 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 - **下行** —— cc-switch 的*通用配置*（`common_config_claude` / `common_config_codex`）在桌面端被改动。陈旧状态**按实例跟踪**：警告会指出具体哪些 provider 还在用旧配置。确认同步（y）会就地重新生成这些实例的配置文件并刷新基线，提示随之消失；**正在运行的会话**仍需重启才能用上新配置（这正是提示里 "restart to apply" 的含义）。`switch clean` 删除实例目录时也会同步清掉它的基线，陈旧提示不会再点名已删除的 provider。
 - **上行** —— 在 `switch` 启动的会话里改动配置，分两个通道收编：
   - **插件**（仅 Claude——Codex 没有插件概念）：安装、移除或切换（`/plugin`），写回 `common_config_claude.enabledPlugins`。多个实例状态冲突时，只有插件状态被真实修改过的实例才有投票权（旧通用配置的陈旧镜像没有）；被修改过的实例之间，以最近的改动为准。
-  - **配置字段**：非插件字段（Claude 的 env、permissions、hooks、statusLine 等；Codex 的模型、审批策略、MCP 服务器等）按叶子级 diff 展示（数组按整块比较——元素级合并在 RFC 7396 下没有可靠原语），确认后按智能拆分写回。仲裁与插件通道同语义：与基线一致的镜像实例无票，各字段的胜者是最新修改（mtime）的实例。已知限制：某字段在通用配置中存在、但你只想改单个 provider 时，它仍会写进通用配置、波及所有启用通用配置的 provider——这是「通用配置覆盖 provider」合并语义下唯一不丢改动的选择。例外：含凭据命名的敏感字段（`*_TOKEN` / `*_KEY` / `*SECRET*` 等）不会被写回通用配置——改动保留在实例内，需在桌面端手动更新；从通用配置删除敏感字段则不受限。Codex 的写回基于存储文本的 compare-and-swap（CAS）：桌面端并发写入永远不会被覆盖——最坏情况是提示你重跑 `switch sync`。
+  - **配置字段**：非插件字段（Claude 的 env、permissions、hooks、模型等；Codex 的模型、审批策略、MCP 服务器等）按叶子级 diff 展示（数组按整块比较——元素级合并在 RFC 7396 下没有可靠原语），确认后按智能拆分写回。仲裁与插件通道同语义：与基线一致的镜像实例无票，各字段的胜者是最新修改（mtime）的实例。已知限制：某字段在通用配置中存在、但你只想改单个 provider 时，它仍会写进通用配置、波及所有启用通用配置的 provider——这是「通用配置覆盖 provider」合并语义下唯一不丢改动的选择。例外：含凭据命名的敏感字段（`*_TOKEN` / `*_KEY` / `*SECRET*` 等）不会被写回通用配置——改动保留在实例内，需在桌面端手动更新；从通用配置删除敏感字段则不受限。Codex 的写回基于存储文本的 compare-and-swap（CAS）：桌面端并发写入永远不会被覆盖——最坏情况是提示你重跑 `switch sync`。
 
 在 **TUI 模式**下，漂移会在 CLI 选择器之前展示，你可以就地确认同步。在**命令模式**下，它是在 stderr 上的非阻塞警告 —— 运行 `switch sync` 来查看并应用，加 `--sync` 可在启动前就地确认，加 `--no-sync` 则完全抑制警告。首次运行会静默记录一份基线，因此已有的插件永远不会被报告为「新增」。
+
+## 实例 statusline（provider 标签）
+
+每个由 `switch` 启动的 Claude 实例都会在状态栏里显示**当前运行的是哪个 provider**：生成的 `settings.json` 自带一个 statusLine，其 wrapper 脚本在模型名前打上 `[provider]` 标签（每个 provider 颜色稳定）——配合 claude-hud 的效果是 `[Zhipu GLM en][Opus] │ myproject`——然后**原样转发你自己的全局 statusLine**：claude-hud、ccstatusline、手写脚本，任何配置在 `~/.claude/settings.json` 里的工具都照常工作。Claude Code 传给 statusline 的 JSON 原样透传，全局工具渲染出的内容与直接启动时完全一致；provider 标签是 `switch` 唯一添加的东西（若 statusline 首字符不是模型名、或根本没配 statusline，标签就放在行首）。
+
+- **你的全局 `~/.claude/settings.json` 永远不会被改动，生成的 statusLine 也不会被同步回 cc-switch 数据库**——`statusLine` 是 channel 专属路径（与插件同机制）：覆盖守卫忽略它，上行同步对它让权。全局换任何 statusline 工具，所有实例下次启动自动跟随。
+- 全局没有配 statusline？实例就只显示 provider 标签。
+- 在 cc-switch 的 provider 或通用配置里显式写 `statusLine` 会优先于生成的版本——刻意的配置永远胜过默认行为。
+- 在实例**内部**自定义 statusline（`/statusline`）没有意义——该条目每次启动都会重新生成。请改全局配置文件。
 
 ## 工作原理
 
@@ -112,6 +121,8 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 ```
 ~/.cc-switch/instances/claude/<provider-id>/
   ├── settings.json           ← 从数据库生成（按 provider 隔离）
+  ├── statusline-wrapper.mjs  ← 生成的 statusline 脚本（provider 标签 +
+  │                              转发你的全局 statusline 工具）
   ├── .credentials.json → ~/.claude/.credentials.json  （软链接，共享）
   ├── projects → ~/.claude/projects                      （软链接，共享）
   ├── plugins → ~/.claude/plugins                         （软链接，共享）
