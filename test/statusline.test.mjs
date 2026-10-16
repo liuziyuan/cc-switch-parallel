@@ -103,14 +103,19 @@ test("injection: carries refreshInterval/padding through an upgrade", () => {
   assert.ok(readFileSync(instanceFile("p-upgrade"), "utf8").includes('"Renamed"'));
 });
 
-test("injection: user-authored statusLine in the config wins", () => {
+test("injection: user-authored statusLine becomes the wrapper's relay source", () => {
   cleanInstance("p-user");
-  const userLine = { type: "command", command: "echo my-own-statusline" };
+  const userLine = { type: "command", command: "echo my-own-statusline", refreshInterval: 9 };
   const effective = buildClaudeEffectiveSettings(
     { statusLine: userLine }, {}, "", "Prov", "p-user",
   );
-  assert.deepEqual(effective.statusLine, userLine);
-  assert.equal(existsSync(instanceFile("p-user")), false, "no wrapper written");
+  // injected: the entry now points at the wrapper, display fields kept
+  assert.equal(effective.statusLine.type, "command");
+  assert.ok(effective.statusLine.command.includes("statusline-wrapper.mjs"));
+  assert.equal(effective.statusLine.refreshInterval, 9);
+  // ...and the user's own command is inlined as the preferred relay
+  const script = readFileSync(instanceFile("p-user"), "utf8");
+  assert.ok(script.includes(JSON.stringify("echo my-own-statusline")), "relay command inlined");
 });
 
 test("injection: skipped when no provider identity is passed", () => {
@@ -316,6 +321,33 @@ test("wrapper: loop guard — a global command pointing back at the wrapper is n
   assert.equal(r.status, 0);
   assert.ok(r.stdout.includes("NoLoop"));
   assert.ok(!r.stdout.includes("should not appear"));
+});
+
+test("wrapper: inlined RELAY_COMMAND (from cc-switch config) beats the global statusline", () => {
+  cleanInstance("p-relay");
+  writeGlobalSettings({ type: "command", command: "echo GLOBAL-SOURCE" });
+  buildClaudeEffectiveSettings(
+    { statusLine: { type: "command", command: "echo RELAY-SOURCE" } },
+    {}, "", "Prov", "p-relay",
+  );
+
+  const r = runWrapper("p-relay", "{}");
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes("RELAY-SOURCE"), r.stdout);
+  assert.ok(!r.stdout.includes("GLOBAL-SOURCE"), r.stdout);
+});
+
+test("wrapper: RELAY_COMMAND works even without a global settings file", () => {
+  cleanInstance("p-relay-noglobal");
+  rmSync(GLOBAL_SETTINGS, { force: true });
+  buildClaudeEffectiveSettings(
+    { statusLine: { type: "command", command: "echo ONLY-RELAY" } },
+    {}, "", "Prov", "p-relay-noglobal",
+  );
+
+  const r = runWrapper("p-relay-noglobal", "{}");
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes("ONLY-RELAY"), r.stdout);
 });
 
 test("wrapper: corrupted global settings file → tag only", () => {

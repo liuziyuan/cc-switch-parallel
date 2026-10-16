@@ -104,7 +104,7 @@ Every `switch`-launched Claude instance shows **which provider it runs** right i
 
 - **Your global `~/.claude/settings.json` is never touched, and the generated entry is never synced back into cc-switch's database** — `statusLine` is a channel-owned path (like plugins): the overwrite guard ignores it and the upward sync yields it. Swap your global statusline tool and every instance follows on its next launch.
 - No global statusline? Instances simply show the provider tag.
-- A `statusLine` set explicitly in cc-switch's provider or common config wins over the generated one — deliberate configuration always beats the default.
+- A `statusLine` set explicitly in cc-switch's provider or common config is **wrapped, not replaced**: the generated entry points at the wrapper and your explicit command is inlined as the wrapper's preferred relay source (the global `~/.claude/settings.json` is the fallback). Deliberate configuration keeps rendering — the provider tag is still added.
 - Customizing the statusline from **inside** an instance (`/statusline`) is pointless — the entry is regenerated on every launch. Edit the global file instead.
 
 ## How it works
