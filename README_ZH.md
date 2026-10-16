@@ -104,7 +104,7 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 
 - **你的全局 `~/.claude/settings.json` 永远不会被改动，生成的 statusLine 也不会被同步回 cc-switch 数据库**——`statusLine` 是 channel 专属路径（与插件同机制）：覆盖守卫忽略它，上行同步对它让权。全局换任何 statusline 工具，所有实例下次启动自动跟随。
 - 全局没有配 statusline？实例就只显示 provider 标签。
-- 在 cc-switch 的 provider 或通用配置里显式写 `statusLine` 会优先于生成的版本——刻意的配置永远胜过默认行为。
+- 在 cc-switch 的 provider 或通用配置里显式写的 `statusLine` 会被**包装而非替换**：生成的条目指向 wrapper，你的显式命令被内联为 wrapper 的首选转发源（全局 `~/.claude/settings.json` 作为回退）。刻意的配置照常渲染——provider 标签照样添加。
 - 在实例**内部**自定义 statusline（`/statusline`）没有意义——该条目每次启动都会重新生成。请改全局配置文件。
 
 ## 工作原理
