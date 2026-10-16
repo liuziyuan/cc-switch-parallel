@@ -25,6 +25,7 @@ import {
   unlinkSync,
   renameSync,
   rmSync,
+  chmodSync,
   realpathSync,
 } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -245,10 +246,22 @@ function loadHistory() {
     return { entries: [], order: normalizeOrder(undefined) }; // no file yet — fresh history
   }
   if (data?.version === HISTORY_VERSION) {
-    return {
-      entries: Array.isArray(data?.entries) ? data.entries : [],
-      order: normalizeOrder(data?.order),
-    };
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    const order = normalizeOrder(data?.order);
+    // Heal files written before one-shot flags were stripped at record time:
+    // an already-poisoned quick-launch row cures itself on the next load
+    // instead of replaying `claude --version` forever. Same concurrent-write
+    // narrowing as the migration below — persist only if the file is still v2.
+    if (healRecordedArgs(entries)) {
+      try {
+        const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+        if (cur?.version === HISTORY_VERSION) saveHistory(entries, order);
+      } catch {
+        // unreadable or racing another process — heal in memory only; the
+        // next recordLaunch persists the clean argv anyway
+      }
+    }
+    return { entries, order };
   }
   // v1 (name-keyed) or unknown — migrate once, in place. Nothing is dropped:
   // names that no longer resolve become providerId:null dead rows headed for
@@ -374,6 +387,35 @@ function mergeTop5(entries, order, aliveByCli) {
   return out;
 }
 
+// One-shot informational flags must never enter launch history: replaying
+// `claude --version` prints and exits — the CLI never opens — and every replay
+// re-records the flag, so one accidental `switch <p> claude --version` turns
+// the quick-launch row into a permanently version-printing entry (a real
+// history file showed such a row at count 56). Stripped at the single history
+// write point (recordLaunch) and healed on load for files written before.
+const ONE_SHOT_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
+
+// Raw launch argv → the argv worth replaying. Non-arrays normalize to the
+// empty-array form every recordLaunch write site expects.
+function stripOneShotFlags(args) {
+  if (!Array.isArray(args)) return [];
+  return args.filter((a) => !ONE_SHOT_FLAGS.has(a));
+}
+
+// In-place heal of loaded entries; returns true when anything changed.
+function healRecordedArgs(entries) {
+  let dirty = false;
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!Array.isArray(e?.extraArgs) || e.extraArgs.length === 0) continue;
+    const cleaned = stripOneShotFlags(e.extraArgs);
+    if (cleaned.length !== e.extraArgs.length) {
+      e.extraArgs = cleaned;
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
 // Pins are persistent: only an explicit unpin (or removing the pair) releases
 // a slot — a real launch never does. Launches update count/lastUsed/extraArgs
 // and follow renames so the stored display name never goes stale.
@@ -382,12 +424,13 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
   try {
     const { entries, order } = loadHistory();
     const now = Date.now();
+    const stored = stripOneShotFlags(extraArgs);
     const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
     if (hit) {
       hit.count = (hit.count || 0) + 1;
       hit.lastUsed = now;
       hit.provider = providerName;
-      hit.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
+      hit.extraArgs = stored;
     } else {
       // Pin placeholders carry the exact signature hotkey:null + count:0 +
       // lastUsed:0 (see insertManualOrder). Upgrade one in place instead of
@@ -401,11 +444,11 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
         ph.count = 1;
         ph.lastUsed = now;
         ph.provider = providerName;
-        ph.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
+        ph.extraArgs = stored;
       } else {
         entries.push({
           cli, providerId, provider: providerName, hotkey: hotkey ?? null,
-          extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
+          extraArgs: stored, count: 1, lastUsed: now,
         });
       }
     }
@@ -864,7 +907,12 @@ function applyKimiForCodingContextDefaults(effective, providerSettings) {
   }
 }
 
-function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet) {
+// providerName/providerId: when both are given, the effective settings get
+// the instance statusline injected (see applyStatusLineInjection). prepare()
+// and the guard's computeEffectiveSettings [C3] MUST pass the same pair —
+// C3 exists to recompute exactly what prepare would write, and a fork
+// between the two derivations makes the overwrite guard misfire.
+function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, providerName, providerId) {
   let effective = jsonDeepClone(settingsConfig);
   if (providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)) {
     try {
@@ -875,7 +923,141 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet) {
     }
   }
   applyKimiForCodingContextDefaults(effective, settingsConfig);
-  return sanitizeClaudeSettings(effective);
+  effective = sanitizeClaudeSettings(effective);
+  if (providerName !== undefined && providerId !== undefined) {
+    applyStatusLineInjection(effective, providerName, providerId);
+  }
+  return effective;
+}
+
+// ─── Instance statusline (claude) ──────────────────────────────────────
+// Every prepared instance settings.json carries a generated statusLine whose
+// command is a per-instance wrapper script. The wrapper prints the provider
+// name first, then relays whatever the user's GLOBAL statusLine (~/.claude/
+// settings.json — claude-hud, ccstatusline, anything) renders, passing the
+// statusline JSON from Claude Code through untouched. The global tool stays
+// the single source of truth for how the rest of the line looks; the provider
+// tag is the only thing switch adds.
+//
+// The injection lives ONLY in the instance copy: the wrapper script is
+// written into the instance dir and the statusLine entry is regenerated on
+// every prepare — it is never written back into the cc-switch DB, because
+// statusLine is a channel-owned path (isStatusLineChannelPath): the overwrite
+// guard ignores it and the upward settings sync yields it, exactly like the
+// plugin channel.
+
+const STATUSLINE_WRAPPER_FILENAME = "statusline-wrapper.mjs";
+
+// [C6 for the statusline channel] — the settings-field sync and the
+// overwrite guard must neither report nor vote on this subtree.
+function isStatusLineChannelPath(path) {
+  return path === "statusLine" || path.startsWith("statusLine.");
+}
+
+function claudeProviderName(providerId) {
+  try {
+    return queryProviderById(providerId, "claude")?.name || providerId;
+  } catch {
+    return providerId; // DB hiccup — the id still identifies the instance
+  }
+}
+
+// Single-quote for /bin/sh; paths only ever get safer under this.
+function shQuote(path) {
+  return `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+function buildStatusLineWrapperScript(providerName, globalSettingsPath) {
+  return [
+    `#!/usr/bin/env node`,
+    `// Generated by cc-switch-parallel — do not edit; regenerated on every launch.`,
+    `// Instance statusline: prints the provider name, then relays the user's`,
+    `// global statusLine (claude-hud, ccstatusline, …) after it, passing the`,
+    `// statusline JSON from Claude Code through untouched.`,
+    `import { spawnSync } from "node:child_process";`,
+    `import { readFileSync } from "node:fs";`,
+    `const PROVIDER = ${JSON.stringify(providerName)};`,
+    `const SELF_MARKER = ${JSON.stringify(STATUSLINE_WRAPPER_FILENAME)};`,
+    `const GLOBAL_SETTINGS = ${JSON.stringify(globalSettingsPath)};`,
+    ``,
+    `// Stable per-provider hue: bright ANSI foreground, FNV-1a hashed by name.`,
+    `const PALETTE = [96, 92, 93, 95, 94, 91];`,
+    `let hash = 2166136261;`,
+    `for (const ch of PROVIDER) { hash ^= ch.codePointAt(0); hash = Math.imul(hash, 16777619) >>> 0; }`,
+    `const tag = "\\x1b[1m\\x1b[" + PALETTE[hash % PALETTE.length] + "m[" + PROVIDER + "]\\x1b[0m";`,
+    ``,
+    `let input = "";`,
+    `try { input = readFileSync(0, "utf8"); } catch {}`,
+    ``,
+    `// Relay the user's global statusLine, if one is configured and it is not`,
+    `// this wrapper itself (loop guard).`,
+    `let relayed = "";`,
+    `try {`,
+    `  const sl = JSON.parse(readFileSync(GLOBAL_SETTINGS, "utf8")).statusLine;`,
+    `  const cmd = sl && sl.type === "command" && typeof sl.command === "string" ? sl.command.trim() : "";`,
+    `  if (cmd && !cmd.includes(SELF_MARKER)) {`,
+    `    const r = spawnSync("/bin/sh", ["-c", cmd], { input, encoding: "utf8", timeout: 4000 });`,
+    `    if (r.stdout && r.stdout.trim()) relayed = r.stdout;`,
+    `  }`,
+    `} catch {}`,
+    ``,
+    `// Placement: when the relayed line LEADS with the model indicator (e.g.`,
+    `// claude-hud's "[Opus] │ …", possibly behind its own ANSI codes), glue`,
+    `// the tag in front of it — [provider][model]. Anywhere else (model`,
+    `// mid-line, unknown format, no relay) the tag sits at the start of the`,
+    `// line with a space — visible first, never mangling the relayed text.`,
+    `// Lead detection runs on an ANSI-stripped view of the line.`,
+    `let dn = "";`,
+    `try { dn = JSON.parse(input)?.model?.display_name || ""; } catch {}`,
+    ``,
+    `const lines = relayed.replace(/\\n+$/, "").split("\\n");`,
+    `const line0 = lines[0] || "";`,
+    `let glue = false;`,
+    `if (line0 && dn) {`,
+    `  const text = line0.replace(/\\x1b\\[[0-9;]*m/g, "");`,
+    `  const i = text.indexOf(dn);`,
+    `  if (i > 0) {`,
+    `    let j = i;`,
+    `    for (let k = 0; k < 2 && j > 0 && !/[0-9A-Za-z]/.test(text[j - 1]); k++) j--;`,
+    `    glue = j === 0;`,
+    `  }`,
+    `}`,
+    `const first = glue ? tag + line0 : tag + (line0 ? " " + line0 : "");`,
+    `process.stdout.write([first].concat(lines.slice(1)).join("\\n") + "\\n");`,
+  ].join("\n");
+}
+
+// Regenerate the wrapper script + statusLine entry inside `effective`.
+// instanceDir is re-derived from providerId (same expression as
+// setupClaudeInstance) because the guard's computeEffectiveSettings [C3]
+// path has no instanceDir argument — both call sites must land on the same
+// wrapper path for the derivations to compare equal.
+function applyStatusLineInjection(effective, providerName, providerId) {
+  try {
+    const instanceDir = join(INSTANCES_DIR, "claude", providerId);
+    const wrapperPath = join(instanceDir, STATUSLINE_WRAPPER_FILENAME);
+    const existing = effective.statusLine;
+    // An explicit statusLine in the provider/common config wins — deliberate
+    // user configuration beats the generated one.
+    if (
+      isPlainObject(existing) &&
+      typeof existing.command === "string" && existing.command.trim() &&
+      !existing.command.includes(STATUSLINE_WRAPPER_FILENAME)
+    ) return;
+    mkdirSync(instanceDir, { recursive: true });
+    atomicWrite(wrapperPath, buildStatusLineWrapperScript(providerName, join(HOME, ".claude", "settings.json")) + "\n");
+    try { chmodSync(wrapperPath, 0o755); } catch {}
+    // Keep display-related fields the user tuned (refreshInterval, padding)
+    // when upgrading a previous injection; drop nothing else.
+    effective.statusLine = {
+      ...(isPlainObject(existing) ? existing : {}),
+      type: "command",
+      command: `${shQuote(process.execPath)} ${shQuote(wrapperPath)}`,
+    };
+  } catch {
+    // best-effort: a failed injection leaves the config untouched — the
+    // next launch retries. Never block a launch over a statusline.
+  }
 }
 
 // Build an enabledPlugins patch from an instance's runtime settings. Explicit
@@ -1659,7 +1841,9 @@ const APP_ADAPTERS = {
 
     prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
       normalizeInstalledPluginPaths();
-      const effective = buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet);
+      const effective = buildClaudeEffectiveSettings(
+        settingsConfig, meta, commonSnippet, claudeProviderName(providerId), providerId,
+      );
       atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
     },
 
@@ -1710,8 +1894,12 @@ const APP_ADAPTERS = {
 
     // Semantic tree prepare WOULD write (guard backfill branch) — the JSON
     // source is naturally normalized, so no jsonNormalize needed here. [C3]
-    computeEffectiveSettings(settingsConfig, meta, _category, commonSnippet, _providerId, _settings) {
-      return jsonNormalize(buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet));
+    // providerName/providerId must match prepare's pair exactly, or the
+    // statusline injection makes the two derivations fork.
+    computeEffectiveSettings(settingsConfig, meta, _category, commonSnippet, providerId, _settings) {
+      return jsonNormalize(buildClaudeEffectiveSettings(
+        settingsConfig, meta, commonSnippet, claudeProviderName(providerId), providerId,
+      ));
     },
 
     // [C6] — claude's settings_config IS the diffable document.
@@ -1721,7 +1909,7 @@ const APP_ADAPTERS = {
     providerDocFromSettingsConfig(settingsConfigObj) {
       return isPlainObject(settingsConfigObj) ? settingsConfigObj : null;
     },
-    channelOwnedPath: isPluginChannelPath,
+    channelOwnedPath: (path) => isPluginChannelPath(path) || isStatusLineChannelPath(path),
 
     // [C8] Instance instruction file. The @import line is LIVE — global
     // edits flow through without touching the instance file, so there is
@@ -4093,6 +4281,8 @@ export const __test = Object.freeze({
   deepEqualJson,
   isSensitiveConfigKey,
   isSensitiveConfigPath,
+  stripOneShotFlags,
+  healRecordedArgs,
   splitChangesByTarget,
   pathExistsInSnippet,
   foldRemovalPatch,
@@ -4101,5 +4291,10 @@ export const __test = Object.freeze({
   parseCustomizeArgs,
   buildCodexInstructionsTemplate,
   refreshCodexInstructionsSnapshot,
+  buildClaudeEffectiveSettings,
+  applyStatusLineInjection,
+  buildStatusLineWrapperScript,
+  isStatusLineChannelPath,
+  claudeProviderName,
   APP_ADAPTERS,
 });
