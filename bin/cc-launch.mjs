@@ -246,10 +246,22 @@ function loadHistory() {
     return { entries: [], order: normalizeOrder(undefined) }; // no file yet — fresh history
   }
   if (data?.version === HISTORY_VERSION) {
-    return {
-      entries: Array.isArray(data?.entries) ? data.entries : [],
-      order: normalizeOrder(data?.order),
-    };
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    const order = normalizeOrder(data?.order);
+    // Heal files written before one-shot flags were stripped at record time:
+    // an already-poisoned quick-launch row cures itself on the next load
+    // instead of replaying `claude --version` forever. Same concurrent-write
+    // narrowing as the migration below — persist only if the file is still v2.
+    if (healRecordedArgs(entries)) {
+      try {
+        const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+        if (cur?.version === HISTORY_VERSION) saveHistory(entries, order);
+      } catch {
+        // unreadable or racing another process — heal in memory only; the
+        // next recordLaunch persists the clean argv anyway
+      }
+    }
+    return { entries, order };
   }
   // v1 (name-keyed) or unknown — migrate once, in place. Nothing is dropped:
   // names that no longer resolve become providerId:null dead rows headed for
@@ -375,6 +387,35 @@ function mergeTop5(entries, order, aliveByCli) {
   return out;
 }
 
+// One-shot informational flags must never enter launch history: replaying
+// `claude --version` prints and exits — the CLI never opens — and every replay
+// re-records the flag, so one accidental `switch <p> claude --version` turns
+// the quick-launch row into a permanently version-printing entry (a real
+// history file showed such a row at count 56). Stripped at the single history
+// write point (recordLaunch) and healed on load for files written before.
+const ONE_SHOT_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
+
+// Raw launch argv → the argv worth replaying. Non-arrays normalize to the
+// empty-array form every recordLaunch write site expects.
+function stripOneShotFlags(args) {
+  if (!Array.isArray(args)) return [];
+  return args.filter((a) => !ONE_SHOT_FLAGS.has(a));
+}
+
+// In-place heal of loaded entries; returns true when anything changed.
+function healRecordedArgs(entries) {
+  let dirty = false;
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!Array.isArray(e?.extraArgs) || e.extraArgs.length === 0) continue;
+    const cleaned = stripOneShotFlags(e.extraArgs);
+    if (cleaned.length !== e.extraArgs.length) {
+      e.extraArgs = cleaned;
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
 // Pins are persistent: only an explicit unpin (or removing the pair) releases
 // a slot — a real launch never does. Launches update count/lastUsed/extraArgs
 // and follow renames so the stored display name never goes stale.
@@ -383,12 +424,13 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
   try {
     const { entries, order } = loadHistory();
     const now = Date.now();
+    const stored = stripOneShotFlags(extraArgs);
     const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
     if (hit) {
       hit.count = (hit.count || 0) + 1;
       hit.lastUsed = now;
       hit.provider = providerName;
-      hit.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
+      hit.extraArgs = stored;
     } else {
       // Pin placeholders carry the exact signature hotkey:null + count:0 +
       // lastUsed:0 (see insertManualOrder). Upgrade one in place instead of
@@ -402,11 +444,11 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
         ph.count = 1;
         ph.lastUsed = now;
         ph.provider = providerName;
-        ph.extraArgs = Array.isArray(extraArgs) ? extraArgs : [];
+        ph.extraArgs = stored;
       } else {
         entries.push({
           cli, providerId, provider: providerName, hotkey: hotkey ?? null,
-          extraArgs: Array.isArray(extraArgs) ? extraArgs : [], count: 1, lastUsed: now,
+          extraArgs: stored, count: 1, lastUsed: now,
         });
       }
     }
@@ -4239,6 +4281,8 @@ export const __test = Object.freeze({
   deepEqualJson,
   isSensitiveConfigKey,
   isSensitiveConfigPath,
+  stripOneShotFlags,
+  healRecordedArgs,
   splitChangesByTarget,
   pathExistsInSnippet,
   foldRemovalPatch,
