@@ -83,7 +83,7 @@ switch --help     # 列出所有命令
 
 ## 配置漂移与同步
 
-**心智模型：配置在启动时向下下发，你在会话里改的东西应该能被收回来。** `switch` 每次启动都从 cc-switch 数据库生成各实例的配置——会话内的改动是唯一的例外，同步机制就是为收编它而存在的。上行通道覆盖 Claude 实例 `settings.json` 与 Codex 实例 `config.toml` 的**全部字段**：插件状态与生成的 statusLine（两者均为 channel 专属，见下文）之外的 env、permissions、hooks、模型、审批策略等都会被检测、展示、按字段归属写回。改动展示为字段路径（dotted path），确认后按**智能拆分**写回——通用配置里已有的字段写回 `common_config_<app>`（否则下次启动时通用配置的旧值会盖掉它），其余写回该 provider 的配置。Codex 的通用配置是 TOML 文档，确认通用方向的写回会重新序列化整个文档——`common_config_codex` 里的注释与排版会丢失（确认前提示会明确告知）。
+**心智模型：配置在启动时向下下发，你在会话里改的东西应该能被收回来。** `switch` 每次启动都从 cc-switch 数据库生成各实例的配置——会话内的改动是唯一的例外，同步机制就是为收编它而存在的。上行通道覆盖 Claude 实例 `settings.json` 与 Codex 实例 `config.toml` 的**全部字段**：插件状态、生成的 statusLine 与 Codex 的 `[tui] status_line`（三者均为 channel 专属，见下文）之外的 env、permissions、hooks、模型、审批策略等都会被检测、展示、按字段归属写回。改动展示为字段路径（dotted path），确认后按**智能拆分**写回——通用配置里已有的字段写回 `common_config_<app>`（否则下次启动时通用配置的旧值会盖掉它），其余写回该 provider 的配置。Codex 的通用配置是 TOML 文档，确认通用方向的写回会重新序列化整个文档——`common_config_codex` 里的注释与排版会丢失（确认前提示会明确告知）。
 
 即使你不做同步，`switch` 在覆盖实例主配置文件（`settings.json` / `config.toml`）之前也会自动把它**备份**到 `~/.cc-switch/backups/<app>/<provider-id>/`（保留最近 10 份），并在 stderr 警告即将被覆盖的字段——改动永不静默丢失。升级说明：本机制需要实例级基线（`preparedSettings`）；升级前做出的会话内改动无法被识别，只会被备份兜底。
 
@@ -105,7 +105,12 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 - **你的全局 `~/.claude/settings.json` 永远不会被改动，生成的 statusLine 也不会被同步回 cc-switch 数据库**——`statusLine` 是 channel 专属路径（与插件同机制）：覆盖守卫忽略它，上行同步对它让权。全局换任何 statusline 工具，所有实例下次启动自动跟随。
 - 全局没有配 statusline？实例就只显示 provider 标签。
 - 在 cc-switch 的 provider 或通用配置里显式写的 `statusLine` 会被**包装而非替换**：生成的条目指向 wrapper，你的显式命令被内联为 wrapper 的首选转发源（全局 `~/.claude/settings.json` 作为回退）。刻意的配置照常渲染——provider 标签照样添加。
+- **标签颜色在 TUI 里设置**：provider 选择屏高亮某行后按 `o`，从 auto（按名字哈希，默认）+ 16 个 ANSI 经典色（30–37 标准、90–97 亮色，带色块预览）中选取，⏎ 保存、esc 取消。存于 `~/.cc-switch/statusline-preferences.json`（本 CLI 独有——cc-switch 桌面端与数据库都不读不写），下次启动该 provider 的实例时生效，运行中的会话保持旧色直至重启。
 - 在实例**内部**自定义 statusline（`/statusline`）没有意义——该条目每次启动都会重新生成。请改全局配置文件。
+
+### Codex 的状态栏
+
+Codex CLI 的状态栏是**原生内置字段选择式**（`config.toml` 的 `[tui] status_line`，需 Codex ≥ 0.105.0），不支持外部命令渲染——所以 Codex 实例没有 provider 标签（等上游 [openai/codex#17827](https://github.com/openai/codex/issues/17827) 支持后跟进）。`switch` 每次启动会保证状态栏开启并显示有用的字段：向实例 `config.toml` 注入 `[tui] status_line = ["model-with-reasoning", "current-dir"]` 与 `status_line_use_colors = true`。**只填充缺失的键**——你在 provider/通用 TOML 里显式写的值优先（`status_line = []` 即关闭）；注入的子树与 Claude 的 statusLine 同为 channel 专属：覆盖守卫忽略、上行同步让权、永不写回数据库。模型名通常能间接区分 provider（各 provider 绑定的模型不同），但同模型多账号的场景区分不了。
 
 ## 工作原理
 
