@@ -359,7 +359,7 @@ test("e2e zhipu: no context segment falls back to line tail; no relay renders af
   const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
   assert.equal(r.status, 0);
   const first = stripAnsi(r.stdout.split("\n")[0]);
-  assert.ok(first.endsWith("│ 5h ██░░░░ 40% · W ███░░░ 52%"), first);
+  assert.ok(first.endsWith("│ 5h ██░░░░ 40% │ W ███░░░ 52%"), first);
   assert.ok(first.indexOf("$0.12") < first.indexOf("5h"), first);
 
   // no relay at all: usage follows the bare tag
@@ -474,4 +474,71 @@ test("e2e: Chinese context label and pipe separator still splice; color threshol
   // red for >=90 on the fill
   assert.ok(r.stdout.includes("\x1b[91m"), "90+ uses red");
   assert.ok(r.stdout.includes("\x1b[93m"), "70-89 uses yellow");
+});
+
+test("e2e: multi-line claude-hud layout — usage anchors at the CONTEXT row, not line 0", async (t) => {
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    settings: ZHIPU_SETTINGS,
+    meta: ZHIPU_META,
+    // real claude-hud shape: model/git row, THEN a context row (10-cell bar,
+    // no separator on it), then a hooks row. line 0 has no context segment.
+    relayLine: {
+      head: "[Opus] │ ~/proj │ git:(main)",
+      tail: ["Context ░░░░░░░░░░ 0%", "2 CLAUDE.md | 10 hooks"],
+    },
+    respond: (req, res) => {
+      res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
+    },
+  });
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(r.status, 0, r.stderr);
+  const outLines = stripAnsi(r.stdout).replace(/\n+$/, "").split("\n");
+  // line 0 stays the model/git row — usage must NOT land there
+  assert.ok(outLines[0].includes("[Opus]") && !outLines[0].includes("5h"), outLines[0]);
+  // usage sits on the context row, right after it
+  assert.ok(
+    outLines[1].includes("Context ░░░░░░░░░░ 0%") && outLines[1].indexOf("5h") > outLines[1].indexOf("Context"),
+    outLines[1],
+  );
+  // bar width follows the context row's 10-cell bar (40%→4, 52%→5)
+  assert.ok(outLines[1].includes("5h ████░░░░░░ 40%"), outLines[1]);
+  assert.ok(outLines[1].includes("W █████░░░░░ 52%"), outLines[1]);
+  // inner separator mirrors the relay's own (│ on the model row)
+  assert.ok(outLines[1].includes("40% │ W"), outLines[1]);
+  // hooks row untouched, still after the usage
+  assert.ok(outLines[2].includes("CLAUDE.md"), outLines[2]);
+});
+
+test("e2e: separator detection — | relay mirrors |, standalone falls back to ·", async (t) => {
+  // relay that uses ONLY "|" (no │): inner separator must be " | "
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    settings: ZHIPU_SETTINGS,
+    meta: ZHIPU_META,
+    relayLine: { head: "Opus | Context █░░░░░ 12% | $0.12" },
+    respond: (req, res) => res.end(JSON.stringify(ZHIPU_QUOTA_BODY)),
+  });
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(r.status, 0);
+  const first = stripAnsi(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("40% | W"), first);
+
+  // no relay at all: standalone default " · "
+  cleanInstance();
+  const { server, port } = await startFixtureServer((req, res) => res.end(JSON.stringify(ZHIPU_QUOTA_BODY)));
+  t.after(() => closeServer(server));
+  const identity = resolveUsageIdentity(
+    { env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/api/anthropic`, ANTHROPIC_AUTH_TOKEN: "tok" } },
+    ZHIPU_META,
+  );
+  const usageConfig = buildUsageQueryConfig(identity, instanceFile(), instanceFile("statusline-wrapper.mjs"));
+  const wp = instanceFile("statusline-wrapper.mjs");
+  mkdirSync(join(INSTANCES, PROVIDER_ID), { recursive: true });
+  writeFileSync(wp, buildStatusLineWrapperScript("GLM", GLOBAL_SETTINGS, null, "auto", usageConfig));
+  writeGlobalSettings(undefined);
+  const r2 = await runWrapper(wp, STATUSLINE_INPUT);
+  assert.equal(r2.status, 0);
+  const first2 = stripAnsi(r2.stdout.split("\n")[0]);
+  assert.ok(first2.includes("40% · W"), first2);
 });
