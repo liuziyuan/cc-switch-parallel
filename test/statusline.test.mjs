@@ -22,6 +22,11 @@ const {
   isStatusLineChannelPath,
   claudeProviderName,
   deepEqualJson,
+  statuslineColorFor,
+  saveStatuslineColor,
+  loadStatuslinePreferences,
+  applyCodexStatusLineInjection,
+  isCodexStatusLineChannelPath,
   APP_ADAPTERS,
 } = __test;
 
@@ -29,6 +34,7 @@ const CC = join(testHome, ".cc-switch");
 const INSTANCES = join(CC, "instances", "claude");
 const GLOBAL_SETTINGS = join(testHome, ".claude", "settings.json");
 const claude = APP_ADAPTERS.claude;
+const codex = APP_ADAPTERS.codex;
 
 function instanceFile(providerId, name = "statusline-wrapper.mjs") {
   return join(INSTANCES, providerId, name);
@@ -391,4 +397,107 @@ test("wrapper script: quoted strings survive shell round-trip", () => {
   const script = buildStatusLineWrapperScript("P&G Nezha 'quoted'", GLOBAL_SETTINGS);
   assert.ok(script.includes(JSON.stringify("P&G Nezha 'quoted'")));
   assert.ok(script.includes(JSON.stringify(GLOBAL_SETTINGS)));
+});
+
+// ─── codex native [tui] status_line injection ──────────────────────────
+
+test("codex injection: empty config gains default status_line + colors", () => {
+  const tree = codex.computeEffectiveSettings({ config: "", auth: {} }, {}, "", "", "p-cx", {});
+  assert.deepEqual(tree.tui.status_line, ["model-with-reasoning", "current-dir"]);
+  assert.equal(tree.tui.status_line_use_colors, true);
+});
+
+test("codex injection: sibling [tui] keys survive the merge", () => {
+  const obj = { tui: { notifications: true, status_line: undefined } };
+  delete obj.tui.status_line;
+  const out = applyCodexStatusLineInjection(obj);
+  assert.equal(out.tui.notifications, true);
+  assert.deepEqual(out.tui.status_line, ["model-with-reasoning", "current-dir"]);
+});
+
+test("codex injection: explicit user values win (fill-if-absent)", () => {
+  const cfg = { config: '[tui]\nstatus_line = ["model"]\nstatus_line_use_colors = false\n' };
+  const tree = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
+  assert.deepEqual(tree.tui.status_line, ["model"]);
+  assert.equal(tree.tui.status_line_use_colors, false);
+});
+
+test("codex injection: status_line = [] opts out entirely", () => {
+  const cfg = { config: '[tui]\nstatus_line = []\n' };
+  const tree = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
+  assert.deepEqual(tree.tui.status_line, []);
+});
+
+test("codex channel: owns the tui.status_line subtree only", () => {
+  assert.equal(isCodexStatusLineChannelPath("tui.status_line"), true);
+  assert.equal(isCodexStatusLineChannelPath("tui.status_line_use_colors"), true);
+  assert.equal(isCodexStatusLineChannelPath("tui.status_lineX"), false);
+  assert.equal(isCodexStatusLineChannelPath("tui"), false);
+  assert.equal(isCodexStatusLineChannelPath("tui.notifications"), false);
+  assert.equal(isCodexStatusLineChannelPath("model"), false);
+  assert.equal(codex.channelOwnedPath("tui.status_line"), true);
+  assert.equal(codex.channelOwnedPath("tui.notifications"), false);
+});
+
+test("codex guard consistency: prepare's file equals computeEffectiveSettings", () => {
+  const dir = join(CC, "instances", "codex", "p-cx-consistent");
+  mkdirSync(dir, { recursive: true });
+  const cfg = { config: '[tui]\nnotifications = true\n', auth: {} };
+  codex.prepare(dir, "p-cx-consistent", cfg, {}, "", "", {});
+  const onDisk = codex.readInstanceSettingsSnapshot(dir);
+  const recomputed = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx-consistent", {});
+  assert.ok(deepEqualJson(onDisk, recomputed));
+  // injected, and the user's own sibling key survived
+  assert.deepEqual(onDisk.tui.status_line, ["model-with-reasoning", "current-dir"]);
+  assert.equal(onDisk.tui.notifications, true);
+});
+
+test("codex purity: two computations of the same input are identical", () => {
+  const cfg = { config: "model = \"x\"\n", auth: {} };
+  const a = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
+  const b = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
+  assert.ok(deepEqualJson(a, b));
+});
+
+// ─── tag color preference ───────────────────────────────────────────────
+
+test("tag color: default is auto and unknown codes fall back to auto", () => {
+  assert.equal(statuslineColorFor("claude", "p-never-set"), "auto");
+  // corrupt file → fail-open
+  mkdirSync(CC, { recursive: true });
+  writeFileSync(join(CC, "statusline-preferences.json"), "{ not json");
+  assert.equal(statuslineColorFor("claude", "p-x"), "auto");
+  assert.equal(buildStatusLineWrapperScript("Prov", GLOBAL_SETTINGS).includes('const COLOR = "auto"'), true);
+});
+
+test("tag color: save/load round-trip drives the wrapper's COLOR constant", () => {
+  cleanInstance("p-color");
+  assert.equal(saveStatuslineColor("claude", "p-color", "91"), "91");
+  assert.equal(statuslineColorFor("claude", "p-color"), "91");
+  buildClaudeEffectiveSettings({}, {}, "", "Prov", "p-color");
+  assert.ok(
+    readFileSync(instanceFile("p-color"), "utf8").includes('const COLOR = "91"'),
+    "wrapper inlines the chosen color",
+  );
+  // e2e: fixed color reaches the tag, no hashing
+  const r = spawnSync(
+    process.execPath, [instanceFile("p-color")],
+    { input: "{}", encoding: "utf8", timeout: 15000 },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.startsWith("\x1b[1m\x1b[91m[Prov]"), r.stdout);
+});
+
+test("tag color: setting back to auto removes the stored key", () => {
+  assert.equal(saveStatuslineColor("claude", "p-color", "auto"), "auto");
+  assert.equal(statuslineColorFor("claude", "p-color"), "auto");
+  const prefs = loadStatuslinePreferences();
+  assert.equal(prefs.colors.claude["p-color"], undefined);
+});
+
+test("tag color: invalid values are rejected without corrupting the file", () => {
+  const before = readFileSync(join(CC, "statusline-preferences.json"), "utf8");
+  assert.equal(saveStatuslineColor("claude", "p-color", "99"), null);
+  assert.equal(saveStatuslineColor("claude", "p-color", "true"), null);
+  assert.equal(readFileSync(join(CC, "statusline-preferences.json"), "utf8"), before);
 });
