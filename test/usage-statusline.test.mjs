@@ -483,8 +483,10 @@ test("e2e: multi-line claude-hud layout — usage anchors at the CONTEXT row, no
     meta: ZHIPU_META,
     // real claude-hud shape: model/git row, THEN a context row (10-cell bar,
     // no separator on it), then a hooks row. line 0 has no context segment.
+    // The branch name CONTAINS the word "context" — it must not hijack the
+    // anchor (a word alone is not a context segment; it needs a % or a bar).
     relayLine: {
-      head: "[Opus] │ ~/proj │ git:(main)",
+      head: "[Opus] │ ~/proj │ git:(fix/usage-context-line-and-separator)",
       tail: ["Context ░░░░░░░░░░ 0%", "2 CLAUDE.md | 10 hooks"],
     },
     respond: (req, res) => {
@@ -496,9 +498,11 @@ test("e2e: multi-line claude-hud layout — usage anchors at the CONTEXT row, no
   const outLines = stripAnsi(r.stdout).replace(/\n+$/, "").split("\n");
   // line 0 stays the model/git row — usage must NOT land there
   assert.ok(outLines[0].includes("[Opus]") && !outLines[0].includes("5h"), outLines[0]);
-  // usage sits on the context row, right after it
+  // usage sits on the context row, right after it — joined by the DETECTED
+  // separator (│), never a bare space, even though the context row itself
+  // has no separator
   assert.ok(
-    outLines[1].includes("Context ░░░░░░░░░░ 0%") && outLines[1].indexOf("5h") > outLines[1].indexOf("Context"),
+    outLines[1].includes("Context ░░░░░░░░░░ 0% │ 5h") && outLines[1].indexOf("5h") > outLines[1].indexOf("Context"),
     outLines[1],
   );
   // bar width follows the context row's 10-cell bar (40%→4, 52%→5)
