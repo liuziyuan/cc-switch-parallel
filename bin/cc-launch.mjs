@@ -1162,7 +1162,10 @@ function buildUsageWrapperLines(usageConfig) {
     `function usageParse(body) {`,
     `  try {`,
     `    if (USAGE.kind === "zhipu") {`,
-    `      const limits = Array.isArray(body && body.limits) ? body.limits : [];`,
+    `      if (body && body.success === false) return null; // business-level error (e.g. code 401 token rejected)`,
+    `      // zhipu wraps the payload: {"code":200,"data":{"limits":[...]}}`,
+    `      const payload = body && body.data && typeof body.data === "object" ? body.data : body;`,
+    `      const limits = Array.isArray(payload && payload.limits) ? payload.limits : [];`,
     `      const pct = (l) => Math.max(0, Math.min(100, Math.round(Number(l && l.percentage) || 0)));`,
     `      let five = null;`,
     `      let weekly = null;`,
@@ -1398,7 +1401,12 @@ const USAGE_HOST_MATCHERS = [
   { suffix: "api.deepseek.com", kind: "deepseek" },
 ];
 
-const USAGE_AUTH_STYLE = { zhipu: "bare", deepseek: "bearer" };
+// zhipu uses Bearer here even though the upstream desktop app sends the raw
+// key (comment "智谱不加 Bearer 前缀"): as of 2026-10 api.z.ai answers a bare
+// Authorization with HTTP 200 + {"code":401,"success":false} and only accepts
+// Bearer — verified against a live coding-plan key. bigmodel.cn untested; if
+// it ever needs bare, move authStyle into USAGE_HOST_MATCHERS per host.
+const USAGE_AUTH_STYLE = { zhipu: "bearer", deepseek: "bearer" };
 
 // {baseUrl, token} out of a Claude provider settings_config; null when
 // either is missing (no creds → no usage segment).

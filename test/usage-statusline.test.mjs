@@ -111,7 +111,7 @@ const STATUSLINE_INPUT = JSON.stringify({
 test("identity: explicit codingPlanProvider zhipu (upstream desktop marker)", () => {
   const id = resolveUsageIdentity(ZHIPU_SETTINGS, ZHIPU_META);
   assert.equal(id.kind, "zhipu");
-  assert.equal(id.authStyle, "bare");
+  assert.equal(id.authStyle, "bearer");
   assert.equal(id.endpoint, "https://api.z.ai/api/monitor/usage/quota/limit");
   assert.equal(id.intervalMin, 5);
   assert.equal(id.token, "zai-token");
@@ -249,13 +249,19 @@ async function withWrapperServer(t, { kind, settings, meta, relayLine, respond }
   return { wrapperPath, usageConfig };
 }
 
+// Real shape (2026-10): {"code":200,"msg":...,"data":{level, limits:[...]}}
 const ZHIPU_QUOTA_BODY = {
-  level: "pro",
-  limits: [
-    { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 40.4, total: 40000000, nextResetTime: 1770000000000 },
-    { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 52, total: 120000000, nextResetTime: 1770500000000 },
-    { type: "TIME_LIMIT", percentage: 12, currentValue: 123, usage: 1000 },
-  ],
+  code: 200,
+  msg: "Operation successful",
+  success: true,
+  data: {
+    level: "pro",
+    limits: [
+      { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 40.4, total: 40000000, nextResetTime: 1770000000000 },
+      { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 52, total: 120000000, nextResetTime: 1770500000000 },
+      { type: "TIME_LIMIT", percentage: 12, currentValue: 123, usage: 1000 },
+    ],
+  },
 };
 
 beforeEach(() => cleanInstance());
@@ -286,8 +292,8 @@ test("e2e zhipu: first render fetches, splices after context segment, caches", a
   const usageIdx = first.indexOf("5h ██░░░░ 40%");
   const costIdx = first.indexOf("$0.12");
   assert.ok(ctxIdx >= 0 && ctxIdx < usageIdx && usageIdx < costIdx, first);
-  // zhipu auth: bare token, no Bearer; Accept-Language present
-  assert.deepEqual(requests, [{ auth: "tok-123", lang: "en-US,en" }]);
+  // zhipu auth: Bearer (api.z.ai rejects bare with business code 401 as of 2026-10)
+  assert.deepEqual(requests, [{ auth: "Bearer tok-123", lang: "en-US,en" }]);
   // cache written with parsed data
   const cache = JSON.parse(readFileSync(instanceFile(), "utf8"));
   assert.deepEqual(cache.data, { kind: "zhipu", fiveH: 40, weekly: 52 });
@@ -419,6 +425,8 @@ test("e2e deepseek: bearer auth, balance rendering, currency symbols", async (t)
 test("e2e failures: server 500, malformed JSON, missing weekly — degrade silently", async (t) => {
   const cases = [
     (req, res) => { res.statusCode = 500; res.end("boom"); },
+    // business-level rejection: HTTP 200 + {"code":401,"success":false}
+    (req, res) => { res.end(JSON.stringify({ code: 401, msg: "token expired or incorrect", success: false })); },
     (req, res) => { res.end("<html>not json</html>"); },
     (req, res) => { res.end(JSON.stringify({ limits: [{ type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 10 }] })); },
     (req, res) => { res.end(JSON.stringify({ limits: [{ type: "TIME_LIMIT", percentage: 5 }] })); },
