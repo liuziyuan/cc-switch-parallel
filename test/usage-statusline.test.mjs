@@ -471,9 +471,84 @@ test("e2e: Chinese context label and pipe separator still splice; color threshol
   assert.ok(first.includes("W ██████░░ 75%"), first);
   assert.ok(first.indexOf("上下文") < first.indexOf("5h"), first);
   assert.ok(first.indexOf("5h") < first.indexOf("$0.10"), first);
-  // red for >=90 on the fill
+  // red for >=90 on the fill; the pct number shares the fill color and the
+  // empty bar cells stay dim (75% → 6 fill + 2 empty on the 8-cell bar)
   assert.ok(r.stdout.includes("\x1b[91m"), "90+ uses red");
   assert.ok(r.stdout.includes("\x1b[93m"), "70-89 uses yellow");
+  assert.ok(r.stdout.includes("\x1b[91m 95%"), "pct number shares fill color");
+  assert.ok(r.stdout.includes("\x1b[93m 75%"), "pct number shares fill color");
+  assert.ok(r.stdout.includes("\x1b[0m\x1b[2m░░"), "empty bar cells dim");
+});
+
+test("e2e zhipu: 100% window renders ⚠ Limit without bar/pct; windows independent", async (t) => {
+  const respond = (five, weekly) => (req, res) => {
+    res.end(JSON.stringify({
+      limits: [
+        { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: five },
+        { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: weekly },
+      ],
+    }));
+  };
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    settings: ZHIPU_SETTINGS,
+    meta: ZHIPU_META,
+    relayLine: { head: "Opus │ Context █░░░░░ 12%" },
+    respond: respond(100, 60),
+  });
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsi(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("5h ⚠ Limit"), first);
+  assert.ok(!first.includes("5h █") && !first.includes("5h 100%"), "no bar/pct when limited: " + first);
+  assert.ok(first.includes("W ████░░ 60%"), first);
+  assert.ok(r.stdout.includes("\x1b[91m⚠ Limit"), "Limit renders red");
+
+  // 99.6 rounds to the clamped 100 → Limit, while the other window stays a bar
+  cleanInstance();
+  const { server, port } = await startFixtureServer(respond(99.6, 40));
+  t.after(() => closeServer(server));
+  const identity = resolveUsageIdentity(
+    { env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/api/anthropic`, ANTHROPIC_AUTH_TOKEN: "tok" } },
+    ZHIPU_META,
+  );
+  const usageConfig = buildUsageQueryConfig(identity, instanceFile(), instanceFile("statusline-wrapper.mjs"));
+  const wp = instanceFile("statusline-wrapper.mjs");
+  mkdirSync(join(INSTANCES, PROVIDER_ID), { recursive: true });
+  writeFileSync(wp, buildStatusLineWrapperScript("GLM", GLOBAL_SETTINGS, null, "auto", usageConfig));
+  const r2 = await runWrapper(wp, STATUSLINE_INPUT);
+  assert.equal(r2.status, 0, r2.stderr);
+  const first2 = stripAnsi(r2.stdout.split("\n")[0]);
+  assert.ok(first2.includes("5h ⚠ Limit"), "99.6 rounds to Limit: " + first2);
+  assert.ok(first2.includes("W ██░░░░ 40%"), "40% of 6 → 2 fill: " + first2);
+});
+
+test("e2e deepseek: balance thresholds — <10 red, <20 yellow, else white; NaN falls back to white", async (t) => {
+  const cases = [
+    ["9.99", "\x1b[91m"],
+    ["10", "\x1b[93m"],
+    ["19.99", "\x1b[93m"],
+    ["20", "\x1b[97m"],
+    ["88.00", "\x1b[97m"],
+    ["oops", "\x1b[97m"], // unparsable balance must not trip the alarm
+  ];
+  for (const [bal, code] of cases) {
+    const { wrapperPath } = await withWrapperServer(t, {
+      kind: "deepseek",
+      settings: DEEPSEEK_SETTINGS,
+      meta: DEEPSEEK_META,
+      relayLine: { head: "Opus │ Context █░░░░░ 12%" },
+      respond: (req, res) => {
+        res.end(JSON.stringify({ balance_infos: [{ currency: "USD", total_balance: bal }], is_available: true }));
+      },
+    });
+    const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(
+      r.stdout.includes(code + "$" + bal),
+      `${bal} → ${JSON.stringify(code)}: ${JSON.stringify(r.stdout)}`,
+    );
+  }
 });
 
 test("e2e: multi-line claude-hud layout — usage anchors at the CONTEXT row, not line 0", async (t) => {
