@@ -1386,6 +1386,70 @@ function isCodexStatusLineChannelPath(path) {
     || path === "tui.status_line_use_colors";
 }
 
+// [Runtime-state filter for the codex settings channel] — keys the Codex CLI
+// itself writes into the instance config.toml while running, NOT user config:
+// project trust records (one per directory ever launched from, grows forever),
+// hook trust hashes (keyed by absolute paths that only exist inside this
+// instance dir), and one-shot TUI markers. Syncing them upward is what fired
+// the 2026-10-17 "Sync these changes?" prompt on every new project, and the
+// prompt's write-back corrupted the provider row (dotted-key bug). Listed
+// exactly rather than tui-subtree-wide so user-configured [tui] keys
+// (terminal_title, notifications, …) keep syncing normally.
+function isCodexRuntimeStatePath(path) {
+  return path.startsWith("projects.")
+    || path.startsWith("hooks.state.")
+    || path === "tui.screen_reader_detection_done"
+    || path.startsWith("tui.model_availability_nux.");
+}
+
+// Carry the instance's Codex-written runtime state (project trust, hook trust
+// hashes, TUI markers — isCodexRuntimeStatePath) across a full config.toml
+// regeneration. prepare rebuilds the document from the DB, which would wipe
+// that state: hook trust hashes would vanish → every session re-prompts
+// "Hooks need review", project trust would re-prompt per directory. The file's
+// live values win over anything the DB carries (runtime state is per-machine
+// fact, the DB copy is at best a stale echo — and after the dotted-key bug it
+// may be a CORRUPTED echo). Fail-safe: any parse error returns the input
+// unchanged. Paired with computeEffectiveSettings (same derivation) so the
+// overwrite guard's comparison [C3] sees what prepare actually writes.
+function mergeCodexRuntimeState(configText, instanceDir) {
+  try {
+    const current = parseToml(readFileSync(join(instanceDir, "config.toml"), "utf8"));
+    const generated = parseToml(configText);
+    let changed = false;
+    for (const key of ["projects", "hooks"]) {
+      if (isPlainObject(current[key])) {
+        generated[key] = jsonDeepMerge(isPlainObject(generated[key]) ? generated[key] : {}, current[key]);
+        changed = true;
+      }
+    }
+    const curTui = isPlainObject(current.tui) ? current.tui : {};
+    if (curTui.screen_reader_detection_done !== undefined) {
+      generated.tui = isPlainObject(generated.tui) ? generated.tui : {};
+      generated.tui.screen_reader_detection_done = curTui.screen_reader_detection_done;
+      changed = true;
+    }
+    if (isPlainObject(curTui.model_availability_nux)) {
+      generated.tui = isPlainObject(generated.tui) ? generated.tui : {};
+      generated.tui.model_availability_nux = jsonDeepMerge(
+        isPlainObject(generated.tui.model_availability_nux) ? generated.tui.model_availability_nux : {},
+        curTui.model_availability_nux,
+      );
+      changed = true;
+    }
+    return changed ? stringifyToml(generated) : configText;
+  } catch {
+    return configText;
+  }
+}
+
+// Instance dir derivation shared by prepare and computeEffectiveSettings —
+// same expression, so the guard's comparison [C3] stays identical by
+// construction (applyStatusLineInjection derives claude's the same way).
+function codexInstanceDirFor(providerId) {
+  return join(INSTANCES_DIR, "codex", providerId);
+}
+
 function isCustomCodexModelProviderId(id) {
   const trimmed = id.trim();
   return trimmed.length > 0 && !CODEX_RESERVED_MODEL_PROVIDER_IDS.some((r) => r.toLowerCase() === trimmed.toLowerCase());
@@ -1756,19 +1820,37 @@ function sessionIsAlive(session) {
   return psField(session.pid, "lstart") === session.lstart;
 }
 
+// Env injected into every launched CLI session. The CLI's own hooks inherit
+// these — that's the entire transport: the tmuxclihook status bar captures
+// CC_SWITCH_PROVIDER / CC_SWITCH_PROVIDER_ID from the hook's environment into
+// per-pane tmux options and renders the provider tag there (claude's wrapper
+// tag and codex's native status_line both can't reach the tmux aggregate
+// view). Ids are stable across renames; consumers wanting the tag color read
+// statusline-preferences.json by id, exactly like the claude wrapper does.
+function buildLaunchExtraEnv(providerName, providerId) {
+  const env = {};
+  if (providerName) env.CC_SWITCH_PROVIDER = String(providerName);
+  if (providerId) env.CC_SWITCH_PROVIDER_ID = String(providerId);
+  return env;
+}
+
 // Foreground replacement for the former spawnSync launch: stdio and exit-code
 // semantics unchanged, but the child's pid is recorded while it runs and its
 // session file is removed on a clean exit — only its own, so concurrent
 // sessions of the same provider stay tracked. A crashed parent (kill -9)
 // leaves the file behind — `switch ps` cleans those up as stale.
-function launchTracked(bin, extraArgs, instanceDir, envKey, onExit) {
+function launchTracked(bin, extraArgs, instanceDir, envKey, onExit, extraEnv) {
   // Belt-and-suspenders for the flowing-stdin hazard: any missed cleanup
   // upstream would let the parent keep consuming (and discarding) keystrokes
   // that belong to the spawned CLI. pause() is idempotent and cheap.
   try { process.stdin.pause(); } catch {}
   const child = spawn(bin, extraArgs, {
     stdio: "inherit",
-    env: { ...process.env, [envKey]: instanceDir },
+    env: {
+      ...process.env,
+      [envKey]: instanceDir,
+      ...(isPlainObject(extraEnv) ? extraEnv : {}),
+    },
   });
   const sessionFile = child.pid ? writeSessionFile(instanceDir, child.pid, bin, extraArgs) : null;
   child.on("error", (e) => {
@@ -1876,7 +1958,7 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
     }
 
     const changes = diffSettingsLeaves(entry.preparedSettings, current).filter(
-      (ch) => !adapter.channelOwnedPath?.(ch.path),
+      (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path),
     );
     if (changes.length === 0) return; // faithful mirror — overwrite silently
 
@@ -1976,9 +2058,13 @@ const APP_ADAPTERS = {
       atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
     },
 
-    launch(instanceDir, extraArgs) {
+    launch(instanceDir, extraArgs, ctx) {
       process.stderr.write(`\x1b[2mCLAUDE_CONFIG_DIR=${instanceDir} claude ${extraArgs.join(" ")}\x1b[0m\n`);
-      launchTracked("claude", extraArgs, instanceDir, "CLAUDE_CONFIG_DIR", () => normalizeInstalledPluginPaths());
+      launchTracked(
+        "claude", extraArgs, instanceDir, "CLAUDE_CONFIG_DIR",
+        () => normalizeInstalledPluginPaths(),
+        buildLaunchExtraEnv(ctx?.providerName, ctx?.providerId),
+      );
     },
 
     permissionArgs(hotkey) {
@@ -2134,6 +2220,10 @@ const APP_ADAPTERS = {
     // Surfaced at the sync prompt; no format-preserving TOML editor exists.
     rewritesCommonOnSync: true,
     channelOwnedPath: isCodexStatusLineChannelPath,
+    // Runtime state the Codex CLI writes itself (project trust, hook trust
+    // hashes, TUI markers) — filtered from the guard and the upward sync, and
+    // carried across prepare's full regeneration instead of synced as config.
+    runtimeStatePath: isCodexRuntimeStatePath,
 
     parseCommonSnippet(text) {
       try { return jsonNormalize(parseToml(text || "")); } catch { return null; }
@@ -2155,7 +2245,7 @@ const APP_ADAPTERS = {
       const { configText, auth, catalog, apiKey } = buildCodexConfig(
         settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
       );
-      atomicWrite(join(instanceDir, "config.toml"), configText);
+      atomicWrite(join(instanceDir, "config.toml"), mergeCodexRuntimeState(configText, instanceDir));
 
       const authPath = join(instanceDir, "auth.json");
       const globalAuthPath = join(HOME, ".codex", "auth.json");
@@ -2199,20 +2289,24 @@ const APP_ADAPTERS = {
       }
     },
 
-    launch(instanceDir, extraArgs) {
+    launch(instanceDir, extraArgs, ctx) {
       process.stderr.write(`\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`);
-      launchTracked("codex", extraArgs, instanceDir, "CODEX_HOME");
+      launchTracked(
+        "codex", extraArgs, instanceDir, "CODEX_HOME", null,
+        buildLaunchExtraEnv(ctx?.providerName, ctx?.providerId),
+      );
     },
 
-    // Semantic tree prepare WOULD write: run buildCodexConfig and parse the
-    // TOML it produces, normalized identically to the C2 snapshot so the
-    // guard's backfill comparison is deterministic. [C3]
+    // Semantic tree prepare WOULD write: run buildCodexConfig, carry the
+    // instance's runtime state across (same merge prepare does), and parse
+    // the TOML, normalized identically to the C2 snapshot so the guard's
+    // backfill comparison is deterministic. [C3]
     computeEffectiveSettings(settingsConfig, meta, category, commonSnippet, providerId, settings) {
       try {
         const { configText } = buildCodexConfig(
           settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
         );
-        return jsonNormalize(parseToml(configText));
+        return jsonNormalize(parseToml(mergeCodexRuntimeState(configText, codexInstanceDirFor(providerId))));
       } catch {
         return null;
       }
@@ -2299,7 +2393,7 @@ function detectConfigDriftGeneric(adapter, state) {
       if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
       if (current === null || deepEqualJson(current, baseline)) continue; // unchanged/corrupt mirror
       const changes = diffSettingsLeaves(baseline, current).filter(
-        (ch) => !adapter.channelOwnedPath?.(ch.path),
+        (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path),
       );
       if (changes.length === 0) continue; // only channel-owned edits
       let mtimeMs = 0;
@@ -2477,9 +2571,48 @@ function applyEnabledPluginsPatch(patch) {
 // object existing is enough — smart-split routes a field to common only when
 // common already owns that key, otherwise prepare's jsonDeepMerge(effective,
 // commonSource) wouldn't have sourced it from common in the first place.
+// Dotted path → the tree's REAL key sequence. The path string is ambiguous
+// when a key itself contains dots — codex TOML `[hooks.state."<abs path>"]`
+// keys are absolute file paths ("/…/.cc-switch/…/hooks.json:pre_tool_use:0:0"),
+// so a naive split("") explodes one flat key into nested levels. That is
+// exactly how the 2026-10-17 sync corrupted the provider row: the write-back
+// re-serialized a single TOML key as three nested tables. Resolution against
+// the actual tree: prefer the exact next segment; otherwise accept a dotted
+// key that swallows several segments when the remainder then resolves
+// (backtracking — two sibling keys may both be dotted-prefix candidates).
+// Returns the naive split when nothing fits, so dot-free paths (the
+// overwhelming majority) behave byte-identically to before.
+function resolvePathSegments(obj, path) {
+  const parts = String(path).split(".");
+  function walk(node, i) {
+    if (!isPlainObject(node)) return null;
+    if (i === parts.length - 1) return parts[i] in node ? [parts[i]] : null;
+    const exact = Object.prototype.hasOwnProperty.call(node, parts[i])
+      ? walk(node[parts[i]], i + 1) : null;
+    if (exact) return [parts[i], ...exact];
+    for (const k of Object.keys(node)) {
+      if (!k.includes(".")) continue;
+      let consumed = parts[i];
+      // j = tail start; consumed === parts[i..j-1].join("."). j may reach
+      // parts.length: a dotted key can swallow ALL remaining segments (the
+      // path's leaf IS that key — an add/change reported at the key itself).
+      for (let j = i + 1; j <= parts.length; j++) {
+        if (consumed === k) {
+          if (j === parts.length) return [k];
+          const tail = walk(node[k], j);
+          if (tail) return [k, ...tail];
+        }
+        if (j < parts.length) consumed += "." + parts[j];
+      }
+    }
+    return null;
+  }
+  return walk(obj, 0) || parts;
+}
+
 function pathExistsInSnippet(snippetObj, path) {
   if (!isPlainObject(snippetObj) || !path) return false;
-  const parts = path.split(".");
+  const parts = resolvePathSegments(snippetObj, path);
   let cur = snippetObj;
   for (let i = 0; i < parts.length - 1; i++) {
     if (!isPlainObject(cur) || !(parts[i] in cur)) return false;
@@ -2517,9 +2650,11 @@ function isSensitiveConfigPath(path) {
 }
 
 // Read the value at a dotted path inside a parsed object (undefined if absent).
+// Resolution is tree-aware — see resolvePathSegments for why the naive split
+// misreads keys that themselves contain dots.
 function getPathValue(obj, path) {
   let cur = obj;
-  for (const part of path.split(".")) {
+  for (const part of resolvePathSegments(obj, path)) {
     if (!isPlainObject(cur) || !(part in cur)) return undefined;
     cur = cur[part];
   }
@@ -2696,12 +2831,12 @@ function splitChangesByTarget(changes, providerId, commonObj, providerSettings) 
         continue;
       }
       if (!deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)) {
-        buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to);
+        buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to, commonObj);
       }
     } else {
       const cur = getPathValue(providerSettings, ch.path);
       if (!deepEqualJson(cur, ch.op === "remove" ? undefined : ch.to)) {
-        buildNestedAssign(providerPatch, ch.path, ch.op === "remove" ? null : ch.to);
+        buildNestedAssign(providerPatch, ch.path, ch.op === "remove" ? null : ch.to, providerSettings);
       }
     }
   }
@@ -2717,9 +2852,12 @@ function splitChangesByTarget(changes, providerId, commonObj, providerSettings) 
 // Assign a value at a dotted path inside a patch object, creating
 // intermediate objects as needed (inverse of getPathValue for patch
 // construction; works on a shared, partially-populated patch across
-// changes — unlike a fresh-patch builder).
-function buildNestedAssign(patch, path, value) {
-  const parts = path.split(".");
+// changes — unlike a fresh-patch builder). refObj (the tree the path was
+// diffed against) anchors tree-aware segment resolution: without it a key
+// containing dots would be re-nested into levels that don't exist in the
+// target document, corrupting it on write-back.
+function buildNestedAssign(patch, path, value, refObj) {
+  const parts = resolvePathSegments(refObj, path);
   let cur = patch;
   for (let i = 0; i < parts.length - 1; i++) {
     if (!isPlainObject(cur[parts[i]])) cur[parts[i]] = {};
@@ -3562,9 +3700,8 @@ function tuiSelect(prompt, options, optsArg) {
         }
       }
       // `o` colors the highlighted provider's statusline tag (provider layer
-      // only — claude's wrapper is the only consumer of a color today).
-      // colorTarget mirrors pinTarget's structured shape; the cursor lands
-      // on the stored choice so re-entering shows where you are.
+      // only). colorTarget mirrors pinTarget's structured shape; the cursor
+      // lands on the stored choice so re-entering shows where you are.
       if (interactive && canColor && key === "o" && selected < options.length) {
         colorTarget = {
           cli: opts.colorContext,
@@ -3744,16 +3881,14 @@ async function runTUI() {
           interactive: true,
           pinContext: cli.value,
           onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
-          // `o` tag color — claude only: the wrapper is the sole consumer of
-          // a stored color today (codex's native status_line has no custom
-          // text/color slot). The schema's codex bucket stays reserved.
-          ...(cli.value === "claude"
-            ? {
-                colorContext: "claude",
-                onColor: (target, value) => saveStatuslineColor("claude", target.providerId, value),
-                getCurrentColor: (target) => statuslineColorFor("claude", target.providerId),
-              }
-            : {}),
+          // `o` tag color — both CLIs. claude's color is consumed by the
+          // wrapper at prepare time; codex's native status_line has no custom
+          // text/color slot (upstream #17827), so the codex color is consumed
+          // by the tmuxclihook status bar's provider segment instead (same
+          // statusline-preferences.json, per-CLI buckets).
+          colorContext: cli.value,
+          onColor: (target, value) => saveStatuslineColor(cli.value, target.providerId, value),
+          getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
         },
       );
     } catch (e) {
@@ -3809,7 +3944,7 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
   // extraArgs are stored so quick-launch replays the full original argv.
   const hotkey = record?.hotkey !== undefined ? record.hotkey : adapter.inferHotkeyFromArgs?.(extraArgs);
   recordLaunch(cmd, row.id, row.name, hotkey, extraArgs);
-  adapter.launch(instanceDir, extraArgs);
+  adapter.launch(instanceDir, extraArgs, { providerName: row.name, providerId: row.id });
 }
 
 // ─── doctor / clean ────────────────────────────────────────────────────
@@ -4506,7 +4641,9 @@ export const __test = Object.freeze({
   stripOneShotFlags,
   healRecordedArgs,
   splitChangesByTarget,
+  buildNestedAssign,
   pathExistsInSnippet,
+  getPathValue,
   foldRemovalPatch,
   diffSettingsLeaves,
   guardInstanceConfigBeforeOverwrite,
@@ -4521,8 +4658,13 @@ export const __test = Object.freeze({
   statuslineColorFor,
   saveStatuslineColor,
   loadStatuslinePreferences,
+  buildLaunchExtraEnv,
   STATUSLINE_COLOR_CHOICES,
   applyCodexStatusLineInjection,
   isCodexStatusLineChannelPath,
+  isCodexRuntimeStatePath,
+  mergeCodexRuntimeState,
+  codexInstanceDirFor,
+  resolvePathSegments,
   APP_ADAPTERS,
 });
