@@ -70,10 +70,10 @@ const VIRTUAL_STACK_PROVIDER_ID = "__stack__";
 // carries no port then, and this is what the desktop app writes a fresh
 // projection with. Same value the docs and warnings already name.
 const STACK_FALLBACK_BASE_URL = "http://127.0.0.1:15721";
-// Apps whose aggregation entry goes through the virtual layer. Codex has no
-// aggregation support in this CLI yet (docs/codex-stack-plan.md) — extend the
-// set when it lands, the layer below is already appType-parameterized.
-const VIRTUAL_STACK_APPS = new Set(["claude"]);
+// Apps whose aggregation entry goes through the virtual layer. The layer
+// below is appType-parameterized: per-app settings derivation lives in
+// STACK_SETTINGS_DERIVERS.
+const VIRTUAL_STACK_APPS = new Set(["claude", "codex"]);
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
@@ -1882,6 +1882,38 @@ function isAggregationProviderSettings(settingsConfig) {
   return !!env && isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL) && env.ANTHROPIC_AUTH_TOKEN === "PROXY_MANAGED";
 }
 
+// Codex mirror of isAggregationProviderSettings — same signature, TOML shape:
+// the ACTIVE provider table's base_url is loopback AND its bearer token is the
+// upstream placeholder. Loopback alone does NOT make an aggregation row (a
+// user's own local gateway would false-positive otherwise). Reads the
+// settings_config JSON envelope ({config: "<TOML>", auth}) — never live-state,
+// so the merge/launch decisions stay deterministic under prepare.
+function isCodexAggregationProviderSettings(settingsConfig) {
+  if (!isPlainObject(settingsConfig) || typeof settingsConfig.config !== "string") return false;
+  const r = codexAggregationRoute(settingsConfig.config);
+  return !!r && isLoopbackBaseUrl(r.baseUrl) && r.bearer === "PROXY_MANAGED";
+}
+
+// per-app dispatch over the two signature shapes above — claude reads the
+// env object, codex parses the config TOML. TUI grouping and the doctor's
+// legacy-row count key on this instead of hardcoding the claude test.
+function providerIsAggregation(appType, settingsConfig) {
+  return appType === "codex"
+    ? isCodexAggregationProviderSettings(settingsConfig)
+    : isAggregationProviderSettings(settingsConfig);
+}
+
+// Base URL of an aggregation row, for the pre-launch TCP probe. Returns null
+// for non-aggregation rows (the caller skips the probe entirely).
+function aggregationBaseUrlFor(appType, settingsConfig) {
+  if (appType === "codex") {
+    if (!isCodexAggregationProviderSettings(settingsConfig)) return null;
+    return codexAggregationRoute(settingsConfig.config)?.baseUrl ?? null;
+  }
+  if (!isAggregationProviderSettings(settingsConfig)) return null;
+  return settingsConfig.env.ANTHROPIC_BASE_URL ?? null;
+}
+
 // Identity keys the aggregation merge must never let the common config win
 // or plant: the row's env IS the routing identity. A common BASE_URL would
 // bypass the proxy; a common AUTH_TOKEN/API_KEY would re-auth it (the Claude
@@ -1954,6 +1986,22 @@ function readStackState(appType) {
   }
 }
 
+// `model` on a codex AGGREGATION instance is carried across prepare
+// (mergeCodexRuntimeState's isAgg branch) and has no DB row to sync into
+// (virtual entry, or a hand-managed proxy row) — the edit would only ever
+// surface as a blocked sync prompt, and the carry means prepare does NOT
+// overwrite it. Yield the path like runtime state in the guard and the drift
+// diff. Plain codex rows are unaffected: their /model pick still flows
+// through guard + sync write-back (established semantics).
+function isCodexAggModelPath(appType, providerId, path) {
+  if (appType !== "codex" || path !== "model") return false;
+  if (providerId === VIRTUAL_STACK_PROVIDER_ID) return true;
+  try {
+    const row = queryProviderById(providerId, "codex");
+    return !!row && isCodexAggregationProviderSettings(JSON.parse(row.settings_config || "{}"));
+  } catch { return false; }
+}
+
 // 300ms TCP probe of a base URL's host:port. Warn-only by design — the
 // aggregation proxy lives and dies with the desktop app (README: "re-open
 // the desktop app"), so an unreachable proxy must gate nothing, just say so.
@@ -2018,8 +2066,91 @@ function buildStackSettingsFromGlobal() {
   return { settings, baseUrl: globalEnv.ANTHROPIC_BASE_URL };
 }
 
-// The virtual aggregation provider row (appType-parameterized; claude until the
-// Codex stack lands). Same shape as a DB row so every consumer — prepare, guard,
+// Codex twin of buildStackSettingsFromGlobal: derive the aggregation routing
+// contract from the GLOBAL ~/.codex/config.toml as a WHITELIST projection —
+// only the routing identity, never the runtime/general keys (projects trust,
+// hook hashes, [tui], model_reasoning_effort …) that would fossilize into the
+// row and fire drift. The catalog is NOT stored on the row (no modelCatalog
+// key): prepare copies the global cc-switch-model-catalog.json verbatim, and
+// model_catalog_json is pinned to the constant so prepare/guard derive
+// identically regardless of whether that file exists. The bearer token is
+// FORCED to PROXY_MANAGED and auth to {} — no real credential ever enters the
+// row. Returns null (no usable contract) when the file is missing/corrupt,
+// model_provider is missing or a reserved id (the desktop pointing Codex at
+// the official API must never yield a proxy row), the active table is absent,
+// or the base URL is not loopback. The global bearer itself is NOT required —
+// same looseness as the claude derive, which only checks loopback and forces
+// the token.
+function buildCodexStackSettingsFromGlobal() {
+  let doc = null;
+  try { doc = parseToml(readFileSync(join(HOME, ".codex", "config.toml"), "utf8")); } catch { return null; }
+  if (!isPlainObject(doc)) return null;
+  const providerId = typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
+  if (!providerId || !isCustomCodexModelProviderId(providerId)) return null;
+  const table = isPlainObject(doc.model_providers?.[providerId]) ? doc.model_providers[providerId] : null;
+  const baseUrl = typeof table?.base_url === "string" ? table.base_url.trim() : "";
+  if (!baseUrl || !isLoopbackBaseUrl(baseUrl)) return null;
+  const proj = {
+    model_provider: providerId,
+    model_catalog_json: CC_SWITCH_CATALOG_FILENAME,
+    model_providers: {
+      [providerId]: {
+        name: (typeof table.name === "string" && table.name.trim()) ? table.name : providerId,
+        base_url: baseUrl,
+        wire_api: table.wire_api === "chat" ? "chat" : "responses",
+        experimental_bearer_token: "PROXY_MANAGED",
+        requires_openai_auth: false,
+      },
+    },
+  };
+  if (typeof doc.model === "string" && doc.model.trim()) proj.model = doc.model.trim();
+  if (typeof doc.web_search === "string" || typeof doc.web_search === "boolean") {
+    proj.web_search = doc.web_search;
+  }
+  return { settings: { config: stringifyToml(proj), auth: {} }, baseUrl };
+}
+
+// Dormant-row settings for codex (stack off but a __stack__ instance dir
+// exists): the claude dormant row carries no aliases/picker — here, no model/
+// web_search. The provider id is a synthesized non-reserved one so the
+// projection still parses as a custom provider table; the launch probe warns
+// the proxy is down (or the stack off) and the entry is only ever reached
+// with the instance dir present.
+function codexStackDormantSettings(baseUrl) {
+  const proj = {
+    model_provider: "cc-switch-stack",
+    model_catalog_json: CC_SWITCH_CATALOG_FILENAME,
+    model_providers: {
+      "cc-switch-stack": {
+        name: "cc-switch-stack",
+        base_url: baseUrl,
+        wire_api: "responses",
+        experimental_bearer_token: "PROXY_MANAGED",
+        requires_openai_auth: false,
+      },
+    },
+  };
+  return { config: stringifyToml(proj), auth: {} };
+}
+
+// Per-app settings derivation for the virtual aggregation row — the three-
+// state skeleton in virtualStackProviderFor stays single-source; only the
+// "derive from global config" and "dormant settings" halves differ per app
+// (claude: env object; codex: TOML whitelist projection).
+const STACK_SETTINGS_DERIVERS = {
+  claude: {
+    fromGlobal: buildStackSettingsFromGlobal,
+    dormant(baseUrl) {
+      return { env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: baseUrl } };
+    },
+  },
+  codex: {
+    fromGlobal: buildCodexStackSettingsFromGlobal,
+    dormant: (baseUrl) => codexStackDormantSettings(baseUrl),
+  },
+};
+
+// The virtual aggregation provider row (appType-parameterized). Same shape as a DB row so every consumer — prepare, guard,
 // statusline injection, drift — treats it like any other provider, plus
 // `is_virtual: true` (never written to the DB; the query layer and write-back
 // paths key on it). meta carries stackManaged:true so the existing
@@ -2034,10 +2165,11 @@ function buildStackSettingsFromGlobal() {
 function virtualStackProviderFor(appType) {
   if (!VIRTUAL_STACK_APPS.has(appType)) return null;
   try {
+    const deriver = STACK_SETTINGS_DERIVERS[appType];
     let settings = null;
     let baseUrl = null;
     if (readStackState(appType)) {
-      const derived = buildStackSettingsFromGlobal();
+      const derived = deriver.fromGlobal();
       if (derived) ({ settings, baseUrl } = derived);
     }
     if (!settings) {
@@ -2047,7 +2179,7 @@ function virtualStackProviderFor(appType) {
       const dir = join(INSTANCES_DIR, appType, VIRTUAL_STACK_PROVIDER_ID);
       if (!existsSync(dir)) return null;
       baseUrl = STACK_FALLBACK_BASE_URL;
-      settings = { env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: baseUrl } };
+      settings = deriver.dormant(baseUrl);
     }
     // Avoid colliding with an unrelated provider that already owns the name
     // (same dodge the old auto-created row used). DB-first everywhere: a real
@@ -2123,7 +2255,7 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
   return { defaultKey, names, map, selfPath: wrapperPath };
 }
 
-// TUI helper: the aggregation group for the claude provider list. The entry is
+// TUI helper: the aggregation group for an app's provider list. The entry is
 // the RUNTIME-VIRTUAL row (virtualStackProviderFor) — never written to the DB,
 // so the desktop GUI sees nothing — plus any DB rows matching the loopback +
 // PROXY_MANAGED signature (legacy auto-created rows pending one-time cleanup,
@@ -2133,18 +2265,18 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
 // stack off (the entry still launches; it just proxies nothing until
 // re-enabled). Returns { ids: Set, labels: Map<id, label> }, or null when no
 // aggregation provider exists at all.
-function buildClaudeAggregationGroup() {
-  const rows = queryDB("SELECT id, name, settings_config FROM providers WHERE app_type = 'claude'");
+function buildAggregationGroup(appType) {
+  const rows = queryDB(`SELECT id, name, settings_config FROM providers WHERE app_type = ${sqlQuote(appType)}`);
   const aggRows = [];
   for (const r of rows) {
     try {
-      if (isAggregationProviderSettings(JSON.parse(r.settings_config))) aggRows.push(r);
+      if (providerIsAggregation(appType, JSON.parse(r.settings_config))) aggRows.push(r);
     } catch {}
   }
-  const virtual = virtualStackProviderFor("claude");
+  const virtual = virtualStackProviderFor(appType);
   if (virtual && !aggRows.some((r) => r.id === virtual.id)) aggRows.push(virtual);
   if (!aggRows.length) return null;
-  const stack = readStackState("claude");
+  const stack = readStackState(appType);
   const nameById = new Map(rows.map((r) => [r.id, r.name]));
   const memberIds = stack ? [...new Set(stack.members)] : [];
   const members = memberIds.map((id) => nameById.get(id)).filter(Boolean);
@@ -2523,6 +2655,41 @@ function codexModelCatalogFromSettings(settingsConfig, configText, profile) {
   return { models: entries };
 }
 
+// ─── Aggregation catalog copy (verbatim, never regenerated) ───────────
+// The desktop app writes the full aggregation /model catalog (member-prefixed
+// ccs ids, comp_hash, multi_agent_version, truncation_policy …) into the
+// GLOBAL ~/.codex/cc-switch-model-catalog.json — 11+ keys the template
+// regeneration would drop. Aggregation instances copy that file BYTE FOR
+// BYTE. The config's model_catalog_json is pinned to the constant by the
+// projection/protection, so the derivation never depends on this file
+// existing; a failed copy keeps the instance's previous copy (stale list
+// beats no list) and warns.
+
+function readGlobalCodexCatalogText() {
+  try {
+    const text = readFileSync(join(HOME, ".codex", CC_SWITCH_CATALOG_FILENAME), "utf8");
+    const parsed = JSON.parse(text);
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.models) || parsed.models.length === 0) return null;
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+function copyGlobalCodexCatalogIntoInstance(instanceDir) {
+  const text = readGlobalCodexCatalogText();
+  const dest = join(instanceDir, CC_SWITCH_CATALOG_FILENAME);
+  if (text !== null) {
+    atomicWrite(dest, text);
+    return { copied: true };
+  }
+  const keptExisting = existsSync(dest);
+  console.error(keptExisting
+    ? `⚠ 全局 ${CC_SWITCH_CATALOG_FILENAME} 缺失或损坏 — 实例保留现有副本，/model 列表可能过期（请在桌面端修复后重进实例）`
+    : `⚠ 全局 ${CC_SWITCH_CATALOG_FILENAME} 缺失或损坏 — 实例将没有聚合模型列表（请在桌面端修复后重进实例）`);
+  return { copied: false };
+}
+
 function extractTopLevelU64(configText, field) {
   try {
     const doc = parseToml(configText);
@@ -2530,6 +2697,26 @@ function extractTopLevelU64(configText, field) {
     if (typeof v === "number") return v > 0 ? v : undefined;
   } catch {}
   return undefined;
+}
+
+// The active routing triple of a Codex config.toml: provider id, its table,
+// base_url and bearer token — table-first, top-level fallback, mirroring the
+// WRITE priority of setCodexExperimentalBearerToken so signature checks,
+// derivation and the launch probe all agree on one parse. Null on unparsable
+// input. baseUrl/bearer are non-empty strings or null.
+function codexAggregationRoute(configText) {
+  let doc;
+  try { doc = parseToml(configText || ""); } catch { return null; }
+  if (!isPlainObject(doc)) return null;
+  const pid = typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
+  const table = pid && isPlainObject(doc.model_providers?.[pid]) ? doc.model_providers[pid] : null;
+  const pickStr = (v) => (typeof v === "string" && v.trim() ? v : null);
+  return {
+    providerId: pid || null,
+    table,
+    baseUrl: pickStr(table?.base_url ?? doc.base_url),
+    bearer: pickStr(table?.experimental_bearer_token ?? doc.experimental_bearer_token),
+  };
 }
 
 function extractCodexBaseUrl(configText) {
@@ -2626,7 +2813,15 @@ function isCodexRuntimeStatePath(path) {
 // may be a CORRUPTED echo). Fail-safe: any parse error returns the input
 // unchanged. Paired with computeEffectiveSettings (same derivation) so the
 // overwrite guard's comparison [C3] sees what prepare actually writes.
-function mergeCodexRuntimeState(configText, instanceDir) {
+//
+// `isAgg` (aggregation row) additionally carries the instance-local /model
+// pick (top-level `model`): the virtual row has no DB row to sync back into
+// (virtualBlocked), so without the carry every relaunch would reset the
+// member the user picked in /model. A pick pointing at a stack key that is no
+// longer live (stack off, member removed) is dropped — it would fail at the
+// proxy on every request. Plain rows do NOT carry model: their pick flows
+// through the guard + sync write-back instead (established semantics).
+function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
   try {
     const current = parseToml(readFileSync(join(instanceDir, "config.toml"), "utf8"));
     const generated = parseToml(configText);
@@ -2650,6 +2845,25 @@ function mergeCodexRuntimeState(configText, instanceDir) {
         curTui.model_availability_nux,
       );
       changed = true;
+    }
+    if (isAgg && typeof current.model === "string" && current.model) {
+      // Dangling ccs pick fallback: key liveness mirrors the proxy's routing
+      // (ccs-<key>/<model> — key never contains "/"). Runs here, not at the
+      // write site, so prepare AND computeEffectiveSettings drop it identically.
+      let model = current.model;
+      const ccs = model.match(/^ccs-([a-z0-9-]+)\//i);
+      if (ccs) {
+        const stack = readStackState("codex");
+        const key = ccs[1].toLowerCase();
+        if (!stack || !(key in stack.keys)) {
+          console.error(`\x1b[2mℹ 聚合模型 "${model}" 已不在当前聚合栈中（栈已关闭或成员被移除）— 本次启动回退默认模型，恢复后请在 /model 重选\x1b[0m`);
+          model = null;
+        }
+      }
+      if (model && model !== generated.model) {
+        generated.model = model;
+        changed = true;
+      }
     }
     return changed ? stringifyToml(generated) : configText;
   } catch {
@@ -2704,12 +2918,69 @@ function codexAuthHasLoginMaterial(auth) {
   return false;
 }
 
+// Post-merge guard for codex aggregation rows (called from buildCodexConfig
+// after the common merge). The row's config IS the routing identity — the
+// codex mirror of protectAggregationIdentityEnv. Restoration semantics:
+//   model_provider / web_search      hard — row value restored, else deleted
+//   model_providers.<activeId>       hard — WHOLE-TABLE deep clone replace, so
+//                                    a common config cannot plant auth-bypass
+//                                    keys (env_key, http_headers, …) into the
+//                                    proxy table; absent on the row → deleted
+//   model_catalog_json               restore-or-SET to the constant (never
+//                                    file-existence-dependent: prepare copies
+//                                    the file separately, the config must
+//                                    derive identically with or without it)
+//   top-level base_url / wire_api /  deleted unconditionally — Codex's
+//   experimental_bearer_token /      fallback identity channel; the identity
+//   requires_openai_auth             lives only in the provider table
+//   model                            soft — row value wins when present, the
+//                                    common value stands otherwise
+// Mutates and returns configObj. Idempotent when the common merge didn't run.
+const CODEX_AGG_TOPLEVEL_FALLBACK_KEYS = ["base_url", "wire_api", "experimental_bearer_token", "requires_openai_auth"];
+
+function protectCodexAggregationIdentity(configObj, settingsConfig) {
+  let rowDoc = null;
+  try { rowDoc = parseToml(settingsConfig?.config || ""); } catch {}
+  if (!isPlainObject(rowDoc)) rowDoc = {};
+  const pid = typeof rowDoc.model_provider === "string" ? rowDoc.model_provider : null;
+  if (pid) configObj.model_provider = pid;
+  else delete configObj.model_provider;
+  if (!isPlainObject(configObj.model_providers)) configObj.model_providers = {};
+  const rowTable = pid && isPlainObject(rowDoc.model_providers?.[pid]) ? rowDoc.model_providers[pid] : null;
+  if (rowTable) configObj.model_providers[pid] = jsonDeepClone(rowTable);
+  else if (pid) delete configObj.model_providers[pid];
+  // Also drop any table the row doesn't carry — a common config cannot plant
+  // provider tables into an aggregation instance (inert while model_provider
+  // is pinned, but noise at best and a footgun at worst).
+  const rowTables = isPlainObject(rowDoc.model_providers) ? rowDoc.model_providers : {};
+  for (const k of Object.keys(configObj.model_providers)) {
+    if (!(k in rowTables)) delete configObj.model_providers[k];
+  }
+  if (!Object.keys(configObj.model_providers).length) delete configObj.model_providers;
+  configObj.model_catalog_json = CC_SWITCH_CATALOG_FILENAME;
+  if (rowDoc.web_search !== undefined) configObj.web_search = rowDoc.web_search;
+  else delete configObj.web_search;
+  for (const k of CODEX_AGG_TOPLEVEL_FALLBACK_KEYS) delete configObj[k];
+  if (rowDoc.model !== undefined) configObj.model = rowDoc.model;
+  return configObj;
+}
+
 function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provider, settings) {
   const configText = settingsConfig.config || "";
+  // Aggregation rows (codex signature: loopback active table + PROXY_MANAGED)
+  // always merge the common config — same reasoning as claude's
+  // buildClaudeEffectiveSettings: the row carries only routing identity, so
+  // the subset fallback can never see the common content, and an explicit
+  // commonConfigEnabled:false still wins. Not gated on readStackState.
+  const isAgg = isCodexAggregationProviderSettings(settingsConfig);
   let effectiveConfigText = configText;
 
   // Common config merge (TOML)
-  if (providerUsesCommonConfig("codex", settingsConfig, meta, commonSnippet)) {
+  const snippetTrimmed = (commonSnippet || "").trim();
+  if (snippetTrimmed && (
+    (isAgg && meta?.commonConfigEnabled !== false) ||
+    providerUsesCommonConfig("codex", settingsConfig, meta, commonSnippet)
+  )) {
     try {
       const target = parseToml(configText || "");
       const source = parseToml(commonSnippet.trim());
@@ -2725,7 +2996,11 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
     category,
     meta: { apiFormat: meta?.apiFormat, providerType: meta?.providerType },
   });
-  const catalog = codexModelCatalogFromSettings(settingsConfig, effectiveConfigText, profile);
+  // Aggregation rows carry no modelCatalog — the catalog comes from copying
+  // the global cc-switch-model-catalog.json verbatim in prepare (stackCatalog
+  // flag below), never from the template regeneration that would drop the
+  // desktop-written keys (comp_hash, multi_agent_version, priorities …).
+  const catalog = isAgg ? null : codexModelCatalogFromSettings(settingsConfig, effectiveConfigText, profile);
 
   let configObj;
   try {
@@ -2734,7 +3009,16 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
     throw new Error(`Failed to parse Codex config.toml: ${e.message}`);
   }
 
-  if (catalog) {
+  // Identity protection right after the parse — before any other rewrite, and
+  // idempotent when no common merge ran (plain re-projection of the row).
+  if (isAgg) protectCodexAggregationIdentity(configObj, settingsConfig);
+
+  if (isAgg) {
+    // model_catalog_json pinned to the constant; web_search rides the
+    // whitelist projection + the hard protection above — the profile-based
+    // disable logic below is for regenerated catalogs only.
+    setCodexModelCatalogField(configObj, true);
+  } else if (catalog) {
     setCodexModelCatalogField(configObj, true);
     let disableWebSearch = false;
     if (profile === "Anthropic") {
@@ -2750,11 +3034,14 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
   applyCodexStatusLineInjection(configObj);
 
   let finalConfigText = stringifyToml(configObj);
-  const auth = settingsConfig.auth || {};
-  const apiKey = extractCodexAuthApiKey(auth);
+  // Aggregation row: auth stays {} — the real credentials live in the member
+  // rows and the proxy; a misconfigured OPENAI_API_KEY must never overwrite
+  // PROXY_MANAGED (bearer injection below is likewise skipped).
+  const auth = isAgg ? {} : (settingsConfig.auth || {});
+  const apiKey = isAgg ? undefined : extractCodexAuthApiKey(auth);
 
   // Third-party provider: inject bearer token
-  if (category !== "official" && apiKey) {
+  if (!isAgg && category !== "official" && apiKey) {
     const preserveOfficialAuth = settings.preserveCodexOfficialAuthOnSwitch || false;
     if (!preserveOfficialAuth) {
       try {
@@ -2767,7 +3054,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
     }
   }
 
-  return { configText: finalConfigText, auth, catalog, apiKey, profile };
+  return { configText: finalConfigText, auth, catalog, apiKey, profile, stackCatalog: isAgg };
 }
 
 // ─── Instance dir initialization ──────────────────────────────────────
@@ -3173,7 +3460,8 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
     }
 
     const changes = diffSettingsLeaves(entry.preparedSettings, current).filter(
-      (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path),
+      (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path)
+        && !isCodexAggModelPath(adapter.appType, row.id, ch.path),
     );
     if (changes.length === 0) return; // faithful mirror — overwrite silently
 
@@ -3474,10 +3762,12 @@ const APP_ADAPTERS = {
     setupInstance: setupCodexInstance,
 
     prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
-      const { configText, auth, catalog, apiKey } = buildCodexConfig(
+      const { configText, auth, catalog, apiKey, stackCatalog } = buildCodexConfig(
         settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
       );
-      atomicWrite(join(instanceDir, "config.toml"), mergeCodexRuntimeState(configText, instanceDir));
+      atomicWrite(join(instanceDir, "config.toml"), mergeCodexRuntimeState(
+        configText, instanceDir, stackCatalog,
+      ));
 
       const authPath = join(instanceDir, "auth.json");
       const globalAuthPath = join(HOME, ".codex", "auth.json");
@@ -3518,6 +3808,12 @@ const APP_ADAPTERS = {
 
       if (catalog) {
         atomicWrite(join(instanceDir, CC_SWITCH_CATALOG_FILENAME), JSON.stringify(catalog, null, 2));
+      } else if (stackCatalog) {
+        // Aggregation row: the catalog is NOT regenerated — the global one is
+        // copied verbatim (see readGlobalCodexCatalogText). A failed copy
+        // keeps the instance's previous file and warns; the config's
+        // model_catalog_json stays pinned to the constant either way.
+        copyGlobalCodexCatalogIntoInstance(instanceDir);
       }
     },
 
@@ -3535,10 +3831,12 @@ const APP_ADAPTERS = {
     // backfill comparison is deterministic. [C3]
     computeEffectiveSettings(settingsConfig, meta, category, commonSnippet, providerId, settings) {
       try {
-        const { configText } = buildCodexConfig(
+        const { configText, stackCatalog } = buildCodexConfig(
           settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
         );
-        return jsonNormalize(parseToml(mergeCodexRuntimeState(configText, codexInstanceDirFor(providerId))));
+        return jsonNormalize(parseToml(mergeCodexRuntimeState(
+          configText, codexInstanceDirFor(providerId), stackCatalog,
+        )));
       } catch {
         return null;
       }
@@ -3627,7 +3925,8 @@ function detectConfigDriftGeneric(adapter, state) {
       if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
       if (current === null || deepEqualJson(current, baseline)) continue; // unchanged/corrupt mirror
       const changes = diffSettingsLeaves(baseline, current).filter(
-        (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path),
+        (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path)
+          && !isCodexAggModelPath(adapter.appType, name, ch.path),
       );
       if (changes.length === 0) continue; // only channel-owned edits
       let mtimeMs = 0;
@@ -5124,12 +5423,12 @@ async function runTUI() {
       process.exit(1);
     }
     let providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
-    // cc-switch 4.0 aggregation (claude only): the virtual entry (and any DB
-    // rows matching the loopback signature) sink to the tail of the list under
-    // a labeled group showing the live member names — launch, recent, pin and
-    // colors behave exactly like any other provider.
-    if (adapter.appType === "claude") {
-      const group = buildClaudeAggregationGroup();
+    // cc-switch 4.0 aggregation: the virtual entry (and any DB rows matching
+    // the loopback signature) sink to the tail of the list under a labeled
+    // group showing the live member names — launch, recent, pin and colors
+    // behave exactly like any other provider.
+    if (VIRTUAL_STACK_APPS.has(adapter.appType)) {
+      const group = buildAggregationGroup(adapter.appType);
       if (group) {
         const plain = providers.filter((p) => !group.ids.has(p.id));
         const aggs = providers.filter((p) => group.ids.has(p.id));
@@ -5229,10 +5528,11 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
   // with an opaque connection error inside the CLI. One quick probe turns
   // that silent failure into an actionable warning; the launch itself is
   // never gated (the proxy may come back while the instance is open).
-  if (adapter.appType === "claude" && isAggregationProviderSettings(settingsConfig)) {
-    const reachable = await probeTcpReachable(settingsConfig.env.ANTHROPIC_BASE_URL);
+  const aggBaseUrl = aggregationBaseUrlFor(adapter.appType, settingsConfig);
+  if (aggBaseUrl) {
+    const reachable = await probeTcpReachable(aggBaseUrl);
     if (!reachable) {
-      console.error(`⚠ 聚合代理 ${settingsConfig.env.ANTHROPIC_BASE_URL} 不可达 — 请确认 cc-switch 桌面端已开启聚合（实例照常启动，请求会失败直至代理恢复）`);
+      console.error(`⚠ 聚合代理 ${aggBaseUrl} 不可达 — 请确认 cc-switch 桌面端已开启聚合（实例照常启动，请求会失败直至代理恢复）`);
     }
   }
   adapter.launch(instanceDir, extraArgs, { providerName: row.name, providerId: row.id });
@@ -5479,6 +5779,40 @@ async function aggregationDoctorChecks() {
   return checks;
 }
 
+// Codex mirror — minimal set (advisory, same philosophy as the claude checks):
+// no codex stack in live-state → [] (zero noise; the live-state file itself is
+// already health-checked by the claude pass). Stack on → the virtual entry
+// must derive from the global config.toml (a live stack whose global config
+// has no loopback custom provider yields nothing to launch through — that is
+// a failure) and the proxy must answer. No member-row check (codex has no
+// legacy DB aggregation rows; a removed member shows in the TUI label) and no
+// catalog check (prepare's copy warning already surfaces that).
+async function codexAggregationDoctorChecks() {
+  const checks = [];
+  const add = (label, pass, detail) => checks.push({ label, pass, detail });
+  const stack = readStackState("codex");
+  if (!stack) return checks;
+  const virtual = virtualStackProviderFor("codex");
+  if (!virtual) {
+    add("codex aggregation Stack row", false,
+      "live stack but no virtual entry derivable — global ~/.codex/config.toml is missing, has no custom model_provider, or its base_url is not loopback");
+    return checks;
+  }
+  let baseUrl = null;
+  try {
+    const r = codexAggregationRoute(JSON.parse(virtual.settings_config)?.config || "");
+    baseUrl = r?.baseUrl ?? null;
+  } catch {}
+  add("codex aggregation Stack row", true, `virtual entry derived (${baseUrl ?? "?"}, not stored in DB)`);
+  const reachable = typeof baseUrl === "string" ? await probeTcpReachable(baseUrl) : false;
+  add(
+    "codex aggregation proxy",
+    reachable,
+    reachable ? `${baseUrl} reachable` : `${baseUrl ?? "?"} unreachable — open the cc-switch desktop app with aggregation on`,
+  );
+  return checks;
+}
+
 async function runDoctor() {
   const checks = [];
   const add = (label, pass, detail) => checks.push({ label, pass, detail });
@@ -5564,6 +5898,7 @@ async function runDoctor() {
   // aggregation (cc-switch 4.0 Stack) — live-state contract, member rows,
   // Stack row, proxy reachability
   for (const c of await aggregationDoctorChecks()) add(c.label, c.pass, c.detail);
+  for (const c of await codexAggregationDoctorChecks()) add(c.label, c.pass, c.detail);
 
   // render
   console.log("\n  \x1b[1mcc-switch-parallel doctor\x1b[0m\n");
@@ -6081,6 +6416,16 @@ export const __test = Object.freeze({
   buildUsageWrapperLines,
   isLoopbackBaseUrl,
   isAggregationProviderSettings,
+  isCodexAggregationProviderSettings,
+  codexAggregationRoute,
+  providerIsAggregation,
+  aggregationBaseUrlFor,
+  buildCodexStackSettingsFromGlobal,
+  codexStackDormantSettings,
+  protectCodexAggregationIdentity,
+  copyGlobalCodexCatalogIntoInstance,
+  readGlobalCodexCatalogText,
+  isCodexAggModelPath,
   readStackState,
   readGlobalModelPicker,
   buildStackSettingsFromGlobal,
@@ -6089,10 +6434,11 @@ export const __test = Object.freeze({
   VIRTUAL_STACK_PROVIDER_ID,
   buildStackUsageConfig,
   buildStackUsageWrapperLines,
-  buildClaudeAggregationGroup,
+  buildAggregationGroup,
   cleanupLegacyStackRows,
   probeTcpReachable,
   aggregationDoctorChecks,
+  codexAggregationDoctorChecks,
   stackBillingMemberName,
   USAGE_CACHE_FILENAME,
   APP_ADAPTERS,

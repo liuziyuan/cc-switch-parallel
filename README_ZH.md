@@ -116,7 +116,7 @@ Codex CLI 的状态栏是**原生内置字段选择式**（`config.toml` 的 `[t
 
 ## 聚合模式（cc-switch 4.0）
 
-cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代理（默认 `127.0.0.1:15721`），把多家供应商的模型以 `ccs-claude-<key>--<model>` id 发布进 Claude Code 的 `/model` 列表，客户端内即可无感切换。`switch` 不进入/退出该模式（那是桌面端的动作），而是把它**当作并行中的一员来消费**——tmux 里 `[Z.AI GLM] [DeepSeek] [聚合]` 三类实例并存互不影响。
+cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代理（默认 `127.0.0.1:15721`），把多家供应商的模型以 `ccs-claude-<key>--<model>` id 发布进 Claude Code 的 `/model` 列表（Codex 侧为 `ccs-<key>/<model>`，见下文），客户端内即可无感切换。`switch` 不进入/退出该模式（那是桌面端的动作），而是把它**当作并行中的一员来消费**——tmux 里 `[Z.AI GLM] [DeepSeek] [聚合]` 三类实例并存互不影响。
 
 **使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组。聚合入口是一个**运行时虚拟 provider 行**（固定 id `__stack__`）：不写入 cc-switch 数据库（桌面端 GUI 不会显示任何 CLI 生成的行），每次打开 TUI / 启动时从 live-state 与全局 `~/.claude/settings.json` **现算**最新路由契约（base URL、ccs 别名、modelPicker）——桌面端改代理端口、切换默认供应商或清空模型列表后无需任何同步步骤，下次操作即生效。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。
 
@@ -133,7 +133,16 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 - 桌面端关闭聚合后，聚合入口仍在（TUI 显示「未激活」；成员行已删时显示「N 个成员缺失」），实例照常启动但代理不在——请回到普通 provider 实例。聚合实例的 `/model` 不再列指向死代理的 ccs 旧条目。
 - 实例编辑写回（`switch sync`）对聚合入口不生效：provider 侧改动会被标记为 blocked 并说明原因（虚拟行不落库，实例配置每次启动由桌面端状态重新生成）；落在通用配置上的改动照常写回。
 - **从 ≤ 0.19 升级**：首次运行会自动清理旧版写入数据库的聚合 provider 行（幂等），并把启动历史、置顶与 statusline 颜色迁移到虚拟 id `__stack__`；正在桌面端使用中的聚合行（is_current）会保留并提示。运行中的旧聚合实例不受影响，其 UUID 目录在会话结束后可用 `switch clean` 清理。
-- Codex 侧暂不支持（其模型目录机制需彻底重启，玩法受限）。
+
+### Codex 的聚合
+
+Codex 聚合入口与 claude 同架构（同一个虚拟行 `__stack__`、同一套 TUI 分组与探测），差异在投影方式与模型列表来源：
+
+- **路由投影**：虚拟行每次从全局 `~/.codex/config.toml` **白名单现算**——只取 `model_provider`、`model`、`web_search`、`model_catalog_json` 与活动 `[model_providers.<id>]` 表的 `name/base_url/wire_api`，并强制 `experimental_bearer_token = "PROXY_MANAGED"`、`requires_openai_auth = false`、`auth = {}`（真实凭据永远不进聚合行）。`[projects.*]`、`[hooks.state.*]`、`[tui]`、`model_reasoning_effort` 等运行时/偏好键不进投影，避免固化进行触发漂移。全局 config 缺失、`model_provider` 是官方保留 id 或 base_url 非 loopback 时派生不出入口（栈仍开着则 `switch doctor` 会报）。
+- **通用配置**：与 claude 聚合行一致**始终强制合并** `common_config_codex`，且合并后做身份保护——`model_provider`、活动 provider 整张表、`model_catalog_json`、`web_search` 以聚合行为准（行没有的 provider 表直接删除），通用配置覆盖不了路由身份；顶层 `base_url/wire_api/experimental_bearer_token/requires_openai_auth` 回退通道一律删除。桌面端对聚合行显式关闭「使用通用配置」仍然生效。
+- **模型列表**：`/model` 列表来自桌面端写进全局 `~/.codex/cc-switch-model-catalog.json` 的完整 catalog（成员 id 规则 `ccs-<key>/<model>`，如 `ccs-deepseek/deepseek-flash`；默认供应商的模型不带前缀）。`switch` 每次启动聚合实例时把它**原样字节复制**进实例目录——不是模板重生成，桌面端写入的全部字段原样保留；全局 catalog 缺失/损坏时保留实例已有副本并警告（列表可能过期）。桌面端改聚合名单后**重进实例**即可见。
+- **/model 选择跨重启保留**：实例内的模型选择写在实例 `config.toml` 的 `model` 键，聚合实例每次启动会携带它（普通 codex 行仍走既有的漂移+sync 流程，行为不变）。选择指向的成员已被移除或聚合已关闭时，本次启动回退默认模型并提示。
+- **限制**：Codex TUI 的状态栏只支持内置字段（上游 openai/codex#17827），故聚合实例没有 claude 侧的 wrapper 计费段与动态 provider 标签——tmux 状态栏的 provider 段（经 tmuxclihook）仍显示启动时的 `Stack`；`switch ps` 也不解码当前计费成员。`switch doctor` 含 codex 聚合检查（虚拟入口派生、代理可达性）。
 
 ## 工作原理
 

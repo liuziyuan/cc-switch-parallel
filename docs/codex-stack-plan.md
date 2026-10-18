@@ -1,5 +1,12 @@
 # Codex 聚合（Stack）支持
 
+> **状态：已落地（v0.21.0，`feat/codex-stack`）。** 本文写于 0.20.0 虚拟 provider 重构之前，
+> 「自动建行 `ensureCodexStackProviderRow`（DB INSERT）」「新建行当次不可见修复」「补
+> `probeTcpReachable`」「版本 0.18/0.19」等描述已过时——实际实现按
+> [`docs/virtual-provider-plan.md`](virtual-provider-plan.md) §5 的路线：`VIRTUAL_STACK_APPS`
+> 扩展 + `buildCodexStackSettingsFromGlobal` 虚拟行派生，不落 DB。白名单投影、身份保护键、
+> catalog 原样复制、loopback+PROXY_MANAGED 签名等设计决策均已按本文实现。
+
 ## Context
 
 桌面端 cc-switch 4.0 已经为 Codex 开启了聚合模式，运行时状态齐全：

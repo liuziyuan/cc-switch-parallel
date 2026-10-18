@@ -44,7 +44,7 @@ const {
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,
-  buildClaudeAggregationGroup,
+  buildAggregationGroup,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -1493,7 +1493,7 @@ test("aggregation TUI label: member rows missing from the DB surface in the labe
   // "m-gone" is in the stack but has no provider row (an id no other test
   // inserts — the DB is shared across the file)
   writeLiveState({ enabled: true, members: ["m-ds", "m-gone"], keys: { deepseek: "m-ds", zhipu: "m-gone" } }, "m-ds");
-  const group = buildClaudeAggregationGroup();
+  const group = buildAggregationGroup("claude");
   assert.ok(group);
   assert.ok(group.ids.has(VIRTUAL_STACK_PROVIDER_ID), "virtual entry joins the group");
   assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("DeepSeek"));
@@ -1501,7 +1501,7 @@ test("aggregation TUI label: member rows missing from the DB surface in the labe
   // dormant path: stack off, instance dir present → group survives as （未激活）
   removeLiveState();
   mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
-  const dormant = buildClaudeAggregationGroup();
+  const dormant = buildAggregationGroup("claude");
   assert.ok(dormant);
   assert.ok(dormant.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("未激活"));
   writeGlobalSettings(undefined);
