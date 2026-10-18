@@ -3,6 +3,7 @@
 import { readFileSync, renameSync } from "node:fs";
 import { APP_ADAPTERS } from "./adapters.js";
 import { queryProvidersStrict } from "./db.js";
+import { withFileLockSync } from "./file-lock.js";
 import { atomicWrite } from "./fs-utils.js";
 import { isPlainObject } from "./json-utils.js";
 import { HISTORY_PATH } from "./paths.js";
@@ -39,10 +40,18 @@ function frozenView() {
 
 // `order` is a sparse 5-slot array — a pinned entry key keeps its slot, null
 // slots are filled by natural count/lastUsed ranking. Normalized from any
-// stored value (missing field, dense legacy array, junk entries).
+// stored value (missing field, dense legacy array, junk entries). Duplicate
+// keys are dropped (first occurrence wins): a duplicated slot used to render
+// the same Recent row twice.
 function normalizeOrder(raw: any): (string | null)[] {
   const out: (string | null)[] = [null, null, null, null, null];
-  if (Array.isArray(raw)) raw.slice(0, 5).forEach((v, i) => { if (typeof v === "string") out[i] = v; });
+  const seen = new Set<string>();
+  if (Array.isArray(raw)) raw.slice(0, 5).forEach((v, i) => {
+    if (typeof v === "string" && !seen.has(v)) {
+      out[i] = v;
+      seen.add(v);
+    }
+  });
   return out;
 }
 
@@ -90,13 +99,21 @@ function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
     // instead of replaying `claude --version` forever. Same concurrent-write
     // narrowing as the migration below — persist only if the file is still v2.
     if (healRecordedArgs(entries)) {
-      try {
-        const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
-        if (cur?.version === HISTORY_VERSION) saveHistory(entries, order);
-      } catch {
-        // unreadable or racing another process — heal in memory only; the
-        // next recordLaunch persists the clean argv anyway
-      }
+      // Re-read inside the lock: another process may have recorded a launch
+      // between our load and this write.
+      withFileLockSync(HISTORY_PATH, () => {
+        try {
+          const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+          if (cur?.version === HISTORY_VERSION) {
+            const curEntries: HistoryEntry[] = Array.isArray(cur.entries) ? cur.entries : [];
+            const curOrder = normalizeOrder(cur.order);
+            if (healRecordedArgs(curEntries)) saveHistory(curEntries, curOrder);
+          }
+        } catch {
+          // unreadable or racing another process — heal in memory only; the
+          // next recordLaunch persists the clean argv anyway
+        }
+      });
     }
     return { entries, order };
   }
@@ -111,14 +128,16 @@ function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
     _historyFrozenSnapshot = { entries: [], order: normalizeOrder(undefined) };
     return _historyFrozenSnapshot;
   }
-  try {
-    // Narrow the concurrent-migration window: another switch process may have
-    // migrated meanwhile; only persist when the file is still pre-v2.
-    const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
-    if (cur?.version !== HISTORY_VERSION) saveHistory(migrated.entries, migrated.order);
-  } catch {
-    // unreadable now — keep the migrated view in memory only
-  }
+  withFileLockSync(HISTORY_PATH, () => {
+    try {
+      // Narrow the concurrent-migration window: another switch process may have
+      // migrated meanwhile; only persist when the file is still pre-v2.
+      const cur = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+      if (cur?.version !== HISTORY_VERSION) saveHistory(migrated.entries, migrated.order);
+    } catch {
+      // unreadable now — keep the migrated view in memory only
+    }
+  });
   return migrated;
 }
 
@@ -128,6 +147,19 @@ function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
 function loadHistoryForWrite() {
   const view = loadHistory();
   return _historyFrozen ? null : view;
+}
+
+// Read-modify-write transaction under the cross-process history lock. The
+// callback always re-loads INSIDE the lock (never reuse a snapshot taken
+// before the wait). Returns null when the lock timed out or the history is
+// frozen; callers map that to their own failure value.
+function mutateHistory<T>(fn: (entries: HistoryEntry[], order: (string | null)[]) => T): T | null {
+  const result = withFileLockSync(HISTORY_PATH, () => {
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return null;
+    return fn(loaded.entries, loaded.order);
+  });
+  return result.acquired ? result.value : null;
 }
 
 // One-time v1→v2: resolve entry names to provider ids via the cc-switch DB.
@@ -211,8 +243,14 @@ function byStrength(a, b, aliveByCli) {
 // can't fill all 5 slots; pinned slots keep dead rows (the user's explicit
 // placement wins, flagged red for cleanup).
 function mergeTop5(entries, order, aliveByCli) {
-  const valid = order.map((id) =>
-    id && entries.some((e) => entryKey(e) === id) ? id : null);
+  // Duplicate slots are dropped here as well as in normalizeOrder: an entry
+  // key must never render twice even if an old/migrated file holds it twice.
+  const seenValid = new Set<string>();
+  const valid = order.map((id) => {
+    if (!id || seenValid.has(id) || !entries.some((e) => entryKey(e) === id)) return null;
+    seenValid.add(id);
+    return id;
+  });
   const pinnedSet = new Set(valid.filter(Boolean));
   const cmp = (a, b) => byStrength(a, b, aliveByCli);
   const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(cmp)[0];
@@ -268,39 +306,38 @@ function healRecordedArgs(entries) {
 function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
   if (_historyFrozen) return;
   try {
-    const loaded = loadHistoryForWrite();
-    if (!loaded) return;
-    const { entries, order } = loaded;
-    const now = Date.now();
-    const stored = stripOneShotFlags(extraArgs);
-    const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
-    if (hit) {
-      hit.count = (hit.count || 0) + 1;
-      hit.lastUsed = now;
-      hit.provider = providerName;
-      hit.extraArgs = stored;
-    } else {
-      // Pin placeholders carry the exact signature hotkey:null + count:0 +
-      // lastUsed:0 (see insertManualOrder). Upgrade one in place instead of
-      // pushing a sibling entry — otherwise the first real launch of a pinned
-      // pair forks history into two rows. count>0 null-hotkey entries are real
-      // Default history, never placeholders — the count===0 guard protects them.
-      const ph = entries.find((e) =>
-        e.providerId === providerId && e.cli === cli && e.hotkey == null && (e.count || 0) === 0);
-      if (ph) {
-        ph.hotkey = hotkey ?? null;
-        ph.count = 1;
-        ph.lastUsed = now;
-        ph.provider = providerName;
-        ph.extraArgs = stored;
+    mutateHistory((entries, order) => {
+      const now = Date.now();
+      const stored = stripOneShotFlags(extraArgs);
+      const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
+      if (hit) {
+        hit.count = (hit.count || 0) + 1;
+        hit.lastUsed = now;
+        hit.provider = providerName;
+        hit.extraArgs = stored;
       } else {
-        entries.push({
-          cli, providerId, provider: providerName, hotkey: hotkey ?? null,
-          extraArgs: stored, count: 1, lastUsed: now,
-        });
+        // Pin placeholders carry the exact signature hotkey:null + count:0 +
+        // lastUsed:0 (see insertManualOrder). Upgrade one in place instead of
+        // pushing a sibling entry — otherwise the first real launch of a pinned
+        // pair forks history into two rows. count>0 null-hotkey entries are real
+        // Default history, never placeholders — the count===0 guard protects them.
+        const ph = entries.find((e) =>
+          e.providerId === providerId && e.cli === cli && e.hotkey == null && (e.count || 0) === 0);
+        if (ph) {
+          ph.hotkey = hotkey ?? null;
+          ph.count = 1;
+          ph.lastUsed = now;
+          ph.provider = providerName;
+          ph.extraArgs = stored;
+        } else {
+          entries.push({
+            cli, providerId, provider: providerName, hotkey: hotkey ?? null,
+            extraArgs: stored, count: 1, lastUsed: now,
+          });
+        }
       }
-    }
-    saveHistory(entries, order);
+      saveHistory(entries, order);
+    });
   } catch {
     // history is best-effort; never block launch on it
   }
@@ -340,20 +377,19 @@ function stripPermissionArgs(args: string[]): string[] {
 function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const loaded = loadHistoryForWrite();
-    if (!loaded) return null;
-    const { entries, order } = loaded;
-    const target = entries
-      .filter((e) => entryKey(e) === pairKey)
-      .sort((a, b) => byStrength(a, b, aliveByCli))[0];
-    if (!target) return null;
-    target.hotkey = hotkey ?? null; // undefined (Default) normalizes to null
-    target.extraArgs = [
-      ...stripPermissionArgs(Array.isArray(target.extraArgs) ? target.extraArgs : []),
-      ...(APP_ADAPTERS[cli]?.permissionArgs?.(hotkey ?? null) ?? []),
-    ];
-    saveHistory(entries, order);
-    return mergeTop5(entries, order, aliveByCli);
+    return mutateHistory((entries, order) => {
+      const target = entries
+        .filter((e) => entryKey(e) === pairKey)
+        .sort((a, b) => byStrength(a, b, aliveByCli))[0];
+      if (!target) return null;
+      target.hotkey = hotkey ?? null; // undefined (Default) normalizes to null
+      target.extraArgs = [
+        ...stripPermissionArgs(Array.isArray(target.extraArgs) ? target.extraArgs : []),
+        ...(APP_ADAPTERS[cli]?.permissionArgs?.(hotkey ?? null) ?? []),
+      ];
+      saveHistory(entries, order);
+      return mergeTop5(entries, order, aliveByCli);
+    });
   } catch {
     return null;
   }
@@ -365,15 +401,14 @@ function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
 function unpinPair(key, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const loaded = loadHistoryForWrite();
-    if (!loaded) return null;
-    const { entries, order } = loaded;
-    const slot = order.indexOf(key);
-    if (slot >= 0) {
-      order[slot] = null;
-      saveHistory(entries, order);
-    }
-    return mergeTop5(entries, order, aliveByCli);
+    return mutateHistory((entries, order) => {
+      const slot = order.indexOf(key);
+      if (slot >= 0) {
+        order[slot] = null;
+        saveHistory(entries, order);
+      }
+      return mergeTop5(entries, order, aliveByCli);
+    });
   } catch {
     return null;
   }
@@ -385,14 +420,13 @@ function unpinPair(key, aliveByCli) {
 function removeHistoryPair(key, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const loaded = loadHistoryForWrite();
-    if (!loaded) return null;
-    const { entries, order } = loaded;
-    const kept = entries.filter((e) => entryKey(e) !== key);
-    const slot = order.indexOf(key);
-    if (slot >= 0) order[slot] = null;
-    saveHistory(kept, order);
-    return mergeTop5(kept, order, aliveByCli);
+    return mutateHistory((entries, order) => {
+      const kept = entries.filter((e) => entryKey(e) !== key);
+      const slot = order.indexOf(key);
+      if (slot >= 0) order[slot] = null;
+      saveHistory(kept, order);
+      return mergeTop5(kept, order, aliveByCli);
+    });
   } catch {
     return null;
   }
@@ -406,13 +440,13 @@ function removeHistoryPair(key, aliveByCli) {
 function removeAllDeadPairs(aliveByCli) {
   if (_historyFrozen) return -1;
   try {
-    const loaded = loadHistoryForWrite();
-    if (!loaded) return -1;
-    const { entries, order } = loaded;
-    const kept = entries.filter((e) => !isDeadEntry(e, aliveByCli));
-    if (kept.length === entries.length) return 0;
-    saveHistory(kept, order);
-    return entries.length - kept.length;
+    const removed = mutateHistory((entries, order) => {
+      const kept = entries.filter((e) => !isDeadEntry(e, aliveByCli));
+      if (kept.length === entries.length) return 0;
+      saveHistory(kept, order);
+      return entries.length - kept.length;
+    });
+    return removed === null ? -1 : removed;
   } catch {
     return -1;
   }
@@ -426,30 +460,29 @@ function removeAllDeadPairs(aliveByCli) {
 function insertManualOrder(item, pos, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const loaded = loadHistoryForWrite();
-    if (!loaded) return null;
-    const { entries, order } = loaded;
-    const key = entryKey(item);
-    if (!entries.some((e) => entryKey(e) === key)) {
-      // Placeholder so a never-launched pair can still be pinned. A real
-      // launch will create its own (hotkey-keyed) entry; this one just sits
-      // at count 0 and ranks last until then.
-      entries.push({
-        cli: item.cli, providerId: item.providerId ?? null, provider: item.provider,
-        hotkey: null, extraArgs: [], count: 0, lastUsed: 0,
-      });
-    }
-    const displayed = mergeTop5(entries, order, aliveByCli)
-      .map((e) => entryKey(e))
-      .filter((x) => x !== key); // take out own old row first → re-pin moves, not duplicates
-    const idx = Math.min(pos - 1, displayed.length); // clamp when fewer entries than pos
-    displayed.splice(idx, 0, key);
-    const nextOrder = Array(5).fill(null); // always persist the full 5-slot array
-    displayed
-      .slice(0, 5) // whatever falls past slot 5 loses its pin
-      .forEach((x, i) => { nextOrder[i] = (x === key || order.includes(x)) ? x : null; });
-    saveHistory(entries, nextOrder);
-    return idx + 1;
+    return mutateHistory((entries, order) => {
+      const key = entryKey(item);
+      if (!entries.some((e) => entryKey(e) === key)) {
+        // Placeholder so a never-launched pair can still be pinned. A real
+        // launch will create its own (hotkey-keyed) entry; this one just sits
+        // at count 0 and ranks last until then.
+        entries.push({
+          cli: item.cli, providerId: item.providerId ?? null, provider: item.provider,
+          hotkey: null, extraArgs: [], count: 0, lastUsed: 0,
+        });
+      }
+      const displayed = mergeTop5(entries, order, aliveByCli)
+        .map((e) => entryKey(e))
+        .filter((x) => x !== key); // take out own old row first → re-pin moves, not duplicates
+      const idx = Math.min(pos - 1, displayed.length); // clamp when fewer entries than pos
+      displayed.splice(idx, 0, key);
+      const nextOrder = Array(5).fill(null); // always persist the full 5-slot array
+      displayed
+        .slice(0, 5) // whatever falls past slot 5 loses its pin
+        .forEach((x, i) => { nextOrder[i] = (x === key || order.includes(x)) ? x : null; });
+      saveHistory(entries, nextOrder);
+      return idx + 1;
+    });
   } catch {
     return null;
   }
