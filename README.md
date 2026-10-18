@@ -1,8 +1,10 @@
 # cc-switch-parallel
 
-> Launch Claude Code and Codex with per-provider isolated configs — run multiple providers in parallel terminals without switching.
+> A companion launcher for [cc-switch](https://github.com/farion1231/cc-switch) — launch Claude Code and Codex with per-provider isolated configs in parallel terminals, no switching required.
 
 [English](README.md) | [中文](README_ZH.md)
+
+> **Prerequisite: [cc-switch](https://github.com/farion1231/cc-switch) must already be installed and configured.** `switch` is not a provider manager of its own — it reads the providers you have set up in cc-switch's database and adds **parallel launching** for Claude Code and Codex on top of it: each provider gets an isolated config directory, so several providers can run in different terminals at the same time.
 
 ## What it does
 
@@ -174,7 +176,9 @@ An adapter without an interface is simply "v2-shaped" for that layer and skips i
 
 ## Requirements
 
-- [cc-switch](https://github.com/farion1231/cc-switch) desktop app with providers configured
+**cc-switch is required** — this project adds parallel launching on top of it and cannot run without it.
+
+- [cc-switch](https://github.com/farion1231/cc-switch) desktop app installed, with at least one provider configured
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (`claude`) on PATH
 - [Codex](https://github.com/openai/codex) CLI (`codex`) on PATH (optional, for Codex support)
 - Node.js ≥ 18
