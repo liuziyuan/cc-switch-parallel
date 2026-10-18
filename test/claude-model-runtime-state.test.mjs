@@ -2,7 +2,7 @@ import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync, mkdirSync, writeFileSync,
+  mkdtempSync, mkdirSync, writeFileSync, rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,64 @@ test("claude model carry: providerId undefined skips the carry entirely", () => 
     { model: "base" }, {}, "", undefined, undefined,
   );
   assert.equal(effective.model, "base");
+});
+
+// ─── carry: dangling ccs model falls back to the merged value ──────────
+// A /model pick pointing at a Stack key that is no longer live (stack off
+// in the desktop app, or the member since removed) must not ride along into
+// a launch that would fail at the proxy on every request.
+
+const LIVE_STATE_PATH_T = join(CC, "live-state.json");
+function writeLiveState(stack) {
+  mkdirSync(CC, { recursive: true });
+  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({
+    version: 1,
+    apps: { claude: { mode: "proxy", stack } },
+  }));
+}
+function removeLiveState() {
+  rmSync(LIVE_STATE_PATH_T, { force: true });
+}
+
+// captureStderr — the fallback prints a dim one-liner; assert it fired
+// instead of merely inferring from the returned model.
+function captureStderr(fn) {
+  const orig = process.stderr.write;
+  let buf = "";
+  process.stderr.write = (s) => { buf += s; return true; };
+  try { return { value: fn(), buf }; } finally { process.stderr.write = orig; }
+}
+
+test("claude model carry: dangling ccs model drops when its stack key is gone", () => {
+  const base = { model: "fallback-model" };
+  const ccsPick = "ccs-claude-zhipu--glm-5.3[1M]";
+  seedInstance("p-ccs", { model: ccsPick });
+
+  // stack off (no live-state at all) → carry dropped, merged value stands
+  removeLiveState();
+  const off = captureStderr(() => buildFor("p-ccs", base, "{}"));
+  assert.equal(off.value.model, "fallback-model");
+  assert.ok(off.buf.includes("已不在当前聚合栈中"), "fallback note printed");
+
+  // stack live + key present → the pick holds (no note)
+  writeLiveState({ enabled: true, members: ["m1"], keys: { zhipu: "m1" } });
+  const on = captureStderr(() => buildFor("p-ccs", base, "{}"));
+  assert.equal(on.value.model, ccsPick);
+  assert.equal(on.buf, "");
+
+  // stack live + key REMOVED since the pick → dropped again
+  writeLiveState({ enabled: true, members: ["m2"], keys: { deepseek: "m2" } });
+  const gone = captureStderr(() => buildFor("p-ccs", base, "{}"));
+  assert.equal(gone.value.model, "fallback-model");
+  assert.ok(gone.buf.includes("已不在当前聚合栈中"));
+
+  // non-ccs picks ignore stack state entirely (regression lock)
+  removeLiveState();
+  seedInstance("p-plain", { model: "plain-pick" });
+  const plain = captureStderr(() => buildFor("p-plain", base, "{}"));
+  assert.equal(plain.value.model, "plain-pick");
+  assert.equal(plain.buf, "");
+  removeLiveState();
 });
 
 // ─── runtime-state filter predicate ─────────────────────────────────────
