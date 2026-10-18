@@ -19,6 +19,7 @@ const {
   buildNestedAssign,
   splitChangesByTarget,
   isCodexRuntimeStatePath,
+  isCodexRuntimeStateChange,
   mergeCodexRuntimeState,
   codexInstanceDirFor,
 } = __test;
@@ -101,6 +102,27 @@ test("isCodexRuntimeStatePath: exact runtime keys, user config untouched", () =>
     "tui.notifications",
     "hooks", // the [hooks] table itself is config, only .state is runtime
   ]) assert.equal(isCodexRuntimeStatePath(p), false, p);
+});
+
+// Regressions behind the 2026-10-18 "every launch asks to sync hooks" bug:
+// diffSettingsLeaves reports the PARENT path when the whole subtree appears
+// (baseline had no hooks → {path:"hooks", op:"add"}), which the path-only
+// filter above cannot recognize. The change-aware variant closes that gap
+// without widening the path contract ("hooks" alone stays config).
+test("isCodexRuntimeStateChange: whole-subtree runtime adds filtered, user hooks kept", () => {
+  // runtime: the first session materializes the whole table
+  const hooksState = { op: "add", to: { state: { "/abs/hooks.json:stop:0:0": { trusted_hash: "sha256:a" } } } };
+  assert.equal(isCodexRuntimeStateChange("hooks", hooksState), true);
+  assert.equal(isCodexRuntimeStateChange("projects", { op: "add", to: { "/x": { trust_level: "trusted" } } }), true);
+  assert.equal(isCodexRuntimeStateChange("tui.model_availability_nux", { op: "add", to: { "gpt-6": 1 } }), true);
+  assert.equal(isCodexRuntimeStateChange("hooks", { op: "remove", from: { state: {} } }), true);
+
+  // genuine user config must still surface
+  assert.equal(isCodexRuntimeStateChange("hooks", { op: "add", to: { custom: { command: "x" } } }), false);
+  assert.equal(isCodexRuntimeStateChange("hooks", { op: "add", to: { state: {}, custom: {} } }), false);
+  // leaf paths keep their existing contract
+  assert.equal(isCodexRuntimeStateChange("hooks.state./abs/hooks.json:stop:0:0"), true);
+  assert.equal(isCodexRuntimeStateChange("tui.terminal_title", { op: "change", to: ["thread"] }), false);
 });
 
 // ─── runtime state survives prepare regeneration ────────────────────────

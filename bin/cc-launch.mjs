@@ -2803,6 +2803,28 @@ function isCodexRuntimeStatePath(path) {
     || path.startsWith("tui.model_availability_nux.");
 }
 
+// Leaf diffing reports the PARENT path, not leaves, when one side lacks the
+// whole subtree (e.g. baseline has no hooks, the first session writes
+// [hooks.state] → { path: "hooks", op: "add" }). The path-only filter above
+// then misses it (`"hooks"` does not start with `"hooks.state."`), and the
+// runtime write is mistaken for a user edit — the 2026-10-18 "every launch
+// asks to sync hooks" bug. Classify such whole-subtree changes by value:
+// - projects: every entry is a CLI-written trust record;
+// - hooks: runtime ONLY when the table holds nothing but `state` (hook
+//   definitions live in hooks.json, not config.toml) — any other key means
+//   real user hook config, which must keep syncing;
+// - tui.model_availability_nux: the whole table is one-shot nux markers.
+// `change` is optional so existing path-only callers keep working.
+function isCodexRuntimeStateChange(path, change) {
+  if (isCodexRuntimeStatePath(path)) return true;
+  if (path === "projects" || path === "tui.model_availability_nux") return true;
+  if (path === "hooks") {
+    const value = change?.op === "remove" ? change.from : change?.to;
+    return isPlainObject(value) && Object.keys(value).every((k) => k === "state");
+  }
+  return false;
+}
+
 // Carry the instance's Codex-written runtime state (project trust, hook trust
 // hashes, TUI markers — isCodexRuntimeStatePath) across a full config.toml
 // regeneration. prepare rebuilds the document from the DB, which would wipe
@@ -3410,12 +3432,18 @@ function isPluginChannelPath(path) {
 }
 
 // Format one diff entry as a display line for the warning/prompt lists.
+// target: "common" | "provider" | "blocked-sensitive" | "blocked-virtual".
+// The two blocked flavors must not share wording: a sensitive field is
+// intentionally not synced (edit it in cc-switch), whereas a virtual-row edit
+// has no DB row to land in and is rebuilt from desktop state next launch.
 function formatSettingsChangeLine(ch, target) {
   const mark = ch.op === "add" ? "+" : ch.op === "remove" ? "-" : "~";
   const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
   const targetTag =
     target === "common" ? " \x1b[2m(→ common config)\x1b[0m"
-    : target === "blocked" ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
+    : target === "blocked-virtual" ? " \x1b[33m(⚠ 聚合虚拟行 — 不写回数据库)\x1b[0m"
+    : target === "blocked-sensitive" || target === "blocked"
+      ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
     : " \x1b[2m(→ provider)\x1b[0m";
   return `${color}${mark} settings\x1b[0m ${ch.path}${targetTag}`;
 }
@@ -3460,7 +3488,7 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
     }
 
     const changes = diffSettingsLeaves(entry.preparedSettings, current).filter(
-      (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path)
+      (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path, ch)
         && !isCodexAggModelPath(adapter.appType, row.id, ch.path),
     );
     if (changes.length === 0) return; // faithful mirror — overwrite silently
@@ -3523,8 +3551,8 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
 //   channelOwnedPath(path) → paths owned by a dedicated channel (claude:
 //                              the plugin channel); the field channel must
 //                              yield them to avoid double reporting. [C6]
-//   runtimeStatePath(path) → runtime state the CLI itself writes into the
-//                              instance's main config file (codex: project
+//   runtimeStatePath(path, change?) → runtime state the CLI itself writes into
+//                              the instance's main config file (codex: project
 //                              trust / hook hashes / TUI markers; claude:
 //                              the /model pick). Filtered out of the guard
 //                              AND the upward settings sync — it's machine/
@@ -3532,7 +3560,10 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
 //                              carried across prepare's full regeneration
 //                              instead (codex: mergeCodexRuntimeState at the
 //                              write site; claude: the carry inside
-//                              buildClaudeEffectiveSettings).
+//                              buildClaudeEffectiveSettings). `change` lets a
+//                              filter recognize a whole-subtree add/remove,
+//                              where the leaf diff only reports the parent
+//                              path (see isCodexRuntimeStateChange).
 //   syncSettingsBack(drift) → write confirmed {commonPatch, providerPatches}
 //                              back into the DB. [C7]
 //   instructions         instance-level instruction-file capability for
@@ -3743,7 +3774,9 @@ const APP_ADAPTERS = {
     // Runtime state the Codex CLI writes itself (project trust, hook trust
     // hashes, TUI markers) — filtered from the guard and the upward sync, and
     // carried across prepare's full regeneration instead of synced as config.
-    runtimeStatePath: isCodexRuntimeStatePath,
+    // Change-aware so a subtree appearing whole (baseline lacked it → leaf
+    // diff reports "hooks"/"projects", not leaves) is still recognized.
+    runtimeStatePath: isCodexRuntimeStateChange,
 
     parseCommonSnippet(text) {
       try { return jsonNormalize(parseToml(text || "")); } catch { return null; }
@@ -3925,7 +3958,7 @@ function detectConfigDriftGeneric(adapter, state) {
       if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
       if (current === null || deepEqualJson(current, baseline)) continue; // unchanged/corrupt mirror
       const changes = diffSettingsLeaves(baseline, current).filter(
-        (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path)
+        (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path, ch)
           && !isCodexAggModelPath(adapter.appType, name, ch.path),
       );
       if (changes.length === 0) continue; // only channel-owned edits
@@ -3952,6 +3985,7 @@ function detectConfigDriftGeneric(adapter, state) {
   const providerPatches = {};
   const conflicts = {};
   const rejectedPaths = [];
+  const rejectedReasons = {}; // path → "sensitive" | "virtual" (prompt wording)
   let virtualBlocked = false; // provider-target changes refused for the virtual Stack entry
   for (const [path, voters] of votes.entries()) {
     voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
@@ -3973,7 +4007,13 @@ function detectConfigDriftGeneric(adapter, state) {
     );
     if (row.is_virtual && rj.length) virtualBlocked = true;
     Object.assign(commonPatch, cp);
-    if (rj.length) rejectedPaths.push(...rj.map((ch) => ch.path));
+    for (const ch of rj) {
+      rejectedPaths.push(ch.path);
+      // Mirror splitChangesByTarget's branches: the sensitive gate only
+      // fires on paths common owns; virtual-row refusal only on the rest.
+      rejectedReasons[ch.path] =
+        row.is_virtual && !pathExistsInSnippet(commonObj, ch.path) ? "virtual" : "sensitive";
+    }
     // pp is ONE change's nested patch object (path-keyed), not {pid: patch} —
     // merge it under the WINNING provider's id.
     if (Object.keys(pp).length) {
@@ -3995,7 +4035,10 @@ function detectConfigDriftGeneric(adapter, state) {
     changes: c.changes,
     mtimeMs: c.mtimeMs,
   }));
-  return { instances, commonPatch, providerPatches, conflicts, rejected: rejectedPaths, virtualBlocked };
+  return {
+    instances, commonPatch, providerPatches, conflicts,
+    rejected: rejectedPaths, rejectedReasons, virtualBlocked,
+  };
 }
 
 // Set of plugin keys ("name@source") with a user-scope install record — the
@@ -4701,7 +4744,8 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     for (const inst of d.instances) {
       const shown = inst.changes.slice(0, 15);
       for (const ch of shown) {
-        const target = blockedPaths.has(ch.path) ? "blocked"
+        const target = blockedPaths.has(ch.path)
+          ? (d.rejectedReasons?.[ch.path] === "virtual" ? "blocked-virtual" : "blocked-sensitive")
           : commonPaths.has(ch.path) ? "common"
           : providerPatchByPath.has(ch.path) ? "provider" : null;
         if (!target) continue; // losing vote / already equal in DB — not written
@@ -6406,6 +6450,8 @@ export const __test = Object.freeze({
   applyCodexStatusLineInjection,
   isCodexStatusLineChannelPath,
   isCodexRuntimeStatePath,
+  isCodexRuntimeStateChange,
+  formatSettingsChangeLine,
   mergeCodexRuntimeState,
   codexInstanceDirFor,
   resolvePathSegments,

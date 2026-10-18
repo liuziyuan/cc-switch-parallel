@@ -2,7 +2,7 @@ import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync, mkdirSync, writeFileSync,
+  mkdtempSync, mkdirSync, writeFileSync, rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,7 @@ process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
 const { __test } = await import("../bin/cc-launch.mjs");
-const { APP_ADAPTERS } = __test;
+const { APP_ADAPTERS, formatSettingsChangeLine, VIRTUAL_STACK_PROVIDER_ID } = __test;
 
 const CC = join(testHome, ".cc-switch");
 const DB = join(CC, "cc-switch.db");
@@ -162,6 +162,8 @@ test("codex field channel: sensitive change in common-held subtree is rejected, 
   const drift = codex.detectSettingsDrift(stateWith(id, baselineTree));
   assert.ok(drift, "all-rejected drift must still surface");
   assert.deepEqual(drift.rejected, ["env.MY_API_TOKEN"], "sensitive change must be blocked from common");
+  assert.deepEqual(drift.rejectedReasons, { "env.MY_API_TOKEN": "sensitive" },
+    "prompt must label this as a sensitive rejection");
   assert.deepEqual(drift.commonPatch, {}, "no common write for the blocked path");
   assert.equal(drift.providerPatches[id], undefined, "blocked path does not leak to provider either");
 
@@ -171,4 +173,83 @@ test("codex field channel: sensitive change in common-held subtree is rejected, 
   // claude regression: same generic pipeline still runs for claude (no
   // claude instances in this fixture → null drift proves the scan works).
   assert.equal(claude.detectSettingsDrift(stateWith(id, baselineTree)), null);
+});
+
+// 2026-10-18 regression: a fresh instance's baseline has no projects/hooks/
+// nux tables. The first Codex session materializes each of them WHOLE, so the
+// leaf diff reports the parent path and the path-only runtime filter missed
+// them — every subsequent launch asked to sync `hooks` and could never clear
+// the prompt (the virtual-row rejection writes nothing back).
+test("codex field channel: runtime state appearing as a whole subtree is not drift", () => {
+  const id = "p4";
+  const { dir, baselineTree } = makeProvider(id, 'model = "gpt-5"\n');
+  assert.equal(baselineTree.hooks, undefined, "fresh baseline carries no hooks table");
+  assert.equal(baselineTree.projects, undefined, "fresh baseline carries no projects table");
+
+  writeFileSync(join(dir, "config.toml"), stringifyToml({
+    ...baselineTree,
+    projects: { "/Users/x/repo": { trust_level: "trusted" } },
+    hooks: {
+      state: {
+        "/Users/u/.cc-switch/instances/codex/p4/hooks.json:stop:0:0": { trusted_hash: "sha256:abc" },
+      },
+    },
+    tui: {
+      ...baselineTree.tui,
+      screen_reader_detection_done: true,
+      model_availability_nux: { "gpt-6-sol": 0 },
+    },
+  }));
+
+  assert.equal(
+    codex.detectSettingsDrift(stateWith(id, baselineTree)), null,
+    "CLI-written runtime state must never surface as user drift",
+  );
+});
+
+test("codex field channel: a real [hooks] user config still syncs (filter stays narrow)", () => {
+  const id = "p5";
+  const { dir, baselineTree } = makeProvider(id, 'model = "gpt-5"\n');
+  writeFileSync(join(dir, "config.toml"), stringifyToml({
+    ...baselineTree,
+    hooks: { custom: { command: "x" } },
+  }));
+
+  const drift = codex.detectSettingsDrift(stateWith(id, baselineTree));
+  assert.ok(drift, "non-state hooks keys are user config, not runtime state");
+  assert.deepEqual(drift.providerPatches[id], { hooks: { custom: { command: "x" } } });
+  assert.deepEqual(drift.rejected, []);
+});
+
+test("codex field channel: virtual Stack row rejections are labeled virtual, not sensitive", () => {
+  const id = VIRTUAL_STACK_PROVIDER_ID;
+  const dir = join(CC, "instances", "codex", id);
+  mkdirSync(dir, { recursive: true });
+  const baselineTree = { model_provider: "custom", model_reasoning_effort: "high" };
+  writeFileSync(join(dir, "config.toml"), stringifyToml({
+    ...baselineTree,
+    model_reasoning_effort: "low",
+  }));
+
+  try {
+    // Dormant virtual row (instance dir exists, stack state irrelevant) —
+    // queryProviderById must surface it with is_virtual = true.
+    const drift = codex.detectSettingsDrift(stateWith(id, baselineTree));
+    assert.ok(drift, "a genuine provider-target edit must still surface");
+    assert.deepEqual(drift.rejected, ["model_reasoning_effort"]);
+    assert.deepEqual(drift.rejectedReasons, { model_reasoning_effort: "virtual" });
+    assert.equal(drift.virtualBlocked, true);
+    assert.equal(drift.providerPatches[id], undefined, "nothing can be written to a virtual row");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatSettingsChangeLine: blocked tags distinguish sensitive from virtual row", () => {
+  const ch = { path: "some.path", op: "change" };
+  const sensitive = formatSettingsChangeLine(ch, "blocked-sensitive");
+  assert.match(sensitive, /sensitive — NOT synced/);
+  const virtual = formatSettingsChangeLine(ch, "blocked-virtual");
+  assert.match(virtual, /聚合虚拟行/);
+  assert.doesNotMatch(virtual, /sensitive/);
 });
