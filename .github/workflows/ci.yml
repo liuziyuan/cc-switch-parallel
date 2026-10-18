@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  audit:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,3 +18,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm audit --audit-level=high
+      - run: npm test
+      # Catch build-only breakage (shebang, version injection, chmod) that
+      # unit tests never touch: they import bin/, not dist/.
+      - run: npm run build
+      - run: node dist/cc-launch.mjs --help
