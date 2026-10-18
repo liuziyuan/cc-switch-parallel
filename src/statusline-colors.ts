@@ -1,9 +1,9 @@
 // ─── statusline-colors (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { readFileSync } from "node:fs";
-import { atomicWrite } from "./fs-utils.mjs";
-import { isPlainObject } from "./json-utils.mjs";
-import { STATUSLINE_PREFS_PATH, STATUSLINE_PREFS_VERSION } from "./paths.mjs";
+import { atomicWrite } from "./fs-utils.js";
+import { isPlainObject } from "./json-utils.js";
+import { STATUSLINE_PREFS_PATH, STATUSLINE_PREFS_VERSION } from "./paths.js";
 
 // ─── Statusline tag colors (TUI preference) ────────────────────────────
 // The wrapper's provider tag color: "auto" (FNV-1a by name, the default) or

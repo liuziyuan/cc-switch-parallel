@@ -2,13 +2,13 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { providerUsesCommonConfig } from "../claude-config.mjs";
-import { atomicWrite } from "../fs-utils.mjs";
-import { isPlainObject, jsonDeepClone, jsonDeepMerge } from "../json-utils.mjs";
-import { HOME, INSTANCES_DIR, RESOURCES_DIR } from "../paths.mjs";
-import { isCodexAggregationProviderSettings, readStackState } from "./state.mjs";
-import { parseToml, stringifyToml } from "../toml.mjs";
-import { tomlDeepMerge } from "../toml-utils.mjs";
+import { providerUsesCommonConfig } from "../claude-config.js";
+import { atomicWrite } from "../fs-utils.js";
+import { isPlainObject, jsonDeepClone, jsonDeepMerge } from "../json-utils.js";
+import { HOME, INSTANCES_DIR, RESOURCES_DIR } from "../paths.js";
+import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
+import { parseToml, stringifyToml } from "../toml.js";
+import { tomlDeepMerge } from "../toml-utils.js";
 
 // ─── Codex config generation ──────────────────────────────────────────
 
@@ -79,7 +79,7 @@ function codexCatalogModelSpecs(settingsConfig) {
   const models = settingsConfig?.modelCatalog?.models;
   if (!Array.isArray(models)) return [];
   const seen = new Set();
-  const specs = [];
+  const specs: any[] = [];
   for (const mc of models) {
     const model = mc.model?.trim();
     if (!model || seen.has(model)) continue;
@@ -453,7 +453,7 @@ function codexAuthHasLoginMaterial(auth) {
 const CODEX_AGG_TOPLEVEL_FALLBACK_KEYS = ["base_url", "wire_api", "experimental_bearer_token", "requires_openai_auth"];
 
 function protectCodexAggregationIdentity(configObj, settingsConfig) {
-  let rowDoc = null;
+  let rowDoc: any = null;
   try { rowDoc = parseToml(settingsConfig?.config || ""); } catch {}
   if (!isPlainObject(rowDoc)) rowDoc = {};
   const pid = typeof rowDoc.model_provider === "string" ? rowDoc.model_provider : null;
@@ -500,7 +500,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
       const source = parseToml(commonSnippet.trim());
       tomlDeepMerge(target, source);
       effectiveConfigText = stringifyToml(target);
-    } catch (e) {
+    } catch (e: any) {
       console.error(`⚠ Codex common config merge failed: ${e.message}`);
     }
   }
@@ -519,7 +519,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
   let configObj;
   try {
     configObj = parseToml(effectiveConfigText || "");
-  } catch (e) {
+  } catch (e: any) {
     throw new Error(`Failed to parse Codex config.toml: ${e.message}`);
   }
 
@@ -562,7 +562,7 @@ function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provide
         const configObj2 = parseToml(finalConfigText);
         setCodexExperimentalBearerToken(configObj2, apiKey);
         finalConfigText = stringifyToml(configObj2);
-      } catch (e) {
+      } catch (e: any) {
         console.error(`⚠ Failed to inject bearer token: ${e.message}`);
       }
     }

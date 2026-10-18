@@ -1,12 +1,12 @@
 // ─── drift (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS, computeEnabledPluginsPatch } from "./adapters.mjs";
-import { loadSettings, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.mjs";
-import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.mjs";
-import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.mjs";
-import { loadSyncState, saveSyncState, sha256 } from "./sessions.mjs";
-import { collectPatchPaths } from "./upward.mjs";
+import { APP_ADAPTERS, computeEnabledPluginsPatch } from "./adapters.js";
+import { loadSettings, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.js";
+import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
+import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
+import { loadSyncState, saveSyncState, sha256 } from "./sessions.js";
+import { collectPatchPaths } from "./upward.js";
 
 // ─── Config drift detection & sync ────────────────────────────────────
 
@@ -16,8 +16,8 @@ import { collectPatchPaths } from "./upward.mjs";
 // single global hash, so syncing plugins for one instance can't silently mark
 // every other instance's common-config drift as resolved).
 // Returns { appType: [providerId, ...] } for each app with stale instances.
-function collectStaleInstanceIds(state) {
-  const stale = {};
+function collectStaleInstanceIds(state: any): Record<string, string[]> {
+  const stale: Record<string, string[]> = {};
   for (const adapter of Object.values(APP_ADAPTERS)) {
     const snippet = queryCommonConfig(adapter.appType) || "";
     const hash = sha256(snippet);
@@ -33,8 +33,8 @@ function collectStaleInstanceIds(state) {
 // Display-facing view of collectStaleInstanceIds: provider names instead of
 // ids. Returns { appType: [providerName, ...] } for each app with stale
 // instances.
-function detectCommonConfigDrift(state) {
-  const drift = {};
+function detectCommonConfigDrift(state: any): Record<string, string[]> {
+  const drift: Record<string, string[]> = {};
   for (const [appType, ids] of Object.entries(collectStaleInstanceIds(state))) {
     const nameById = new Map(queryProvidersByApp(appType).map((p) => [p.id, p.name]));
     drift[appType] = ids.map((id) => nameById.get(id) || id);
@@ -53,8 +53,8 @@ function detectCommonConfigDrift(state) {
 // time instead of silently hiding the problem. Returns refreshed provider
 // names. Does NOT touch running sessions — they still need a restart to pick
 // up the new config, which is what "restart to apply" in the prompt means.
-function refreshStaleInstances(state, staleByApp) {
-  const refreshed = [];
+function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>): string[] {
+  const refreshed: string[] = [];
   state.instances = state.instances || {};
   for (const [appType, ids] of Object.entries(staleByApp)) {
     const adapter = Object.values(APP_ADAPTERS).find((a) => a.appType === appType);
@@ -98,8 +98,8 @@ function refreshStaleInstances(state, staleByApp) {
 // overwrite guard and the settings-field sync diff. Adapters without
 // readInstanceSettingsSnapshot record v2-shaped entries and simply don't
 // participate in settings-field sync.
-function buildInstanceBaselineEntry(adapter, instanceDir, commonSnippet) {
-  const entry = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
+function buildInstanceBaselineEntry(adapter: any, instanceDir: string, commonSnippet: string): any {
+  const entry: any = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
   if (adapter.readInstanceSettingsSnapshot) {
     const snap = adapter.readInstanceSettingsSnapshot(instanceDir);
     if (snap) entry.preparedSettings = snap;
@@ -207,19 +207,19 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
 
   const commonDrift = detectCommonConfigDrift(state);
 
-  const pluginDrifts = {};
+  const pluginDrifts: Record<string, any> = {};
   for (const [cmd, adapter] of Object.entries(APP_ADAPTERS)) {
-    if (adapter.detectPluginDrift) {
-      const d = adapter.detectPluginDrift(state);
+    if ((adapter as any).detectPluginDrift) {
+      const d = (adapter as any).detectPluginDrift(state);
       if (d) pluginDrifts[cmd] = d;
     }
   }
 
   // Channel 2: non-plugin config fields (every adapter with C2-C5; v3 baselines).
-  const settingsDrifts = {};
+  const settingsDrifts: Record<string, any> = {};
   for (const [cmd, adapter] of Object.entries(APP_ADAPTERS)) {
-    if (adapter.detectSettingsDrift) {
-      const d = adapter.detectSettingsDrift(state);
+    if ((adapter as any).detectSettingsDrift) {
+      const d = (adapter as any).detectSettingsDrift(state);
       if (d) settingsDrifts[cmd] = d;
     }
   }
@@ -232,7 +232,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   if (quiet) return { synced: false, drifted: true };
 
   // Build the change summary (dedup added/removed vs toggled).
-  const lines = [];
+  const lines: string[] = [];
   for (const [appType, names] of Object.entries(commonDrift)) {
     lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
   }
@@ -295,7 +295,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   // TUI mode: interactive confirm, then write back on "y".
   const ok = await confirmSync(lines);
   if (ok) {
-    const syncedCmds = [];
+    const syncedCmds: string[] = [];
     for (const [cmd, d] of Object.entries(pluginDrifts)) {
       APP_ADAPTERS[cmd]?.syncPluginsBack?.(d);
       syncedCmds.push(cmd);

@@ -2,7 +2,7 @@
 
 import { writeFileSync, mkdirSync, existsSync, symlinkSync, readlinkSync, lstatSync, readdirSync, unlinkSync, renameSync, rmSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { HOME, INSTANCES_DIR } from "./paths.mjs";
+import { HOME, INSTANCES_DIR } from "./paths.js";
 
 // ─── Instance dir initialization ──────────────────────────────────────
 
@@ -19,7 +19,7 @@ function ensureSymlink(target, linkPath) {
         // Dirs: Claude Code auto-creates empty ones like plugins/ on first
         // launch; those are replaced by symlinks, while non-empty dirs stay
         // (warn) to avoid deleting user data.
-        if (stats.isDirectory()) {
+        if (stats!.isDirectory()) {
           const dirEntries = readdirSyncSafe(linkPath);
           if (dirEntries && dirEntries.length > 0) {
             console.error(`⚠ ${linkPath} already exists and is non-empty, skipping symlink (target: ${target})`);
@@ -29,7 +29,7 @@ function ensureSymlink(target, linkPath) {
         }
         return;
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(`⚠ Failed to replace ${linkPath} with symlink: ${e.message}`);
       return;
     }

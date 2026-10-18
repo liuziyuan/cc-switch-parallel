@@ -4,9 +4,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, basename } from "node:path";
 import { createHash } from "node:crypto";
-import { atomicWrite, readdirSyncSafe } from "./fs-utils.mjs";
-import { isPlainObject } from "./json-utils.mjs";
-import { SYNC_STATE_PATH } from "./paths.mjs";
+import { atomicWrite, readdirSyncSafe } from "./fs-utils.js";
+import { isPlainObject } from "./json-utils.js";
+import { SYNC_STATE_PATH } from "./paths.js";
 
 // ─── Tracked launch & session files ───────────────────────────────────
 
@@ -62,7 +62,7 @@ function removeSessionFile(sessionFilePath) {
 // single-file record from older versions. A file that fails to parse (parent
 // killed mid-write) yields { session: null } so the caller cleans it up.
 function readSessions(instanceDir) {
-  const out = [];
+  const out: { path: string; session: any }[] = [];
   const names = readdirSyncSafe(sessionsDir(instanceDir)) || [];
   for (const name of names) {
     if (!name.endsWith(".json") || name.startsWith(".tmp.")) continue;
@@ -102,7 +102,7 @@ function sessionIsAlive(session) {
 // view). Ids are stable across renames; consumers wanting the tag color read
 // statusline-preferences.json by id, exactly like the claude wrapper does.
 function buildLaunchExtraEnv(providerName, providerId) {
-  const env = {};
+  const env: Record<string, string> = {};
   if (providerName) env.CC_SWITCH_PROVIDER = String(providerName);
   if (providerId) env.CC_SWITCH_PROVIDER_ID = String(providerId);
   return env;
