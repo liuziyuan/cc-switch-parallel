@@ -118,7 +118,7 @@ Codex CLI 的状态栏是**原生内置字段选择式**（`config.toml` 的 `[t
 
 cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代理（默认 `127.0.0.1:15721`），把多家供应商的模型以 `ccs-claude-<key>--<model>` id 发布进 Claude Code 的 `/model` 列表，客户端内即可无感切换。`switch` 不进入/退出该模式（那是桌面端的动作），而是把它**当作并行中的一员来消费**——tmux 里 `[Z.AI GLM] [DeepSeek] [聚合]` 三类实例并存互不影响。
 
-**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组——首次会**自动创建**一个 env 指向本地代理的 provider（名 `Stack`，纯新增行，不动其他数据）。该行带 `stackManaged` 托管标记：桌面端改代理端口、切换默认供应商或清空模型列表后，**下次启动聚合实例时自动跟随**（从全局 `~/.claude/settings.json` 镜像 base URL、ccs 别名与 modelPicker）——手工创建的聚合行不受影响；没有现成行且聚合未激活时则不显示。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。
+**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组。聚合入口是一个**运行时虚拟 provider 行**（固定 id `__stack__`）：不写入 cc-switch 数据库（桌面端 GUI 不会显示任何 CLI 生成的行），每次打开 TUI / 启动时从 live-state 与全局 `~/.claude/settings.json` **现算**最新路由契约（base URL、ccs 别名、modelPicker）——桌面端改代理端口、切换默认供应商或清空模型列表后无需任何同步步骤，下次操作即生效。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。
 
 聚合实例的 statusline 有两点跟随模型切换：
 
@@ -127,15 +127,17 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 
 **限制与注意**：
 
-- 聚合代理随 cc-switch 桌面进程生灭——桌面端退出后聚合实例会指向已死的代理地址（上游退出时只恢复全局配置，不会碰 `switch` 的实例文件），重开桌面端即恢复。`switch` 启动聚合实例前会对代理地址做一次 300ms TCP 探测，不可达时在 stderr 警告（不阻塞启动）；`switch doctor` 亦含聚合检查（live-state 契约版本、成员行在位、Stack 行、代理可达性）。
+- 聚合代理随 cc-switch 桌面进程生灭——桌面端退出后聚合实例会指向已死的代理地址（上游退出时只恢复全局配置，不会碰 `switch` 的实例文件），重开桌面端即恢复。`switch` 启动聚合实例前会对代理地址做一次 300ms TCP 探测，不可达时在 stderr 警告（不阻塞启动）；`switch doctor` 亦含聚合检查（live-state 契约版本、成员行在位、虚拟入口派生、代理可达性）。
 - `/model` 的聚合列表来自桌面端写进全局 `~/.claude/settings.json` 的 `modelPicker` 键；`switch` 在每次启动聚合实例时从全局同步它，所以桌面端改聚合名单后**重进实例**即可见（运行中的会话不自动跟）。桌面端把列表清空（恢复内置模型）同样是合法状态——实例的聚合列表随之清空，不会沿用旧快照。
-- 聚合 provider 行只承载路由（loopback 地址、代理凭据、`ccs` 模型别名），不含通用配置内容——`switch` 启动聚合实例时**始终合并通用配置**（hooks、permissions 等，与普通 provider 一致）；路由身份 env（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`）与 `ccs` 模型别名以聚合行为准，通用配置覆盖不了它们。桌面端在该行显式关闭「使用通用配置」仍然生效。
-- 桌面端关闭聚合后，Stack provider 行仍在（TUI 显示「未激活」；成员行已删时显示「N 个成员缺失」），实例照常启动但代理不在——请回到普通 provider 实例。托管行实例的 `/model` 不再列指向死代理的 ccs 旧条目。
+- 聚合入口只承载路由（loopback 地址、代理凭据、`ccs` 模型别名），不含通用配置内容——`switch` 启动聚合实例时**始终合并通用配置**（hooks、permissions 等，与普通 provider 一致）；路由身份 env（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`）与 `ccs` 模型别名以聚合入口为准，通用配置覆盖不了它们。在桌面端对聚合行显式关闭「使用通用配置」仍然生效。
+- 桌面端关闭聚合后，聚合入口仍在（TUI 显示「未激活」；成员行已删时显示「N 个成员缺失」），实例照常启动但代理不在——请回到普通 provider 实例。聚合实例的 `/model` 不再列指向死代理的 ccs 旧条目。
+- 实例编辑写回（`switch sync`）对聚合入口不生效：provider 侧改动会被标记为 blocked 并说明原因（虚拟行不落库，实例配置每次启动由桌面端状态重新生成）；落在通用配置上的改动照常写回。
+- **从 ≤ 0.19 升级**：首次运行会自动清理旧版写入数据库的聚合 provider 行（幂等），并把启动历史、置顶与 statusline 颜色迁移到虚拟 id `__stack__`；正在桌面端使用中的聚合行（is_current）会保留并提示。运行中的旧聚合实例不受影响，其 UUID 目录在会话结束后可用 `switch clean` 清理。
 - Codex 侧暂不支持（其模型目录机制需彻底重启，玩法受限）。
 
 ## 工作原理
 
-1. 从 `~/.cc-switch/cc-switch.db`（SQLite，由 cc-switch 管理）读取 provider 配置
+1. 从 `~/.cc-switch/cc-switch.db`（SQLite，由 cc-switch 管理）读取 provider 配置；聚合（Stack）入口除外——它是运行时虚拟行（id `__stack__`），由 live-state 与全局配置现算，不落库
 2. 复刻 cc-switch 的 Rust 后端逻辑：通用配置的 JSON/TOML 深度合并、清理、Codex 模型目录生成
 3. 在 `~/.cc-switch/instances/<app>/<provider-id>/` 创建每个 provider 的实例目录
 4. 写入隔离的 `settings.json` / `config.toml` / `auth.json` / `cc-switch-model-catalog.json`
