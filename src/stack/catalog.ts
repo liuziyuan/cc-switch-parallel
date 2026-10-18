@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { providerUsesCommonConfig } from "../claude-config.js";
 import { atomicWrite } from "../fs-utils.js";
-import { isPlainObject, jsonDeepClone, jsonDeepMerge } from "../json-utils.js";
+import { isPlainObject, jsonDeepClone, mergeCommonOverProvider } from "../json-utils.js";
 import { HOME, INSTANCES_DIR, RESOURCES_DIR } from "../paths.js";
 import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
 import { parseToml, stringifyToml } from "../toml.js";
@@ -361,7 +361,16 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
     let changed = false;
     for (const key of ["projects", "hooks"]) {
       if (isPlainObject(current[key])) {
-        generated[key] = jsonDeepMerge(isPlainObject(generated[key]) ? generated[key] : {}, current[key]);
+        // Live values win over the DB echo: the instance file is what the
+        // Codex CLI actually wrote (project trust, hook trust hashes). The
+        // old jsonDeepMerge call was target-wins, so a stale hooks.state /
+        // projects entry echoed in common/DB rolled the live hash back on
+        // every prepare and re-triggered trust prompts. mergeCommonOverProvider
+        // recurses with source(=current) winning and keeps generated-only keys.
+        generated[key] = mergeCommonOverProvider(
+          isPlainObject(generated[key]) ? generated[key] : {},
+          current[key],
+        );
         changed = true;
       }
     }
@@ -373,7 +382,7 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
     }
     if (isPlainObject(curTui.model_availability_nux)) {
       generated.tui = isPlainObject(generated.tui) ? generated.tui : {};
-      generated.tui.model_availability_nux = jsonDeepMerge(
+      generated.tui.model_availability_nux = mergeCommonOverProvider(
         isPlainObject(generated.tui.model_availability_nux) ? generated.tui.model_availability_nux : {},
         curTui.model_availability_nux,
       );
