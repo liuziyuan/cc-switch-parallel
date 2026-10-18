@@ -187,6 +187,17 @@ function runWrapper(providerId, stdinJson) {
   );
 }
 
+test("wrapper source: TTY stdin is not read; relay is killed with SIGKILL", () => {
+  const src = buildStatusLineWrapperScript("P", "/g/settings.json", null, "auto");
+  // Manually running the wrapper in a terminal must not block on fd 0.
+  assert.ok(src.includes("process.stdin.isTTY === true"));
+  assert.ok(src.includes("if (!STDIN_IS_TTY)"));
+  // A relay that ignores SIGTERM must not hold the statusline forever, and a
+  // large statusline output must not overflow spawnSync's default buffer.
+  assert.ok(src.includes('killSignal: "SIGKILL"'));
+  assert.ok(src.includes("maxBuffer: 8 * 1024 * 1024"));
+});
+
 test("wrapper: tags the first line of the global statusline, relays the rest", () => {
   cleanInstance("p-e2e");
   writeGlobalSettings({ type: "command", command: "awk '{print \"HUD:\" $0}'" });
