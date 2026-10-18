@@ -118,7 +118,7 @@ Codex CLI's status line is a **native built-in-item picker** (`[tui] status_line
 2. Replicates cc-switch's Rust backend logic: JSON/TOML deep merge of common config, sanitize, Codex model catalog generation
 3. Creates a per-provider instance directory at `~/.cc-switch/instances/<app>/<provider-id>/`
 4. Writes the isolated `settings.json` / `config.toml` / `auth.json` / `cc-switch-model-catalog.json`
-5. Symlinks shared resources (plugins, skills, projects, credentials) from global `~/.claude/` — **zero data duplication**
+5. Symlinks shared resources (plugins, skills, projects, plans, credentials) from global `~/.claude/` — **zero data duplication**
 6. Sets `CLAUDE_CONFIG_DIR` / `CODEX_HOME` and `exec`s the CLI
 
 ### Instance directory layout
@@ -130,6 +130,8 @@ Codex CLI's status line is a **native built-in-item picker** (`[tui] status_line
   │                              relay of your global statusline tool)
   ├── .credentials.json → ~/.claude/.credentials.json  (symlink, shared)
   ├── projects → ~/.claude/projects                      (symlink, shared)
+  ├── plans → ~/.claude/plans                            (symlink, shared; existing
+  │                              instance plans merged into the global dir on setup)
   ├── plugins → ~/.claude/plugins                         (symlink, shared)
   └── ...other symlinks (skills, cache, commands, etc.)
 
@@ -142,6 +144,8 @@ Codex CLI's status line is a **native built-in-item picker** (`[tui] status_line
   │                              for an editable per-instance file)
   └── ...other symlinks (skills, rules, caches, etc.)
 ```
+
+Claude Code writes plans to `$CLAUDE_CONFIG_DIR/plans/`. That directory is device-shared: when an instance is set up (launch or config refresh), cc-switch first merges any plans already in the instance into `~/.claude/plans` (identical name+content is deduplicated; same-name different content is kept as `<name>.<provider-id>.md` — never overwritten), then replaces the instance's `plans` with a symlink. Other instances migrate the same way on their next setup; no full scan is performed.
 
 Each instance is ~8KB — the heavy data (plugins, session history, credentials) is symlinked, not copied.
 

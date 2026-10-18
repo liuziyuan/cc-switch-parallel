@@ -150,7 +150,7 @@ Codex 聚合入口与 claude 同架构（同一个虚拟行 `__stack__`、同一
 2. 复刻 cc-switch 的 Rust 后端逻辑：通用配置的 JSON/TOML 深度合并、清理、Codex 模型目录生成
 3. 在 `~/.cc-switch/instances/<app>/<provider-id>/` 创建每个 provider 的实例目录
 4. 写入隔离的 `settings.json` / `config.toml` / `auth.json` / `cc-switch-model-catalog.json`
-5. 从全局 `~/.claude/` 软链接共享资源（插件、技能、项目、凭据）—— **零数据复制**
+5. 从全局 `~/.claude/` 软链接共享资源（插件、技能、项目、计划 plans、凭据）—— **零数据复制**
 6. 设置 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 并 `exec` 启动 CLI
 
 ### 实例目录布局
@@ -162,6 +162,8 @@ Codex 聚合入口与 claude 同架构（同一个虚拟行 `__stack__`、同一
   │                              转发你的全局 statusline 工具）
   ├── .credentials.json → ~/.claude/.credentials.json  （软链接，共享）
   ├── projects → ~/.claude/projects                      （软链接，共享）
+  ├── plans → ~/.claude/plans                            （软链接，共享；首次启动时
+  │                              把实例内已有 plan 合并到全局）
   ├── plugins → ~/.claude/plugins                         （软链接，共享）
   └── ...其他软链接（skills、cache、commands 等）
 
@@ -173,6 +175,8 @@ Codex 聚合入口与 claude 同架构（同一个虚拟行 `__stack__`、同一
   │                                为可编辑的实例级文件）
   └── ...其他软链接（skills、rules、cache 等）
 ```
+
+Claude Code 把 plan 写到 `$CLAUDE_CONFIG_DIR/plans/`。该目录按设备共享：实例被初始化时（启动或配置刷新），cc-switch 先把实例里已有的 plan 合并进 `~/.claude/plans`（同名同内容去重；同名不同内容保留为 `<name>.<provider-id>.md`，绝不覆盖），再把实例的 `plans` 替换为软链接。其他实例在各自下次初始化时完成同样的迁移，不做全量扫描。
 
 每个实例仅约 8KB —— 重数据（插件、会话历史、凭据）都是软链接，而非复制。
 
