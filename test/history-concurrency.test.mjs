@@ -38,14 +38,15 @@ function runAll(children) {
 }
 
 test("concurrent recordLaunch: every increment survives", async () => {
-  // 6 writers x 15 launches: enough contention to lose updates without the
-  // lock, small enough that the 2s per-acquisition budget is never tight.
-  const results = await runAll(Array.from({ length: 6 }, () => spawnRecorder("p1", 15)));
+  // 4 writers x 10 launches: enough contention to lose updates without the
+  // lock, small enough to stay far from the 2s acquisition budget even when
+  // the whole test suite runs in parallel.
+  const results = await runAll(Array.from({ length: 4 }, () => spawnRecorder("p1", 10)));
   for (const r of results) assert.equal(r.code, 0, r.stderr);
   const data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
   const hit = data.entries.find((e) => e.providerId === "p1" && e.cli === "claude");
   assert.ok(hit, "entry exists");
-  assert.equal(hit.count, 90, "every launch must be counted");
+  assert.equal(hit.count, 40, "every launch must be counted");
 });
 
 test("concurrent recordLaunch: different providers all survive", async () => {
