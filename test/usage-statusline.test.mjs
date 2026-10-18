@@ -33,6 +33,7 @@ const {
   ensureStackProviderRow,
   probeTcpReachable,
   aggregationDoctorChecks,
+  stackBillingMemberName,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -777,6 +778,22 @@ test("aggregation doctor checks: off / unparseable / version gate / live-stack m
   assert.equal(byLabel(checks)["aggregation proxy"], undefined);
   removeLiveState();
   sql(`DELETE FROM providers WHERE id IN ('m-ds', 'agg-doc')`);
+});
+
+test("aggregation unit: stackBillingMemberName decode matrix (ps billing suffix)", () => {
+  setupStackDB([
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+  ]);
+  // zhipu maps to a row that does not exist — the dangling case
+  const stack = { keys: { deepseek: "m-ds", zhipu: "m-gone" }, members: ["m-ds"], proxyRoute: null };
+  assert.equal(stackBillingMemberName("ccs-claude-deepseek--deepseek-chat[1M]", stack), "DeepSeek");
+  assert.equal(stackBillingMemberName("CCS-CLAUDE-DEEPSEEK--x", stack), "DeepSeek", "uppercase id decodes the same");
+  assert.equal(stackBillingMemberName("ccs-claude-zhipu--glm", stack), null, "key → deleted provider row");
+  assert.equal(stackBillingMemberName("ccs-claude-nope--x", stack), null, "unregistered key");
+  assert.equal(stackBillingMemberName("glm-5.3[1M]", stack), null, "non-ccs pick has no member to name");
+  assert.equal(stackBillingMemberName("", stack), null);
+  assert.equal(stackBillingMemberName("ccs-claude-deepseek--x", null), null, "stack off");
+  sql(`DELETE FROM providers WHERE id = 'm-ds'`);
 });
 
 test("aggregation: modelPicker syncs into effective settings only while stack is live", () => {
