@@ -138,8 +138,10 @@ async function main() {
     try {
       await runTUI();
     } catch (e: any) {
-      if (e.message !== "Cancelled") console.error(`✗ ${e.message}`);
-      process.exit(1);
+      // Ctrl-C during the pre-TUI sync prompt carries exitCode 130 and is
+      // intentionally quiet; everything else is reported.
+      if (e.message !== "Cancelled" && e.exitCode !== 130) console.error(`✗ ${e.message}`);
+      process.exit(e.exitCode ?? 1);
     }
     return;
   }
@@ -151,6 +153,15 @@ async function main() {
 
   if (args[0] === "sync") {
     const result = await detectAndPromptSync({ tui: true });
+    if (result.needsTTY) {
+      console.error("✗ switch sync requires an interactive terminal — run it directly in a terminal.");
+      process.exit(1);
+    }
+    if (result.interrupted) process.exit(130);
+    if (result.inputClosed) {
+      console.error("✗ Input closed before confirmation — no changes written.");
+      process.exit(1);
+    }
     if (!result.drifted) console.log("No config drift detected — everything in sync.");
     else if (result.synced) {
       console.log(

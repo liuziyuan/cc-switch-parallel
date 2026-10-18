@@ -160,11 +160,12 @@ async function runUncustomize(args) {
       console.error("✗ uncustomize requires an interactive terminal (or use --yes).");
       process.exit(1);
     }
-    const ok = await confirmSync(
+    const outcome = await confirmSync(
       [`Remove instance ${inst.fileName} for "${row.name}"?`, `  ${file}`],
       "Remove it?",
     );
-    if (!ok) {
+    if (outcome === "interrupt") process.exit(130);
+    if (outcome !== "yes") {
       console.error("aborted");
       process.exit(1);
     }

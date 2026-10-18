@@ -626,7 +626,18 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
 // mode, and the full original argv (extraArgs) so `--continue`-style flags
 // survive into the next quick launch.
 async function runTUI() {
-  await detectAndPromptSync({ tui: true });
+  const sync = await detectAndPromptSync({ tui: true });
+  if (sync.interrupted) {
+    const err: any = new Error("Interrupted");
+    err.exitCode = 130;
+    throw err;
+  }
+  if (sync.inputClosed) {
+    const err: any = new Error("Input closed before confirmation");
+    err.exitCode = 1;
+    throw err;
+  }
+  if (sync.needsTTY) throw new Error("TUI mode requires an interactive terminal.");
   // One-time migration of pre-virtualization aggregation rows (idempotent).
   reportLegacyStackCleanup(cleanupLegacyStackRows());
 

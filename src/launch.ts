@@ -24,7 +24,16 @@ async function launchProvider(cmd: string, providerName: string, extraArgs: stri
     process.exit(1);
   }
 
-  await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
+  const sync = await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
+  if (sync.interrupted) process.exit(130);
+  if (sync.inputClosed) {
+    console.error("✗ Input closed before confirmation — launch aborted.");
+    process.exit(1);
+  }
+  if (sync.needsTTY) {
+    console.error("✗ --sync requires an interactive terminal.");
+    process.exit(1);
+  }
 
   // One-time migration of pre-virtualization aggregation rows — command mode
   // never opens the TUI, so the claude launch path carries its own pass.
