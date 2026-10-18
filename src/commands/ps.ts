@@ -7,7 +7,7 @@ import { collectInstances } from "./doctor.js";
 import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
 import { HOME } from "../paths.js";
-import { readSessions, saveSyncState, sessionIsAlive, withSyncStateLock } from "../sessions.js";
+import { readSessions, saveSyncState, sessionIsAlive, sessionLiveness, withSyncStateLock } from "../sessions.js";
 import { isAggregationProviderSettings, readStackState } from "../stack/state.js";
 
 // ─── switch ps ────────────────────────────────────────────────────────
@@ -71,13 +71,15 @@ function runPs() {
   const running: { inst: InstanceInfo; session: any }[] = [];
   for (const inst of collectInstances()) {
     for (const { path, session } of readSessions(inst.path)) {
-      if (sessionIsAlive(session)) {
-        running.push({ inst, session });
-      } else {
+      // Only a provably dead session is cleaned up. "unknown" (EPERM,
+      // unreadable lstart) stays visible and is never deleted.
+      if (sessionLiveness(session) === "dead") {
         // A crashed parent (kill -9) leaves no exit event behind — clean up
         // here. Only the dead session's own file, never its siblings.
         try { unlinkSync(path); } catch {}
+        continue;
       }
+      running.push({ inst, session });
     }
   }
   if (!running.length) {

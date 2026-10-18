@@ -190,7 +190,7 @@ Usage:
   switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
   switch sync                           Detect & sync config drift (plugins, settings fields, common config)
   switch doctor                         Diagnose the environment
-  switch clean [--all]                  Remove instance directories
+  switch clean [--all] [--force]        Remove instance directories (refuses live sessions; --force overrides)
   switch ps                             List running switch-launched sessions
   switch customize [claude|codex] <provider>   Instance-only instructions file (CLAUDE.md / AGENTS.md; opens editor)
   switch uncustomize [claude|codex] <provider> [--yes]  Back to the shared global instructions file

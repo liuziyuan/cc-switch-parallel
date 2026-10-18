@@ -11,6 +11,7 @@ import { queryCommonConfig, queryDB, queryProviderById, queryProvidersByApp } fr
 import { lstatSyncSafe, readdirSyncSafe } from "../fs-utils.js";
 import { pruneInstanceSettingsBackups } from "../guard.js";
 import { isPlainObject } from "../json-utils.js";
+import { readSessions, sessionLiveness } from "../sessions.js";
 import { DB_PATH, INSTANCES_DIR, LIVE_STATE_PATH, SYNC_STATE_PATH } from "../paths.js";
 import { codexAggregationRoute } from "../stack/catalog.js";
 import { isAggregationProviderSettings, probeTcpReachable, readStackState, virtualStackProviderFor } from "../stack/state.js";
@@ -39,6 +40,32 @@ function collectInstances(): InstanceInfo[] {
     }
   }
   return instances;
+}
+
+// Sessions that must block a clean: alive OR unknown (conservative — never
+// delete an instance whose process we cannot prove dead).
+function blockingSessions(instances: InstanceInfo[]) {
+  const blocked: { inst: InstanceInfo; session: any; status: string }[] = [];
+  for (const inst of instances) {
+    for (const { session } of readSessions(inst.path)) {
+      const status = sessionLiveness(session);
+      if (status === "dead") continue;
+      blocked.push({ inst, session, status });
+    }
+  }
+  return blocked;
+}
+
+function assertCleanable(instances: InstanceInfo[], force: boolean): boolean {
+  if (force) return true;
+  const blocked = blockingSessions(instances);
+  if (!blocked.length) return true;
+  console.error("✗ Refusing to remove instances with running sessions:");
+  for (const b of blocked) {
+    console.error(`    ${b.inst.appType}/${b.inst.name} (pid ${b.session.pid ?? "?"}, ${b.status})`);
+  }
+  console.error("  Exit those sessions first, or rerun with --force.");
+  return false;
 }
 
 // ─── aggregation doctor checks (cc-switch 4.0 Stack) ───────────────────
@@ -250,6 +277,7 @@ async function runDoctor(): Promise<void> {
 }
 
 async function runClean(args) {
+  const force = args.includes("--force");
   const instances = collectInstances();
   if (!instances.length) {
     console.log("No instance directories found.");
@@ -257,6 +285,9 @@ async function runClean(args) {
   }
 
   if (args.includes("--all") || args.includes("--yes")) {
+    // --all/--yes only skip the interactive selection; they never imply
+    // deleting a running instance's directory. --force is the explicit opt-in.
+    if (!assertCleanable(instances, force)) process.exit(1);
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
     pruneInstanceBaselines(instances);
     pruneInstanceSettingsBackups(instances);
@@ -275,18 +306,20 @@ async function runClean(args) {
   ];
   const choice = await tuiSelect("Select instance directory to remove", options);
   if (choice.value === "__all__") {
+    if (!assertCleanable(instances, force)) process.exit(1);
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
     pruneInstanceBaselines(instances);
     pruneInstanceSettingsBackups(instances);
     console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
   } else {
+    const targets = instances.filter((i) => i.path === choice.value);
+    if (!assertCleanable(targets, force)) process.exit(1);
     rmSync(choice.value, { recursive: true, force: true });
-    const removed = instances.filter((i) => i.path === choice.value);
-    pruneInstanceBaselines(removed);
-    pruneInstanceSettingsBackups(removed);
+    pruneInstanceBaselines(targets);
+    pruneInstanceSettingsBackups(targets);
     console.log(`✓ Removed ${choice.value}`);
   }
 }
 
 
-export { aggregationDoctorChecks, codexAggregationDoctorChecks, collectInstances, runClean, runDoctor, which };
+export { aggregationDoctorChecks, assertCleanable, blockingSessions, codexAggregationDoctorChecks, collectInstances, runClean, runDoctor, which };
