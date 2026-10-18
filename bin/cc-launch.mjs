@@ -1045,14 +1045,26 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, provi
   }
   applyKimiForCodingContextDefaults(effective, settingsConfig);
   effective = sanitizeClaudeSettings(effective);
-  // Aggregation instance (loopback base URL + live stack): sync the desktop
-  // app's modelPicker (the aggregation /model list) from the GLOBAL
-  // settings.json so member changes surface on every prepare without touching
-  // the provider row's snapshot. Runs inside buildClaudeEffectiveSettings so
+  // Aggregation instance (loopback + PROXY_MANAGED): sync the desktop app's
+  // modelPicker (the aggregation /model list) from the GLOBAL settings.json
+  // so member changes surface on every prepare without touching the provider
+  // row's snapshot. Three states: a populated picker syncs in; an EMPTY
+  // options array (the desktop app clearing back to built-in models) drops
+  // the picker too — an empty replaceBuiltInOptions list must not linger as
+  // a stale row snapshot; no modelPicker key at all leaves the row's value.
+  // With the stack OFF, a stackManaged row's snapshot would keep offering
+  // dead-proxy ccs ids in /model — drop it (hand-made rows keep theirs:
+  // user config is user config). Runs inside buildClaudeEffectiveSettings so
   // prepare and the guard's computeEffectiveSettings [C3] derive identically.
-  if (providerId !== undefined && isAggregationProviderSettings(settingsConfig) && readStackState("claude")) {
-    const picker = readGlobalModelPicker();
-    if (picker) effective.modelPicker = picker;
+  if (providerId !== undefined && isAggregationProviderSettings(settingsConfig)) {
+    const stack = readStackState("claude");
+    if (stack) {
+      const picker = readGlobalModelPicker();
+      if (picker && picker.options.length) effective.modelPicker = picker;
+      else if (picker) delete effective.modelPicker;
+    } else if (meta?.stackManaged === true) {
+      delete effective.modelPicker;
+    }
   }
   if (providerName !== undefined && providerId !== undefined) {
     applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta);
@@ -1933,11 +1945,15 @@ async function probeTcpReachable(baseUrl, timeoutMs = 300) {
 // ~/.claude/settings.json (`modelPicker`: replaceBuiltInOptions + options with
 // ccs ids). Aggregation instances sync it on every prepare so member changes
 // in the desktop app surface without touching the provider row's snapshot.
+// Contract: a picker with an `options` ARRAY is returned even when EMPTY —
+// the desktop app clearing the list back to built-in models is a legal
+// state, and callers honor it by dropping their own picker. null means
+// "no modelPicker at all" (absence — callers leave whatever they carry).
 function readGlobalModelPicker() {
   try {
     const g = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"));
     const picker = isPlainObject(g) ? g.modelPicker : null;
-    return isPlainObject(picker) && Array.isArray(picker.options) && picker.options.length ? picker : null;
+    return isPlainObject(picker) && Array.isArray(picker.options) ? picker : null;
   } catch {
     return null;
   }
@@ -1985,8 +2001,10 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
 // aggregation enabled but no loopback provider exists. Pure INSERT (never
 // overwrites), modeled after the upstream live projection: proxy base URL +
 // PROXY_MANAGED placeholder + the four alias tiers + modelPicker snapshot,
-// all read from the global settings.json the desktop app itself wrote. Returns
-// the new row's {id, name}, or null when creation is not possible/desired.
+// all read from the global settings.json the desktop app itself wrote. The
+// row's meta carries stackManaged:true — the launch-time mirror below keys
+// on it. Returns the new row's {id, name}, or null when creation is not
+// possible/desired.
 function ensureStackProviderRow() {
   const stack = readStackState("claude");
   if (!stack) return null;
@@ -2017,7 +2035,7 @@ function ensureStackProviderRow() {
     if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
   }
   const settings = { env };
-  if (picker) settings.modelPicker = picker;
+  if (picker && picker.options.length) settings.modelPicker = picker;
   // Avoid colliding with an unrelated provider that already owns the name.
   let name = "Stack";
   const taken = new Set(rows.map((r) => r.name));
@@ -2029,9 +2047,55 @@ function ensureStackProviderRow() {
   execDB(
     `INSERT INTO providers (id, app_type, name, settings_config, category, created_at, sort_index, meta, is_current, in_failover_queue) ` +
     `VALUES (${sqlQuote(id)}, 'claude', ${sqlQuote(name)}, ${sqlQuote(JSON.stringify(settings))}, NULL, ` +
-    `${Math.floor(Date.now() / 1000)}, ${Number(maxSort) + 1}, '{}', 0, 0)`,
+    `${Math.floor(Date.now() / 1000)}, ${Number(maxSort) + 1}, '{"stackManaged":true}', 0, 0)`,
   );
   return { id, name };
+}
+
+// Launch-time maintenance for auto-created Stack rows (meta.stackManaged):
+// while the desktop aggregation is live, MIRROR the routing contract from
+// the global ~/.claude/settings.json into the row — base URL, the ccs alias
+// tiers, and the picker snapshot. The desktop app re-points the proxy port
+// or swaps the default provider without ever touching our row, and a stale
+// row means dead-port launches forever (the row is only ever created, never
+// updated). Mirroring is additive-to-live: with the stack off, or when the
+// row lost its managed marker / its Stack signature (user re-purposed it),
+// the row is returned untouched — hand-made rows are never written. Returns
+// the (possibly updated) row so the caller's guard/prepare derive from the
+// fresh state in one pass.
+function syncStackManagedRow(row) {
+  let meta = null;
+  try { meta = JSON.parse(row.meta || "{}"); } catch { meta = null; }
+  if (!isPlainObject(meta) || meta.stackManaged !== true) return row;
+  let sc = null;
+  try { sc = JSON.parse(row.settings_config || "{}"); } catch { sc = null; }
+  if (!isPlainObject(sc) || !isAggregationProviderSettings(sc)) return row;
+  if (!readStackState("claude")) return row; // stack off — row stays as-is
+  let globalEnv = null;
+  try {
+    const g = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"));
+    if (isPlainObject(g) && isPlainObject(g.env)) globalEnv = g.env;
+  } catch {}
+  if (!globalEnv || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return row;
+  const env = { ...sc.env, ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL };
+  for (const k of AGGREGATION_MODEL_ALIAS_KEYS) {
+    // mirror semantics: a tier the desktop stopped publishing goes away too
+    if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
+    else delete env[k];
+  }
+  const settings = { ...sc, env };
+  const picker = readGlobalModelPicker();
+  if (picker && picker.options.length) settings.modelPicker = picker;
+  else delete settings.modelPicker;
+  const next = JSON.stringify(settings);
+  if (next === row.settings_config) return row; // nothing drifted — no write
+  try {
+    execDB(`UPDATE providers SET settings_config = ${sqlQuote(next)} ` +
+      `WHERE id = ${sqlQuote(row.id)} AND app_type = 'claude'`);
+  } catch {
+    return row; // DB hiccup — the stale row still launches; next launch retries
+  }
+  return { ...row, settings_config: next };
 }
 
 // TUI helper: the aggregation group for the claude provider list. Auto-creates
@@ -2058,10 +2122,15 @@ function buildClaudeAggregationGroup() {
   if (!aggRows.length) return null;
   const stack = readStackState("claude");
   const nameById = new Map(rows.map((r) => [r.id, r.name]));
-  const members = stack
-    ? [...new Set(stack.members)].map((id) => nameById.get(id)).filter(Boolean)
-    : [];
-  const memberText = members.length ? `（${members.join(" + ")}）` : stack ? "" : "（未激活）";
+  const memberIds = stack ? [...new Set(stack.members)] : [];
+  const members = memberIds.map((id) => nameById.get(id)).filter(Boolean);
+  // A member whose provider row is gone renders as a silent short-list
+  // today — say so, or the missing usage segment reads as a bug.
+  const missingCount = memberIds.length - members.length;
+  const missingText = stack && missingCount > 0 ? `，${missingCount} 个成员缺失` : "";
+  const memberText = members.length
+    ? `（${members.join(" + ")}${missingText}）`
+    : stack ? (missingCount > 0 ? `（${missingCount} 个成员缺失）` : "") : "（未激活）";
   return {
     ids: new Set(aggRows.map((r) => r.id)),
     labels: new Map(aggRows.map((r) => [r.id, `◆ 聚合 · ${r.name}${memberText}`])),
@@ -4972,6 +5041,11 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
     process.exit(1);
   }
 
+  // Managed Stack rows mirror the desktop app's live routing contract (base
+  // URL / ccs aliases / picker) BEFORE the guard and prepare run — both then
+  // derive from the fresh row in this same pass, with no second launch
+  // needed to converge. No-op for every other row.
+  if (adapter.appType === "claude") row = syncStackManagedRow(row);
   const settingsConfig = JSON.parse(row.settings_config || "{}");
   const meta = JSON.parse(row.meta || "{}");
   const category = row.category;
@@ -5840,6 +5914,7 @@ export const __test = Object.freeze({
   buildStackUsageWrapperLines,
   buildClaudeAggregationGroup,
   ensureStackProviderRow,
+  syncStackManagedRow,
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,

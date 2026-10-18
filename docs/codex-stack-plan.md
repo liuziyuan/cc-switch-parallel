@@ -1,4 +1,4 @@
-# Codex 聚合（Stack）支持 + GUI 隐藏 Stack 评估
+# Codex 聚合（Stack）支持
 
 ## Context
 
@@ -14,7 +14,7 @@
 - 从该列表启动的 Codex 实例使用各 provider 的真实上游，不经过 15721 聚合代理；
 - 用户无法在并行 Codex 实例里跨 DeepSeek / Z.AI GLM 切模型。
 
-另有一个独立问题：用户希望在 **cc-switch 桌面端 GUI** 的 provider 列表中隐藏自动创建的 Stack 行，但保留 `switch` TUI 里的入口。上游 `farion1231/cc-switch` 4.0.15 **不支持隐藏已保存的 provider**（`providers` 表无 hidden 字段，UI 只有搜索、排序、删除；`visibleApps` 只能隐藏整个 app）。
+GUI 隐藏 Stack 的独立方案（把聚合行移出 DB、改为运行时虚拟 provider）已拆分到 [`docs/virtual-provider-plan.md`](virtual-provider-plan.md)。
 
 > 基线提醒：当前工作区在 `fix/statusline-refresh-and-sideby-side` 分支，`bin/cc-launch.mjs` / `test/usage-statusline.test.mjs` 有约 70 行未提交改动（statusline refresh 优化）。实施前需先提交这部分工作，或另开 worktree，避免混入同一 PR。
 
@@ -90,32 +90,6 @@
 3. 关闭聚合后：TUI 标签显示 `（未激活）`，启动给出代理不可达警告但不阻断。
 4. 回归：普通 Codex provider 仍从 `settings_config.modelCatalog` 生成 catalog，行为不变。
 5. 改动走 PR（不直接 push main）。
-
----
-
-## 范围 B：在 GUI 隐藏 Stack（上游仓库，本仓库无法实现）
-
-### 结论
-
-上游 `farion1231/cc-switch` v4.0.15 **不支持**隐藏已保存的 provider：
-
-- `providers` 表无 `hidden/visible/archived/deleted` 字段；
-- `ProviderList` 只有搜索过滤，`ProviderCardActions` 只有 Duplicate/Test/Usage/Terminal/Delete；
-- 唯一名为 `hidden` 的是“添加供应商”时的预设隐藏；`visibleApps` 隐藏的是整个 app。
-
-### 可选方案与代码量
-
-| 方案 | 改动 | 代码量 |
-|---|---|---:|
-| A. 通用 `hidden` 字段（推荐给上游） | DB 字段 + 迁移、Rust/TS 类型、DAO、命令、ProviderList 过滤、卡片菜单、i18n、测试（8–12 个文件） | **120–220 行**，0.5–2 人日 |
-| B. 仅本地隐藏（不同步） | 隐藏 ID 列表存 `~/.cc-switch/settings.json`，ProviderList 过滤 | **60–100 行** |
-| C. 系统行默认隐藏 | 上游识别聚合/自动行（如 `PROXY_MANAGED` + loopback），GUI 默认不显示，但保留“显示系统行”开关 | **30–60 行**，最贴合当前需求 |
-
-### 与本仓库的关系
-
-- 隐藏应只影响 GUI；`switch` TUI **不过滤** hidden，否则入口消失。
-- 不建议手工改 DB 加标记：上游 schema/迁移不认，且桌面端同步、备份、迁移都可能覆盖。
-- 若上游实现为通用 `hidden` 字段，本仓库无需改动（CLI 继续全量列出）。
 
 ---
 
