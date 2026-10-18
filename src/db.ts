@@ -8,11 +8,18 @@ import type { ProviderRow } from "./types.js";
 
 // ─── DB queries ───────────────────────────────────────────────────────
 
+// sqlite's busy wait must be allowed to complete before the process timeout
+// kills it — with .timeout 3000 and a 2000ms process cap the lock wait could
+// never finish.
+const DB_BUSY_TIMEOUT_MS = 3000;
+const DB_PROC_TIMEOUT_MS = 5000;
+
 function queryDB(sql: string): any[] {
   try {
     const json = execFileSync("sqlite3", ["-json", DB_PATH, sql], {
       encoding: "utf8",
       maxBuffer: 50 * 1024 * 1024,
+      timeout: DB_PROC_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return JSON.parse(json || "[]");
@@ -28,10 +35,10 @@ function queryDB(sql: string): any[] {
 // 2s `timeout` option below only bounds the PROCESS, and can't make sqlite
 // wait out a lock held by the cc-switch desktop app mid-write.
 function execDB(sql: string): void {
-  execFileSync("sqlite3", [DB_PATH, ".timeout 3000", sql], {
+  execFileSync("sqlite3", [DB_PATH, `.timeout ${DB_BUSY_TIMEOUT_MS}`, sql], {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
-    timeout: 2000,
+    timeout: DB_PROC_TIMEOUT_MS,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
@@ -84,7 +91,7 @@ function queryProvidersByApp(appType: string): ProviderRow[] {
 function queryProvidersStrict(appType: string): ProviderRow[] {
   const json = execFileSync("sqlite3", ["-json", DB_PATH,
     `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
-  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  ], { encoding: "utf8", timeout: DB_PROC_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
   // Virtual row merges ONLY onto a successful read — a DB failure must
   // propagate untouched so history migration / alive snapshots stay honest.
   return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
@@ -133,4 +140,4 @@ function loadSettings() {
 }
 
 
-export { execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict, sqlQuote };
+export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict, sqlQuote };
