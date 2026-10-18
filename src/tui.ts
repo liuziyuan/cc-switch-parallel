@@ -9,6 +9,7 @@ import { QUICK_KEYS, entryKey, insertManualOrder, isDeadEntry, loadHistory, perm
 import { launchProvider } from "./launch.js";
 import { VIRTUAL_STACK_APPS } from "./paths.js";
 import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.js";
+import { clipFrame, fitLine, installTerminalGuard, sanitizeText } from "./terminal-utils.js";
 import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
@@ -68,6 +69,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     let selected = 0;
     let mode = "select"; // "select" | "param" | "pin" | "confirm" | "color"
     let lastDrawnLines = 0;
+    let lastNotice: any = null;
+    let cleaned = false;
+    let guard: { dispose: () => void } | null = null;
     let pinTarget: any = null; // {cli, providerId, provider, label} captured entering pin mode
     let confirmAction: any = null; // {kind:"remove"|"cleanup"|"launch", target} in confirm mode
     let paramEdit: any = null; // {q} Recent row being mode-edited — param mode, edit context
@@ -95,15 +99,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     // counted double, matching most terminal renderers).
     function fit(str, pad) {
       const cols = (process.stdout.columns || 80) - pad;
-      let w = 0;
-      let out = "";
-      for (const ch of str) {
-        const cw = ch.codePointAt(0) > 0xff ? 2 : 1;
-        if (w + cw > cols - 1) return out + "…";
-        w += cw;
-        out += ch;
-      }
-      return out;
+      // sanitizeText strips user-provided ANSI/control characters; fitLine
+      // truncates by display width (CJK/emoji) instead of code units.
+      return fitLine(sanitizeText(str), Math.max(1, cols));
     }
 
     // Lines for a given mode (without trailing newline). notice renders one
@@ -165,18 +163,21 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       } else if (m === "confirm") {
         lines.push("");
         const { kind, target } = confirmAction;
+        // Provider names are user-controlled text; strip control/ANSI before
+        // they reach the terminal (the surrounding styling is ours).
+        const provider = sanitizeText(target.provider);
         let head;
         if (kind === "launch") {
           // One keypress away from the adapter's full-auto flag — the only
           // confirm in the TUI that guards a launch rather than a deletion.
           const flag = APP_ADAPTERS[target.cli]?.fullAutoFlag ?? "--dangerously-skip-permissions";
-          head = `\x1b[33m⚠ "${target.provider}" would launch Full-auto (${flag})\x1b[0m — launch?`;
+          head = `\x1b[33m⚠ "${provider}" would launch Full-auto (${flag})\x1b[0m — launch?`;
         } else if (kind === "cleanup") {
           head = `Remove ${target.count} dead ${target.count === 1 ? "entry" : "entries"} from Recent?`;
         } else if (target.dead) {
-          head = `\x1b[31m✗ "${target.provider}" no longer exists in cc-switch\x1b[0m — remove from Recent?`;
+          head = `\x1b[31m✗ "${provider}" no longer exists in cc-switch\x1b[0m — remove from Recent?`;
         } else {
-          head = `Remove "${target.provider}" from Recent?`;
+          head = `Remove "${provider}" from Recent?`;
         }
         lines.push(`  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`);
       } else if (interactive) {
@@ -237,10 +238,16 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     }
 
     function render(m: any, notice: any = null) {
+      lastNotice = notice;
+      const cols = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      // Clip to the terminal height (keeping the last/notice row) and cap
+      // each line by display width, so no row soft-wraps and throws off the
+      // line count used for the next repaint.
+      const lines = clipFrame(buildLines(m, notice), rows).map((line) => fitLine(line, cols));
       if (lastDrawnLines > 0) {
         process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
       }
-      const lines = buildLines(m, notice);
       process.stdout.write(lines.join("\n") + "\n");
       lastDrawnLines = lines.length;
     }
@@ -250,7 +257,28 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     process.stdin.setRawMode(true);
     process.stdin.resume();
 
-    const onData = (data) => {
+    const onResize = () => {
+      try {
+        // A resize invalidates the old frame geometry entirely: clear, reset
+        // the line counter, and repaint instead of moving up by stale lines.
+        process.stdout.write("\x1b[2J\x1b[H");
+        lastDrawnLines = 0;
+        render(mode, lastNotice);
+      } catch {}
+    };
+    process.stdout.on("resize", onResize);
+
+    const onInputClosed = () => {
+      cleanup();
+      reject(new Error("Input closed"));
+    };
+    process.stdin.on("end", onInputClosed);
+    process.stdin.on("close", onInputClosed);
+    process.stdin.on("error", onInputClosed);
+
+    guard = installTerminalGuard({ cleanup });
+
+    function handleData(data) {
       const key = data.toString();
       if (key === "\x03") {
         cleanup();
@@ -555,20 +583,38 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         }
         return;
       }
+    }
+
+    const onData = (data) => {
+      // A throw inside any callback (history write, custom handler, DB read)
+      // used to escape the EventEmitter with raw mode still on.
+      try {
+        handleData(data);
+      } catch (e: any) {
+        cleanup();
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
     };
 
     function cleanup() {
-      process.stdin.setRawMode(false);
-      process.stdin.removeListener("data", onData);
+      if (cleaned) return;
+      cleaned = true;
+      try { process.stdin.setRawMode(false); } catch {}
+      try { process.stdin.removeListener("data", onData); } catch {}
+      try { process.stdin.removeListener("end", onInputClosed); } catch {}
+      try { process.stdin.removeListener("close", onInputClosed); } catch {}
+      try { process.stdin.removeListener("error", onInputClosed); } catch {}
+      try { process.stdout.removeListener("resize", onResize); } catch {}
       // pause() is required, not just removeListener: stdin is still in
       // flowing mode from the resume() at entry, and a flowing stream with no
       // data listeners keeps READING tty bytes (discarding them) — the spawned
       // CLI would lose keystrokes. Masked for years by spawnSync freezing the
       // event loop; surfaced when launch switched to async spawn.
-      process.stdin.pause();
+      try { process.stdin.pause(); } catch {}
       if (lastDrawnLines > 0) {
-        process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
+        try { process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`); } catch {}
       }
+      try { guard?.dispose(); } catch {}
     }
 
     process.stdin.on("data", onData);
@@ -580,7 +626,18 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
 // mode, and the full original argv (extraArgs) so `--continue`-style flags
 // survive into the next quick launch.
 async function runTUI() {
-  await detectAndPromptSync({ tui: true });
+  const sync = await detectAndPromptSync({ tui: true });
+  if (sync.interrupted) {
+    const err: any = new Error("Interrupted");
+    err.exitCode = 130;
+    throw err;
+  }
+  if (sync.inputClosed) {
+    const err: any = new Error("Input closed before confirmation");
+    err.exitCode = 1;
+    throw err;
+  }
+  if (sync.needsTTY) throw new Error("TUI mode requires an interactive terminal.");
   // One-time migration of pre-virtualization aggregation rows (idempotent).
   reportLegacyStackCleanup(cleanupLegacyStackRows());
 

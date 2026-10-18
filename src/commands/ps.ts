@@ -8,6 +8,7 @@ import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
 import { HOME } from "../paths.js";
 import { readSessions, saveSyncState, sessionIsAlive, sessionLiveness, withSyncStateLock } from "../sessions.js";
+import { displayWidth, padDisplay, parseTmuxPanes, sanitizeText } from "../terminal-utils.js";
 import { isAggregationProviderSettings, readStackState } from "../stack/state.js";
 
 // ─── switch ps ────────────────────────────────────────────────────────
@@ -51,20 +52,20 @@ function buildRunningSet() {
 }
 
 // tty → tmux session name, one lookup for the whole `ps` run. Empty map when
-// tmux is absent or errors — caller then falls back to the raw tty.
+// tmux is absent, hangs (bounded at 2s) or errors — caller then falls back to
+// the raw tty. Session names are sanitized by the parser.
 function tmuxSessionByTty() {
-  const map = new Map();
   try {
-    const r = spawnSync("tmux", ["list-panes", "-a", "-F", "#{pane_tty}\t#{session_name}"], { encoding: "utf8" });
-    if (r.status !== 0) return map;
-    for (const line of (r.stdout || "").split("\n")) {
-      // #{pane_tty} reports "/dev/ttysNNN"; ps(1) reports "ttysNNN". Normalize
-      // to the ps form so session.tty lookups hit.
-      const [tty, session] = line.split("\t");
-      if (tty && session) map.set(tty.replace(/^\/dev\//, ""), session);
-    }
-  } catch {}
-  return map;
+    const r = spawnSync("tmux", ["list-panes", "-a", "-F", "#{pane_tty}\t#{session_name}"], {
+      encoding: "utf8",
+      timeout: 2000,
+      maxBuffer: 1 << 20,
+    });
+    if (r.error || r.status !== 0) return new Map();
+    return parseTmuxPanes(r.stdout || "");
+  } catch {
+    return new Map();
+  }
 }
 
 function runPs() {
@@ -115,16 +116,16 @@ function runPs() {
     }
     return {
       cli: inst.appType,
-      name,
-      tmux: (session.tty && tmuxByTty.get(session.tty)) || session.tty || "-",
-      dir: shorten(session.cwd) || "-",
+      name: sanitizeText(name),
+      tmux: sanitizeText((session.tty && tmuxByTty.get(session.tty)) || session.tty || "-"),
+      dir: sanitizeText(shorten(session.cwd) || "-"),
       up: formatDuration(Date.now() - (session.startedAt || Date.now())),
-      args: Array.isArray(session.extraArgs) && session.extraArgs.length
+      args: sanitizeText(Array.isArray(session.extraArgs) && session.extraArgs.length
         ? ` ${session.extraArgs.join(" ")}`
-        : "",
+        : ""),
     };
   });
-  const w = (xs) => Math.max(...xs.map((x) => x.length), 1);
+  const w = (xs) => Math.max(...xs.map((x) => displayWidth(x)), 1);
   const wCli = w(rows.map((r) => r.cli));
   const wName = w(rows.map((r) => r.name));
   const wTmux = w(rows.map((r) => r.tmux));
@@ -132,7 +133,10 @@ function runPs() {
   const wUp = w(rows.map((r) => r.up));
   console.log("");
   for (const r of rows) {
-    console.log(`  ${r.cli.padEnd(wCli)}  ${r.name.padEnd(wName)}  ${r.tmux.padEnd(wTmux)}  ${r.dir.padEnd(wDir)}  up ${r.up.padEnd(wUp)}  ${r.cli}${r.args}`);
+    console.log(
+      `  ${padDisplay(r.cli, wCli)}  ${padDisplay(r.name, wName)}  ${padDisplay(r.tmux, wTmux)}  ` +
+      `${padDisplay(r.dir, wDir)}  up ${padDisplay(r.up, wUp)}  ${r.cli}${r.args}`,
+    );
   }
   console.log("");
 }

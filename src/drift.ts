@@ -6,6 +6,7 @@ import { loadSettings, queryCommonConfig, queryProviderById, queryProvidersByApp
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { loadSyncState, saveSyncState, sha256, withSyncStateLock } from "./sessions.js";
+import { classifyConfirmKey, fitLine, sanitizeAnsiLine, sanitizeText } from "./terminal-utils.js";
 import { parseJsonObject } from "./json-utils.js";
 import { collectPatchPaths } from "./upward.js";
 
@@ -205,31 +206,65 @@ function mergeAndSaveSyncState(
   return result === true;
 }
 
-// Interactive yes/no confirm (TTY only). Returns true on "y", false otherwise.
-function confirmSync(lines, question = "Sync these changes?") {
+// Interactive yes/no confirm (TTY only). Returns:
+//   yes       — user pressed y/Y
+//   no        — any other key (or a non-TTY caller)
+//   interrupt — Ctrl-C: the caller must abort, not continue as "no"
+//   eof       — stdin closed while waiting
+function confirmSync(
+  lines,
+  question = "Sync these changes?",
+  io: { stdin?: any; stdout?: any; stderr?: any } = {},
+): Promise<"yes" | "no" | "interrupt" | "eof"> {
+  const stdin = io.stdin || process.stdin;
+  const stdout = io.stdout || process.stdout;
+  const stderr = io.stderr || process.stderr;
   return new Promise((resolve) => {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      resolve(false);
+    if (!stdin.isTTY || !stdout.isTTY) {
+      resolve("no");
       return;
     }
-    for (const line of lines) process.stderr.write(`  ${line}\n`);
-    process.stderr.write(`\n  \x1b[1m${question}\x1b[0m [y/N] `);
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    const onData = (data) => {
-      const key = data.toString();
-      process.stdin.setRawMode(false);
-      process.stdin.removeListener("data", onData);
+    const cols = Math.max(20, (stderr.columns || stdout.columns || 80) - 2);
+    for (const line of lines) stderr.write(`  ${fitLine(sanitizeAnsiLine(line), cols)}\n`);
+    stderr.write(`\n  \x1b[1m${fitLine(sanitizeText(question), cols)}\x1b[0m [y/N] `);
+
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      try { stdin.setRawMode(false); } catch {}
+      stdin.removeListener("data", onData);
+      stdin.removeListener("end", onEnd);
+      stdin.removeListener("close", onEnd);
+      stdin.removeListener("error", onEnd);
       // pause() is required, not just removeListener: stdin stays in flowing
       // mode after the earlier resume(), and a flowing stream with no data
       // listeners still READS and DISCARDS tty bytes — the spawned CLI would
-      // lose keystrokes. (Masked for years by spawnSync freezing the event
-      // loop; surfaced when launch switched to async spawn.)
-      process.stdin.pause();
-      process.stderr.write(`${key.trim()}\n`);
-      resolve(/^y/i.test(key.trim()));
+      // lose keystrokes.
+      try { stdin.pause(); } catch {}
     };
-    process.stdin.on("data", onData);
+    const onData = (data) => {
+      const key = data.toString();
+      const outcome = classifyConfirmKey(key);
+      cleanup();
+      stderr.write(outcome === "interrupt" ? "^C\n" : `${key.trim()}\n`);
+      resolve(outcome);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve("eof");
+    };
+    try {
+      stdin.setRawMode(true);
+      stdin.resume();
+      stdin.on("data", onData);
+      stdin.on("end", onEnd);
+      stdin.on("close", onEnd);
+      stdin.on("error", onEnd);
+    } catch {
+      cleanup();
+      resolve("no");
+    }
   });
 }
 
@@ -351,9 +386,16 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     return { synced: false, drifted: true };
   }
 
-  // TUI mode: interactive confirm, then write back on "y".
-  const ok = await confirmSync(lines);
-  if (ok) {
+  // TUI mode: interactive confirm, then write back on "y". The TTY check is
+  // AFTER drift detection so a scripted `switch sync` with nothing to sync
+  // still exits 0 instead of demanding a terminal.
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return { synced: false, drifted: true, needsTTY: true };
+  }
+  const outcome = await confirmSync(lines);
+  if (outcome === "interrupt") return { synced: false, drifted: true, interrupted: true };
+  if (outcome === "eof") return { synced: false, drifted: true, inputClosed: true };
+  if (outcome === "yes") {
     const syncedCmds: string[] = [];
     for (const [cmd, d] of Object.entries(pluginDrifts)) {
       APP_ADAPTERS[cmd]?.syncPluginsBack?.(d);

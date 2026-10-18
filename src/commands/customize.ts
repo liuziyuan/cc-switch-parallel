@@ -8,6 +8,7 @@ import { queryProvider, queryProvidersByApp } from "../db.js";
 import { confirmSync } from "../drift.js";
 import { atomicWrite, lstatSyncSafe } from "../fs-utils.js";
 import { INSTANCES_DIR } from "../paths.js";
+import { buildEditorInvocation, editorExitCode } from "../terminal-utils.js";
 
 // ─── Instance-only instructions file (customize / uncustomize) ────────
 
@@ -116,15 +117,36 @@ function runCustomize(args) {
     }
     atomicWrite(file, inst.buildTemplate(globalText, globalPath));
   } else if (inst.refreshSnapshot) {
-    const refreshed = inst.refreshSnapshot(readFileSync(file, "utf8"), globalText, globalPath);
-    if (refreshed !== null) atomicWrite(file, refreshed);
+    // The file existed at lstat time but may vanish (or become unreadable)
+    // before this read — handle that instead of crashing with a stack trace.
+    let existing: string | null = null;
+    try {
+      existing = readFileSync(file, "utf8");
+    } catch (e: any) {
+      if (e?.code === "ENOENT") {
+        atomicWrite(file, inst.buildTemplate(globalText, globalPath));
+      } else {
+        console.error(`✗ Failed to read ${file}: ${e.message}`);
+        process.exit(1);
+      }
+    }
+    if (existing !== null) {
+      const refreshed = inst.refreshSnapshot(existing, globalText, globalPath);
+      if (refreshed !== null) atomicWrite(file, refreshed);
+    }
   }
-  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
-  const r = spawnSync(editor, [file], { stdio: "inherit" });
-  if (r.error) {
-    console.error(`✗ Failed to open editor "${editor}": ${r.error.message}`);
+  // Shell-parsed editor: supports `VISUAL="code -w"`. The file is passed as
+  // a positional argument, so its path is never interpreted by the shell.
+  const editor = (process.env.VISUAL || process.env.EDITOR || "vi").trim() || "vi";
+  const invocation = buildEditorInvocation(editor, file);
+  const r = spawnSync(invocation.command, invocation.args, { stdio: "inherit" });
+  const code = editorExitCode(r);
+  if (code !== 0) {
+    if (r.error) console.error(`✗ Failed to open editor "${editor}": ${r.error.message}`);
+    else if (r.signal) console.error(`✗ Editor terminated by ${r.signal}.`);
+    else console.error(`✗ Editor exited with status ${r.status}.`);
     console.error(`  Edit the file manually: ${file}`);
-    process.exit(1);
+    process.exit(code);
   }
   console.log(`✓ customized — applies to new sessions`);
   process.exit(0);
@@ -160,11 +182,12 @@ async function runUncustomize(args) {
       console.error("✗ uncustomize requires an interactive terminal (or use --yes).");
       process.exit(1);
     }
-    const ok = await confirmSync(
+    const outcome = await confirmSync(
       [`Remove instance ${inst.fileName} for "${row.name}"?`, `  ${file}`],
       "Remove it?",
     );
-    if (!ok) {
+    if (outcome === "interrupt") process.exit(130);
+    if (outcome !== "yes") {
       console.error("aborted");
       process.exit(1);
     }
