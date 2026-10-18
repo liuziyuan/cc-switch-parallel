@@ -4,6 +4,8 @@
 
 [English](README.md) | [中文](README_ZH.md)
 
+> **已支持 cc-switch 4.0+ 的聚合模式（Stack）。** 在桌面端开启聚合后，TUI 列表尾部会多出一个运行时虚拟入口 `Stack`——同一个实例即可在 `/model` 里使用多家供应商的模型，并与普通 provider 实例在同一台机器上并行运行。详见 [聚合模式](#聚合模式cc-switch-40)。
+
 > **前提：必须先安装并配置好 [cc-switch](https://github.com/farion1231/cc-switch)。** `switch` 本身不管理 provider —— 它从 cc-switch 的数据库读取你已配置好的 provider，在此基础上为 Claude Code 和 Codex 提供**并行打开**能力：每个 provider 拥有一个隔离的配置目录，因此多个 provider 可以同时在不同终端里运行。
 
 ## 它做什么
@@ -11,6 +13,8 @@
 如果你用 [cc-switch](https://github.com/farion1231/cc-switch) 管理多个 AI 供应商（例如 Claude Official、Zhipu GLM、GitHub Copilot），通常你必须**切换**当前供应商 —— 这会改动全局的 `~/.claude/settings.json` 或 `~/.codex/config.toml`，影响**所有**终端。
 
 `switch` 走了另一条路：每个终端通过 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 拥有自己隔离的配置目录，因此你可以**在一个终端跑 Claude Official，在另一个终端同时跑 Zhipu GLM**。
+
+cc-switch 4.0 起还提供**聚合模式（Stack）**：一个本地代理把多家供应商的模型发布进同一个 `/model` 列表，客户端内即可无感切换。`switch` 把聚合入口当作普通 provider 一样并行启动（TUI 列表尾部的 `◆ 聚合` 分组），与普通实例共存互不影响——聚合实例的 statusline 还会跟随 `/model` 的选择显示当前计费供应商。
 
 ## 安装
 
@@ -126,7 +130,7 @@ Codex CLI 的状态栏是**原生内置字段选择式**（`config.toml` 的 `[t
 
 cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代理（默认 `127.0.0.1:15721`），把多家供应商的模型以 `ccs-claude-<key>--<model>` id 发布进 Claude Code 的 `/model` 列表（Codex 侧为 `ccs-<key>/<model>`，见下文），客户端内即可无感切换。`switch` 不进入/退出该模式（那是桌面端的动作），而是把它**当作并行中的一员来消费**——tmux 里 `[Z.AI GLM] [DeepSeek] [聚合]` 三类实例并存互不影响。
 
-**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组。聚合入口是一个**运行时虚拟 provider 行**（固定 id `__stack__`）：不写入 cc-switch 数据库（桌面端 GUI 不会显示任何 CLI 生成的行），每次打开 TUI / 启动时从 live-state 与全局 `~/.claude/settings.json` **现算**最新路由契约（base URL、ccs 别名、modelPicker）——桌面端改代理端口、切换默认供应商或清空模型列表后无需任何同步步骤，下次操作即生效。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。
+**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组。聚合入口是一个**运行时虚拟 provider 行**（固定 id `__stack__`）：不写入 cc-switch 数据库（桌面端 GUI 不会显示任何 CLI 生成的行），每次打开 TUI / 启动时从 live-state 与全局 `~/.claude/settings.json` **现算**最新路由契约（base URL、ccs 别名、modelPicker）——桌面端改代理端口、切换默认供应商或清空模型列表后无需任何同步步骤，下次操作即生效。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。命令模式同样可启动：`switch Stack claude` / `switch Stack codex`（虚拟行的名字就是 `Stack`；数据库里已有同名 provider 时显示为 `Stack 2`）。
 
 聚合实例的 statusline 有两点跟随模型切换：
 
@@ -215,7 +219,7 @@ const APP_ADAPTERS = {
 
 **cc-switch 是必需项** —— 本项目是在它之上提供并行打开能力，缺少它无法运行。
 
-- [cc-switch](https://github.com/farion1231/cc-switch) 桌面应用，且已配置至少一个 provider
+- [cc-switch](https://github.com/farion1231/cc-switch) 桌面应用，且已配置至少一个 provider（聚合模式需 cc-switch 4.0+）
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI（`claude`）在 PATH 中
 - [Codex](https://github.com/openai/codex) CLI（`codex`）在 PATH 中（可选，用于 Codex 支持）
 - Node.js ≥ 18
