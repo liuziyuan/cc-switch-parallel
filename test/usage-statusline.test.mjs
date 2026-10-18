@@ -1600,6 +1600,19 @@ test("aggregation: wrapper source — stack tail inlines map, decode and makeTag
   assert.ok(src.includes("Z.AI GLM"));
 });
 
+test("wrapper source: usage cache temp files are unique per writer", () => {
+  const usageConfig = buildUsageQueryConfig(
+    resolveUsageIdentity(ZHIPU_SETTINGS, ZHIPU_META),
+    instanceFile(),
+    instanceFile("statusline-wrapper.mjs"),
+  );
+  const legacy = buildStatusLineWrapperScript("P", "/g/settings.json", null, "auto", usageConfig);
+  assert.ok(legacy.includes('USAGE.cachePath + ".tmp." + process.pid'));
+  const stackCfg = { defaultKey: "zhipu", names: { zhipu: "Z.AI GLM" }, map: { zhipu: usageConfig }, selfPath: "/w.mjs" };
+  const stacked = buildStatusLineWrapperScript("Stack", "/g/settings.json", null, "auto", null, stackCfg);
+  assert.ok(stacked.includes('cfg.cachePath + ".tmp." + process.pid'));
+});
+
 const DEEPSEEK_BALANCE_BODY = {
   is_available: true,
   balance_infos: [{ total_balance: "12.34", currency: "USD" }],
