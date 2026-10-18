@@ -5,7 +5,7 @@ import { APP_ADAPTERS, computeEnabledPluginsPatch } from "./adapters.js";
 import { loadSettings, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
-import { loadSyncState, saveSyncState, sha256 } from "./sessions.js";
+import { loadSyncState, saveSyncState, sha256, withSyncStateLock } from "./sessions.js";
 import { parseJsonObject } from "./json-utils.js";
 import { collectPatchPaths } from "./upward.js";
 
@@ -54,8 +54,10 @@ function detectCommonConfigDrift(state: any): Record<string, string[]> {
 // time instead of silently hiding the problem. Returns refreshed provider
 // names. Does NOT touch running sessions — they still need a restart to pick
 // up the new config, which is what "restart to apply" in the prompt means.
-function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>): string[] {
+function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>) {
   const refreshed: string[] = [];
+  const refreshedIds: Record<string, string[]> = {};
+  const removedIds: Record<string, string[]> = {};
   state.instances = state.instances || {};
   for (const [appType, ids] of Object.entries(staleByApp)) {
     const adapter = Object.values(APP_ADAPTERS).find((a) => a.appType === appType);
@@ -67,6 +69,7 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
       const row = queryProviderById(id, appType);
       if (!row) {
         delete state.instances[appType][id]; // provider gone — drop the ghost baseline
+        (removedIds[appType] ||= []).push(id);
         continue;
       }
       try {
@@ -86,13 +89,14 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
         state.instances[appType][row.id] = buildInstanceBaselineEntry(
           adapter, instanceDir, commonSnippet,
         );
+        (refreshedIds[appType] ||= []).push(row.id);
         refreshed.push(row.name);
       } catch {
         // best-effort: keep the old baseline so the drift stays visible.
       }
     }
   }
-  return refreshed;
+  return { refreshed, refreshedIds, removedIds };
 }
 
 // Build one baseline entry for an instance whose config was just (re)generated.
@@ -126,14 +130,15 @@ function buildInstanceBaselineEntry(adapter: any, instanceDir: string, commonSni
 // Best-effort: a failure here must never block a launch.
 function recordInstanceBaseline(adapter, providerId, instanceDir, commonSnippet) {
   try {
-    const state = loadSyncState();
-    state.instances = state.instances || {};
-    state.instances[adapter.appType] = state.instances[adapter.appType] || {};
-    state.instances[adapter.appType][providerId] = buildInstanceBaselineEntry(
-      adapter, instanceDir, commonSnippet,
-    );
-    state.version = 3;
-    saveSyncState(state);
+    withSyncStateLock((state) => {
+      state.instances = state.instances || {};
+      state.instances[adapter.appType] = state.instances[adapter.appType] || {};
+      state.instances[adapter.appType][providerId] = buildInstanceBaselineEntry(
+        adapter, instanceDir, commonSnippet,
+      );
+      state.version = 3;
+      saveSyncState(state);
+    });
   } catch {
     // best-effort: DB/disk hiccup — the next launch will retry.
   }
@@ -159,6 +164,45 @@ function snapshotSyncState(state, pluginSyncedCmds) {
     state.claude.enabledPlugins = enabled;
   }
   state.version = 3;
+}
+
+// Persist the sync result WITHOUT clobbering concurrent writers: the user
+// interaction can take arbitrarily long, so the state read at entry is stale
+// by now. Take the lock, re-read, and merge only what this run actually
+// touched — refreshed/removed instance baselines and, when the plugin channel
+// ran, the claude plugin baseline. Everything else stays as on disk.
+function mergeAndSaveSyncState(
+  local: any,
+  refreshedIds: Record<string, string[]>,
+  removedIds: Record<string, string[]>,
+  pluginSynced: boolean,
+) {
+  const result = withSyncStateLock((fresh) => {
+    fresh.instances = fresh.instances || {};
+    for (const [appType, ids] of Object.entries(removedIds || {})) {
+      for (const id of ids) {
+        if (fresh.instances[appType]) delete fresh.instances[appType][id];
+      }
+    }
+    for (const [appType, ids] of Object.entries(refreshedIds || {})) {
+      fresh.instances[appType] = fresh.instances[appType] || {};
+      for (const id of ids) {
+        const localEntry = local.instances?.[appType]?.[id];
+        if (!localEntry) continue;
+        const freshEntry = fresh.instances[appType][id];
+        // Another process may have refreshed the same instance later; keep
+        // the newer baseline.
+        if (!freshEntry || (localEntry.preparedAt || 0) >= (freshEntry.preparedAt || 0)) {
+          fresh.instances[appType][id] = localEntry;
+        }
+      }
+    }
+    if (pluginSynced && local.claude) fresh.claude = local.claude;
+    fresh.version = Math.max(3, fresh.version || 0);
+    saveSyncState(fresh);
+    return true;
+  });
+  return result === true;
 }
 
 // Interactive yes/no confirm (TTY only). Returns true on "y", false otherwise.
@@ -195,7 +239,7 @@ function confirmSync(lines, question = "Sync these changes?") {
 // { synced, drifted, refreshed? } — on a confirmed sync, `refreshed` lists the
 // provider names whose stale live configs were just regenerated in place.
 async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
-  const state = loadSyncState();
+  let state = loadSyncState();
 
   // First run: no plugin baseline yet — establish it silently so subsequent
   // plugin changes are detectable (don't report existing plugins as "added"
@@ -204,8 +248,16 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   // the flow: common-config drift for EVERY app is checked below, and
   // skipping it here used to hide codex staleness on the first run.
   if (!state?.claude?.installedPluginKeys) {
-    snapshotSyncState(state, ["claude"]);
-    saveSyncState(state);
+    // Re-check inside the lock: another terminal may have established the
+    // baseline between our load and this write.
+    const fresh = withSyncStateLock((s) => {
+      if (!s?.claude?.installedPluginKeys) {
+        snapshotSyncState(s, ["claude"]);
+        saveSyncState(s);
+      }
+      return s;
+    });
+    if (fresh) state = fresh;
     // fall through: the plugin baseline is now established, so the plugin
     // channel below won't misreport pre-existing plugins as "added" — but
     // per-instance baselines are simply absent until each instance is next
@@ -321,13 +373,18 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // gets its live config regenerated in place and its baseline refreshed,
     // so this prompt won't fire again on the next launch. Running sessions
     // still need a restart to pick up the new config.
-    const refreshed = refreshStaleInstances(state, collectStaleInstanceIds(state));
+    const refreshResult = refreshStaleInstances(state, collectStaleInstanceIds(state));
     snapshotSyncState(state, syncedCmds);
-    saveSyncState(state);
-    return { synced: true, drifted: true, refreshed };
+    const stateSaved = mergeAndSaveSyncState(
+      state, refreshResult.refreshedIds, refreshResult.removedIds, syncedCmds.includes("claude"),
+    );
+    return {
+      synced: true, drifted: true, refreshed: refreshResult.refreshed,
+      stateSkipped: !stateSaved,
+    };
   }
   return { synced: false, drifted: true };
 }
 
 
-export { buildInstanceBaselineEntry, collectStaleInstanceIds, confirmSync, detectAndPromptSync, detectCommonConfigDrift, recordInstanceBaseline, refreshStaleInstances, snapshotSyncState };
+export { buildInstanceBaselineEntry, collectStaleInstanceIds, confirmSync, detectAndPromptSync, detectCommonConfigDrift, mergeAndSaveSyncState, recordInstanceBaseline, refreshStaleInstances, snapshotSyncState };

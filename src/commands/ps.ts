@@ -7,7 +7,7 @@ import { collectInstances } from "./doctor.js";
 import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
 import { HOME } from "../paths.js";
-import { loadSyncState, readSessions, saveSyncState, sessionIsAlive } from "../sessions.js";
+import { readSessions, saveSyncState, sessionIsAlive, withSyncStateLock } from "../sessions.js";
 import { isAggregationProviderSettings, readStackState } from "../stack/state.js";
 
 // ─── switch ps ────────────────────────────────────────────────────────
@@ -141,15 +141,16 @@ function runPs() {
 // not fail the clean itself.
 function pruneInstanceBaselines(instances) {
   try {
-    const state = loadSyncState();
-    let changed = false;
-    for (const { name, appType } of instances) {
-      if (state.instances?.[appType]?.[name] !== undefined) {
-        delete state.instances[appType][name];
-        changed = true;
+    withSyncStateLock((state) => {
+      let changed = false;
+      for (const { name, appType } of instances) {
+        if (state.instances?.[appType]?.[name] !== undefined) {
+          delete state.instances[appType][name];
+          changed = true;
+        }
       }
-    }
-    if (changed) saveSyncState(state);
+      if (changed) saveSyncState(state);
+    });
   } catch {
     // best-effort: unreadable state — the ghost entry stays, harmless.
   }

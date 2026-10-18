@@ -5,6 +5,7 @@ import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { atomicWrite, readdirSyncSafe } from "./fs-utils.js";
+import { withFileLockSync } from "./file-lock.js";
 import { isPlainObject } from "./json-utils.js";
 import { SYNC_STATE_PATH } from "./paths.js";
 
@@ -157,6 +158,15 @@ function saveSyncState(state) {
   atomicWrite(SYNC_STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+// Read-modify-write under the cross-process sync-state lock. The callback
+// gets a FRESH state read inside the lock (never a pre-lock snapshot) and is
+// responsible for calling saveSyncState when it changed something. Returns
+// null when the lock timed out — callers treat that as a skipped save.
+function withSyncStateLock<T>(fn: (state: any) => T): T | null {
+  const result = withFileLockSync(SYNC_STATE_PATH, () => fn(loadSyncState()));
+  return result.acquired ? result.value : null;
+}
+
 // Shallow-compare two {pluginKey: bool} maps (undefined/missing treated as
 // absent on both sides via Set union of keys).
 function shallowEqualPlugins(a, b) {
@@ -168,4 +178,4 @@ function shallowEqualPlugins(a, b) {
 }
 
 
-export { LEGACY_SESSION_FILENAME, SESSIONS_SUBDIR, buildLaunchExtraEnv, launchTracked, legacySessionFilePath, loadSyncState, psField, readSessions, removeSessionFile, saveSyncState, sessionIsAlive, sessionsDir, sha256, shallowEqualPlugins, writeSessionFile };
+export { LEGACY_SESSION_FILENAME, SESSIONS_SUBDIR, buildLaunchExtraEnv, launchTracked, legacySessionFilePath, loadSyncState, psField, readSessions, removeSessionFile, saveSyncState, sessionIsAlive, sessionsDir, sha256, shallowEqualPlugins, withSyncStateLock, writeSessionFile };
