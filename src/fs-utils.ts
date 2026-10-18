@@ -17,8 +17,8 @@ function ensureSymlink(target, linkPath) {
         // Non-symlink real file/dir. Real FILES are deliberate content (a
         // customized CLAUDE.md, user-placed config) — always keep them.
         // Dirs: Claude Code auto-creates empty ones like plugins/ on first
-        // launch; those are replaced by symlinks, while non-empty dirs stay
-        // (warn) to avoid deleting user data.
+        // launch; those are removed here and replaced by the symlink below,
+        // while non-empty dirs stay (warn) to avoid deleting user data.
         if (stats!.isDirectory()) {
           const dirEntries = readdirSyncSafe(linkPath);
           if (dirEntries && dirEntries.length > 0) {
@@ -26,8 +26,10 @@ function ensureSymlink(target, linkPath) {
             return;
           }
           rmSync(linkPath, { recursive: true, force: true });
+          // fall through: the now-absent path is linked below
+        } else {
+          return;
         }
-        return;
       }
     } catch (e: any) {
       console.error(`⚠ Failed to replace ${linkPath} with symlink: ${e.message}`);
