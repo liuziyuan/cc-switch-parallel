@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import net from "node:net";
 
 const require = createRequire(import.meta.url);
 
@@ -1861,12 +1862,18 @@ function protectAggregationIdentityEnv(effective, settingsConfig) {
 // {keys: key→providerId, members: [providerId], proxyRoute} when aggregation
 // is enabled for the app, else null. Everything tolerates shape drift: a
 // missing file, a renamed field or a disabled switch all read as "off".
+// Contract gate: an unknown version (file-level or the app's contract block)
+// is a schema this build cannot interpret — read as "off" rather than guess.
 function readStackState(appType) {
   try {
     const raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8"));
-    const app = isPlainObject(raw) && isPlainObject(raw.apps) && isPlainObject(raw.apps[appType])
+    if (!isPlainObject(raw)) return null;
+    if (raw.version !== undefined && raw.version !== 1) return null;
+    const app = isPlainObject(raw.apps) && isPlainObject(raw.apps[appType])
       ? raw.apps[appType]
       : null;
+    const contract = isPlainObject(app?.contract) ? app.contract : null;
+    if (contract?.version !== undefined && contract.version !== 1) return null;
     const stack = app && isPlainObject(app.stack) ? app.stack : null;
     if (!stack || stack.enabled !== true) return null;
     const keys = isPlainObject(stack.keys)
@@ -1880,6 +1887,26 @@ function readStackState(appType) {
     return { keys, members, proxyRoute };
   } catch {
     return null;
+  }
+}
+
+// 300ms TCP probe of a base URL's host:port. Warn-only by design — the
+// aggregation proxy lives and dies with the desktop app (README: "re-open
+// the desktop app"), so an unreachable proxy must gate nothing, just say so.
+async function probeTcpReachable(baseUrl, timeoutMs = 300) {
+  try {
+    const u = new URL(baseUrl);
+    const port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
+    if (!u.hostname || !Number.isFinite(port)) return false;
+    return await new Promise((resolve) => {
+      const socket = net.connect({ host: u.hostname, port });
+      const done = (ok) => { socket.destroy(); resolve(ok); };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      socket.once("connect", () => { clearTimeout(timer); done(true); });
+      socket.once("error", () => { clearTimeout(timer); done(false); });
+    });
+  } catch {
+    return false;
   }
 }
 
@@ -4944,6 +4971,17 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
   // extraArgs are stored so quick-launch replays the full original argv.
   const hotkey = record?.hotkey !== undefined ? record.hotkey : adapter.inferHotkeyFromArgs?.(extraArgs);
   recordLaunch(cmd, row.id, row.name, hotkey, extraArgs);
+  // Aggregation instances route through the desktop app's loopback proxy —
+  // if it is down (desktop quit/crashed/mid-upgrade) every request would die
+  // with an opaque connection error inside the CLI. One quick probe turns
+  // that silent failure into an actionable warning; the launch itself is
+  // never gated (the proxy may come back while the instance is open).
+  if (adapter.appType === "claude" && isAggregationProviderSettings(settingsConfig)) {
+    const reachable = await probeTcpReachable(settingsConfig.env.ANTHROPIC_BASE_URL);
+    if (!reachable) {
+      console.error(`⚠ 聚合代理 ${settingsConfig.env.ANTHROPIC_BASE_URL} 不可达 — 请确认 cc-switch 桌面端已开启聚合（实例照常启动，请求会失败直至代理恢复）`);
+    }
+  }
   adapter.launch(instanceDir, extraArgs, { providerName: row.name, providerId: row.id });
 }
 
@@ -5084,7 +5122,72 @@ function pruneInstanceBaselines(instances) {
   }
 }
 
-function runDoctor() {
+// ─── aggregation doctor checks (cc-switch 4.0 Stack) ───────────────────
+// Advisory state, not launch health: a missing live-state means aggregation
+// is simply off (pass). Real inconsistencies fail — members whose provider
+// rows are gone, an unreachable proxy. Returns [{label, pass, detail}] for
+// runDoctor's renderer, so the checks stay unit-testable without the UI.
+async function aggregationDoctorChecks() {
+  const checks = [];
+  const add = (label, pass, detail) => checks.push({ label, pass, detail });
+  if (!existsSync(LIVE_STATE_PATH)) {
+    add("aggregation live-state", true, "not present (aggregation off)");
+    return checks;
+  }
+  let raw = null;
+  try { raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8")); } catch {}
+  if (!isPlainObject(raw)) {
+    add("aggregation live-state", false, "exists but unparseable");
+    return checks;
+  }
+  if (raw.version !== undefined && raw.version !== 1) {
+    add("aggregation live-state", false, `unsupported contract version ${raw.version} (expected 1) — read as off`);
+    return checks;
+  }
+  const stack = readStackState("claude");
+  if (!stack) {
+    add("aggregation live-state", true, "readable (aggregation off)");
+    return checks;
+  }
+  add("aggregation live-state", true, "readable (stack on)");
+  const rowExists = (id) => {
+    try { return !!queryProviderById(id, "claude"); } catch { return false; }
+  };
+  const missing = Object.entries(stack.keys).filter(([, id]) => !rowExists(id)).map(([key]) => key);
+  add(
+    "aggregation members",
+    missing.length === 0,
+    missing.length === 0
+      ? `${Object.keys(stack.keys).length} key(s) → provider rows all present`
+      : `stack key(s) with no provider row: ${missing.join(", ")}`,
+  );
+  let stackRow = null;
+  try {
+    for (const r of queryDB("SELECT settings_config FROM providers WHERE app_type = 'claude'")) {
+      try {
+        if (isAggregationProviderSettings(JSON.parse(r.settings_config))) { stackRow = r; break; }
+      } catch {}
+    }
+  } catch {}
+  if (!stackRow) {
+    // Live stack but no row to launch it from — the TUI auto-creates one on
+    // open (ensureStackProviderRow), so this is self-healing, not a failure.
+    add("aggregation Stack row", true, "missing — auto-created next time the TUI opens");
+    return checks;
+  }
+  add("aggregation Stack row", true, "present");
+  let baseUrl = null;
+  try { baseUrl = JSON.parse(stackRow.settings_config)?.env?.ANTHROPIC_BASE_URL ?? null; } catch {}
+  const reachable = typeof baseUrl === "string" ? await probeTcpReachable(baseUrl) : false;
+  add(
+    "aggregation proxy",
+    reachable,
+    reachable ? `${baseUrl} reachable` : `${baseUrl ?? "?"} unreachable — open the cc-switch desktop app with aggregation on`,
+  );
+  return checks;
+}
+
+async function runDoctor() {
   const checks = [];
   const add = (label, pass, detail) => checks.push({ label, pass, detail });
 
@@ -5165,6 +5268,10 @@ function runDoctor() {
 
   // sync state
   add("sync-state.json", existsSync(SYNC_STATE_PATH), existsSync(SYNC_STATE_PATH) ? "present" : "not yet created (first run)");
+
+  // aggregation (cc-switch 4.0 Stack) — live-state contract, member rows,
+  // Stack row, proxy reachability
+  for (const c of await aggregationDoctorChecks()) add(c.label, c.pass, c.detail);
 
   // render
   console.log("\n  \x1b[1mcc-switch-parallel doctor\x1b[0m\n");
@@ -5555,7 +5662,7 @@ async function main() {
   }
 
   if (args[0] === "doctor") {
-    runDoctor();
+    await runDoctor();
     return;
   }
 
@@ -5682,6 +5789,8 @@ export const __test = Object.freeze({
   buildStackUsageWrapperLines,
   buildClaudeAggregationGroup,
   ensureStackProviderRow,
+  probeTcpReachable,
+  aggregationDoctorChecks,
   USAGE_CACHE_FILENAME,
   APP_ADAPTERS,
 });
