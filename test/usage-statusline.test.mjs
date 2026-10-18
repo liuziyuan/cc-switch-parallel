@@ -24,6 +24,9 @@ const {
   buildUsageQueryConfig,
   isLoopbackBaseUrl,
   isAggregationProviderSettings,
+  protectAggregationIdentityEnv,
+  splitChangesByTarget,
+  APP_ADAPTERS,
   readStackState,
   readGlobalModelPicker,
   buildStackUsageConfig,
@@ -706,6 +709,195 @@ test("aggregation: modelPicker syncs into effective settings only while stack is
   const live = buildClaudeEffectiveSettings({ ...STACK_SETTINGS, modelPicker: "snapshot" }, {}, "{}", "Stack", STACK_PROVIDER_ID);
   assert.deepEqual(live.modelPicker, PICKER_FIXTURE);
   removeLiveState();
+  cleanStackInstance();
+});
+
+// ─── aggregation forced common merge (hooks fix) ──────────────────────
+// A Stack row's settings_config is routing-only (loopback env + modelPicker),
+// so providerUsesCommonConfig's subset fallback can never see the common
+// content and the row used to launch without hooks (the tmux plugin went
+// silent). Aggregation rows now merge the common config unconditionally —
+// except when meta carries an explicit commonConfigEnabled:false — with the
+// routing identity (base URL / auth / model aliases) protected afterwards.
+
+// captureStderr: guards against merge warnings leaking AND lets malformed-
+// snippet assertions pin the warning text (pattern from guard.test.mjs).
+let stderrBuf = "";
+function captureStderr(fn) {
+  stderrBuf = "";
+  const orig = process.stderr.write;
+  process.stderr.write = (s) => { stderrBuf += s; return true; };
+  try { fn(); } finally { process.stderr.write = orig; }
+}
+
+// Common config shaped like the real one: hooks (tmux plugin) + env that is
+// NOT identity (CLAUDE_CODE_* merges normally).
+const STACK_COMMON = JSON.stringify({
+  env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" },
+  hooks: {
+    SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "tmux-ai-status sessionstart" }] }],
+    Stop: [{ matcher: "", hooks: [{ type: "command", command: "tmux-ai-status stop" }] }],
+  },
+  permissions: { allow: ["Bash(ls:*)"] },
+});
+
+test("aggregation: meta={} row still merges the common config — hooks land, identity env untouched", () => {
+  removeLiveState(); // stack off — merge must NOT depend on desktop state
+  const effective = buildClaudeEffectiveSettings(STACK_SETTINGS, {}, STACK_COMMON);
+  assert.ok(effective.hooks.SessionStart, "hooks merged");
+  assert.ok(effective.hooks.Stop, "hooks merged");
+  assert.equal(effective.permissions.allow[0], "Bash(ls:*)");
+  assert.equal(effective.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, "1");
+  // routing identity survives the merge
+  assert.equal(effective.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(effective.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
+  // stack on → same merge (the decision is row-shape × meta, not desktop state)
+  writeLiveState({ enabled: true, members: ["m1"], keys: { zhipu: "m1" } }, "m1");
+  const live = buildClaudeEffectiveSettings(STACK_SETTINGS, {}, STACK_COMMON);
+  assert.ok(live.hooks.SessionStart);
+  removeLiveState();
+});
+
+test("aggregation: common env can never re-point or re-auth the loopback row", () => {
+  const hostile = JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "https://evil.example.com",
+      ANTHROPIC_AUTH_TOKEN: "common-bearer",
+      ANTHROPIC_API_KEY: "common-key",
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
+    },
+    hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "tmux-ai-status stop" }] }] },
+  });
+  // row HAS base URL + token → row values restored; row LACKS API_KEY →
+  // the planted key is deleted outright (AUTH_TOKEN outranks API_KEY in the
+  // Claude CLI, so a surviving common key would hijack auth)
+  const effective = buildClaudeEffectiveSettings(STACK_SETTINGS, {}, hostile);
+  assert.equal(effective.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(effective.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
+  assert.equal(effective.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(effective.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, "1", "non-identity env merges normally");
+  assert.ok(effective.hooks.Stop);
+});
+
+test("aggregation: protectAggregationIdentityEnv unit — row env wins, ccs model aliases kept, scalar-env wreckage rebuilt", () => {
+  const row = {
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+      ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-zhipu--glm-5.3",
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "glm-5.3（Z.AI GLM）",
+    },
+  };
+  const effective = {
+    env: {
+      ANTHROPIC_BASE_URL: "https://common.example.com",
+      ANTHROPIC_AUTH_TOKEN: "common-bearer",
+      ANTHROPIC_API_KEY: "common-key",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "direct-sonnet",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "common-opus-alias", // row lacks it — harmless, kept
+    },
+  };
+  protectAggregationIdentityEnv(effective, row);
+  assert.equal(effective.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(effective.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
+  assert.equal(effective.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(effective.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-zhipu--glm-5.3", "row alias wins");
+  assert.equal(effective.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "glm-5.3（Z.AI GLM）", "row alias name restored");
+  assert.equal(effective.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "common-opus-alias", "alias the row lacks is not deleted");
+
+  // a scalar/mismatched common `env` full-overwrites the row's env object in
+  // the merge fallthrough — the guard rebuilds env instead of crashing
+  const wrecked = { env: "scalar-garbage" };
+  protectAggregationIdentityEnv(wrecked, row);
+  assert.equal(wrecked.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(wrecked.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
+});
+
+test("aggregation: explicit commonConfigEnabled:false still wins on a loopback row", () => {
+  // isAggregationProviderSettings cannot tell a desktop Stack row from a
+  // user's own local gateway row — the gateway user's explicit off holds
+  // (the documented temporary fix, un-ticked, keeps working)
+  const effective = buildClaudeEffectiveSettings(STACK_SETTINGS, { commonConfigEnabled: false }, STACK_COMMON);
+  assert.equal(effective.hooks, undefined);
+  assert.equal(effective.permissions, undefined);
+});
+
+test("aggregation: common statusLine becomes the wrapper relay source, never the entry itself", () => {
+  cleanStackInstance();
+  writeGlobalSettings({ type: "command", command: "echo global-relay" });
+  const common = JSON.stringify({
+    statusLine: { type: "command", command: "echo from-common" },
+    hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "tmux-ai-status stop" }] }] },
+  });
+  const effective = buildClaudeEffectiveSettings(STACK_SETTINGS, {}, common, "Stack", STACK_PROVIDER_ID);
+  assert.ok(effective.statusLine.command.includes("statusline-wrapper.mjs"));
+  assert.equal(JSON.stringify(effective.statusLine).includes("from-common"), false);
+  // an explicit provider/common statusLine is the wrapper's PREFERRED relay
+  // source (inlined at generation time, ahead of the global fallback)
+  const wrapper = readFileSync(stackInstanceFile("statusline-wrapper.mjs"), "utf8");
+  assert.ok(wrapper.includes("echo from-common"), "common relay inlined");
+  assert.equal(JSON.stringify(effective.statusLine).includes("echo from-common"), false);
+  cleanStackInstance();
+});
+
+test("aggregation: malformed and non-object common snippets never corrupt the row", () => {
+  const base = JSON.parse(JSON.stringify(STACK_SETTINGS));
+  // invalid JSON → warning, settings untouched
+  captureStderr(() => buildClaudeEffectiveSettings(base, {}, "{not json"));
+  assert.ok(stderrBuf.includes("Common config merge failed"));
+  // non-object snippet → skipped by the object guard (would previously
+  // full-overwrite the settings through mergeCommonOverProvider's scalar branch)
+  captureStderr(() => {
+    const effective = buildClaudeEffectiveSettings(base, { commonConfigEnabled: true }, "[1,2]");
+    assert.equal(stderrBuf, "", "object guard skips silently");
+    assert.deepEqual(effective, base);
+  });
+});
+
+test("non-aggregation row keeps the legacy meta={} subset behavior (no forced merge)", () => {
+  // Z.AI GLM settings contain none of the common content → subset fallback
+  // says "not using common" → no merge, exactly as before this fix
+  const effective = buildClaudeEffectiveSettings(ZHIPU_SETTINGS, {}, STACK_COMMON);
+  assert.equal(effective.hooks, undefined);
+  assert.equal(effective.permissions, undefined);
+  assert.equal(effective.env.ANTHROPIC_BASE_URL, "https://api.z.ai/api/anthropic");
+});
+
+test("split: aggregation instance edits route by where the key lives — hooks→common, identity token→provider, common token→rejected", () => {
+  const commonObj = JSON.parse(STACK_COMMON); // hooks + CLAUDE_CODE_* env, no ANTHROPIC_*
+  const providerSettings = { env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" } };
+  const { commonPatch, providerPatch, rejected } = splitChangesByTarget([
+    { path: "hooks.Stop", op: "replace", to: [{ matcher: "", hooks: [{ type: "command", command: "tmux-ai-status stop2" }] }] },
+    { path: "env.ANTHROPIC_AUTH_TOKEN", op: "replace", to: "user-rotated" },
+  ], STACK_PROVIDER_ID, commonObj, providerSettings);
+  // hooks live in the common config → edit goes UP to common (shared by all
+  // instances), never into the aggregation row
+  assert.deepEqual(commonPatch.hooks.Stop, [{ matcher: "", hooks: [{ type: "command", command: "tmux-ai-status stop2" }] }]);
+  // the row's own env is the routing identity → stays on the provider row
+  assert.equal(providerPatch.env?.ANTHROPIC_AUTH_TOKEN, "user-rotated");
+  // and when the common config DID carry the token, the sensitive gate rejects
+  const hostile = { env: { ANTHROPIC_AUTH_TOKEN: "common-bearer" } };
+  const r2 = splitChangesByTarget(
+    [{ path: "env.ANTHROPIC_AUTH_TOKEN", op: "replace", to: "user-rotated" }],
+    STACK_PROVIDER_ID, hostile, providerSettings,
+  );
+  assert.equal(r2.commonPatch.env?.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(r2.rejected.length, 1);
+});
+
+test("aggregation e2e: claude adapter prepare writes hooks into the instance settings.json", () => {
+  cleanStackInstance();
+  writeGlobalSettings(undefined);
+  const claude = APP_ADAPTERS.claude;
+  claude.prepare(
+    join(INSTANCES, STACK_PROVIDER_ID), STACK_PROVIDER_ID,
+    STACK_SETTINGS, {}, null, STACK_COMMON, {},
+  );
+  const written = JSON.parse(readFileSync(stackInstanceFile("settings.json"), "utf8"));
+  assert.ok(written.hooks.SessionStart, "hooks on disk");
+  assert.ok(written.hooks.Stop, "hooks on disk");
+  assert.equal(written.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721", "loopback intact on disk");
+  assert.equal(written.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
   cleanStackInstance();
 });
 

@@ -985,17 +985,61 @@ function applyKimiForCodingContextDefaults(effective, providerSettings) {
   }
 }
 
+// Instance settings.json path derivation shared by prepare, the guard's [C3]
+// recompute, and the model carry inside buildClaudeEffectiveSettings — same
+// expression everywhere, mirroring codexInstanceDirFor, so the three never
+// see different files.
+function claudeInstanceSettingsPath(providerId) {
+  return join(INSTANCES_DIR, "claude", providerId, "settings.json");
+}
+
+// Runtime-state filter for the claude settings channel: `model` is the
+// instance-local model choice the Claude CLI itself writes into the instance
+// settings.json when the user picks a model via /model ("saved as your
+// default for new sessions"). Exact match — never startsWith, or
+// modelPicker.* would be swallowed too.
+function isClaudeRuntimeStatePath(path) {
+  return path === "model";
+}
+
 // providerName/providerId: when both are given, the effective settings get
-// the instance statusline injected (see applyStatusLineInjection). prepare()
-// and the guard's computeEffectiveSettings [C3] MUST pass the same pair —
-// C3 exists to recompute exactly what prepare would write, and a fork
-// between the two derivations makes the overwrite guard misfire.
+// the instance statusline injected (see applyStatusLineInjection) AND the
+// instance-local model carried over from the file currently on disk (see the
+// carry block at the end of this function). prepare() and the guard's
+// computeEffectiveSettings [C3] MUST pass the same pair — C3 exists to
+// recompute exactly what prepare would write, and a fork between the two
+// derivations makes the overwrite guard misfire.
 function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, providerName, providerId) {
   let effective = jsonDeepClone(settingsConfig);
-  if (providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)) {
+  // Aggregation rows (loopback base URL) always merge the common config: the
+  // row carries only routing env + modelPicker, so the subset fallback in
+  // providerUsesCommonConfig can never see the common content (hooks!) and
+  // the row would launch without every shared setting. Forced merge applies
+  // ONLY where meta carries no explicit choice — an explicit
+  // commonConfigEnabled:false still wins, because the loopback test cannot
+  // tell a desktop-created Stack row from a user's own local gateway row,
+  // and the gateway user's explicit off must keep working. Not gated on
+  // readStackState: the row launches with the stack off too, and a merge
+  // decision that flips with desktop state would break prepare determinism.
+  const isAgg = isAggregationProviderSettings(settingsConfig);
+  const snippetTrimmed = (commonSnippet || "").trim();
+  const useCommon = snippetTrimmed && (
+    (isAgg && meta?.commonConfigEnabled !== false) ||
+    providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)
+  );
+  if (useCommon) {
     try {
-      const source = JSON.parse(commonSnippet.trim());
-      effective = mergeCommonOverProvider(effective, source);
+      const source = JSON.parse(snippetTrimmed);
+      // Object guard: mergeCommonOverProvider full-overwrites on shape
+      // mismatch, so a non-object snippet ("[1]") would replace the whole
+      // effective settings — skip it instead.
+      if (isPlainObject(source)) {
+        effective = mergeCommonOverProvider(effective, source);
+        // The aggregation row IS the routing identity (loopback address +
+        // proxy placeholder token + ccs model aliases); the common config
+        // must never re-point or re-auth it. See protectAggregationIdentityEnv.
+        if (isAgg) protectAggregationIdentityEnv(effective, settingsConfig);
+      }
     } catch (e) {
       console.error(`⚠ Common config merge failed: ${e.message}`);
     }
@@ -1013,6 +1057,30 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, provi
   }
   if (providerName !== undefined && providerId !== undefined) {
     applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta);
+  }
+  // Carry the instance-local model choice (isClaudeRuntimeStatePath) across a
+  // full settings.json regeneration — the claude mirror of
+  // mergeCodexRuntimeState, for the one field the Claude CLI owns: /model
+  // writes `model` into the instance file, and without the carry prepare
+  // would roll it back to the common/provider value on every launch, then
+  // drift-prompt the rollback as an edit to sync. The file's live value wins
+  // over everything merged above: common's `model` and the provider row's
+  // `model` are INITIAL values for a freshly created instance only — they no
+  // longer propagate to existing instances (per-instance choice; aggregation
+  // siblings never see each other's pick). Lives inside
+  // buildClaudeEffectiveSettings — not at the write site like codex — so
+  // prepare AND the guard's computeEffectiveSettings [C3] derive identically
+  // from this single point; an upgrade-window instance that only ever
+  // switched models therefore backfills silently instead of eating a
+  // spurious backup note. providerId undefined (some test call sites) or a
+  // missing/corrupt instance file → skip, the generated value stands.
+  if (providerId !== undefined) {
+    try {
+      const current = JSON.parse(readFileSync(claudeInstanceSettingsPath(providerId), "utf8"));
+      if (typeof current?.model === "string" && current.model) effective.model = current.model;
+    } catch {
+      // no instance file yet (first prepare) or unreadable — generated value stands
+    }
   }
   return effective;
 }
@@ -1720,6 +1788,47 @@ function isLoopbackBaseUrl(baseUrl) {
 function isAggregationProviderSettings(settingsConfig) {
   const env = isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
   return !!env && isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL);
+}
+
+// Identity keys the aggregation merge must never let the common config win
+// or plant: the row's env IS the routing identity. A common BASE_URL would
+// bypass the proxy; a common AUTH_TOKEN/API_KEY would re-auth it (the Claude
+// CLI ranks AUTH_TOKEN/Bearer above API_KEY/x-api-key, so an unrequested
+// common Bearer hijacks auth even when the row carries API_KEY) — keys the
+// row lacks are deleted outright, not just overwritten.
+const AGGREGATION_IDENTITY_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+];
+
+// The ccs model aliases ensureStackProviderRow copies from the global env
+// (ANTHROPIC_DEFAULT_*_MODEL/_NAME) route default models through the proxy's
+// key map — a common scalar would silently swap them and mis-attribute
+// billing. Row value wins when present; when the row lacks a key the common
+// value is harmless (no delete), unlike the identity keys above.
+const AGGREGATION_MODEL_ALIAS_KEYS = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+];
+
+// Post-merge guard for aggregation rows (called from
+// buildClaudeEffectiveSettings only after mergeCommonOverProvider ran).
+// effective.env can be non-object when a scalar/mismatched common `env`
+// full-overwrote the row's env through the merge fallthrough — rebuild it
+// from the row's env in that case rather than crash on the restore below.
+function protectAggregationIdentityEnv(effective, settingsConfig) {
+  const rowEnv = isPlainObject(settingsConfig?.env) ? settingsConfig.env : {};
+  if (!isPlainObject(effective.env)) effective.env = {};
+  for (const key of AGGREGATION_IDENTITY_ENV_KEYS) {
+    if (rowEnv[key] !== undefined) effective.env[key] = rowEnv[key];
+    else delete effective.env[key];
+  }
+  for (const key of AGGREGATION_MODEL_ALIAS_KEYS) {
+    if (rowEnv[key] !== undefined) effective.env[key] = rowEnv[key];
+  }
 }
 
 // {keys: key→providerId, members: [providerId], proxyRoute} when aggregation
@@ -2749,7 +2858,8 @@ function formatSettingsChangeLine(ch, target) {
 // Overwrite guard, CLI-agnostic: right before prepare regenerates an
 // instance's main config file, diff what sits on disk against the recorded
 // baseline. Unsynchronized edits get a warning + a backup instead of
-// vanishing silently. Capability-probed (C2 + C3), never appType-branched —
+// vanishing silently. Channel-owned [C6] and runtime-state paths are
+// filtered out. Capability-probed (C2 + C3), never appType-branched —
 // an adapter without both is v2-shaped and skips the guard entirely.
 function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings) {
   try {
@@ -2847,6 +2957,16 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
 //   channelOwnedPath(path) → paths owned by a dedicated channel (claude:
 //                              the plugin channel); the field channel must
 //                              yield them to avoid double reporting. [C6]
+//   runtimeStatePath(path) → runtime state the CLI itself writes into the
+//                              instance's main config file (codex: project
+//                              trust / hook hashes / TUI markers; claude:
+//                              the /model pick). Filtered out of the guard
+//                              AND the upward settings sync — it's machine/
+//                              session-local fact, not config to sync — and
+//                              carried across prepare's full regeneration
+//                              instead (codex: mergeCodexRuntimeState at the
+//                              write site; claude: the carry inside
+//                              buildClaudeEffectiveSettings).
 //   syncSettingsBack(drift) → write confirmed {commonPatch, providerPatches}
 //                              back into the DB. [C7]
 //   instructions         instance-level instruction-file capability for
@@ -2952,6 +3072,11 @@ const APP_ADAPTERS = {
       return isPlainObject(settingsConfigObj) ? settingsConfigObj : null;
     },
     channelOwnedPath: (path) => isPluginChannelPath(path) || isStatusLineChannelPath(path),
+    // Runtime state the Claude CLI writes itself (the /model pick) — filtered
+    // from the guard and the upward settings sync, and carried across
+    // prepare's full regeneration instead of synced as config (mirrors the
+    // codex runtimeStatePath contract).
+    runtimeStatePath: isClaudeRuntimeStatePath,
 
     // [C8] Instance instruction file. The @import line is LIVE — global
     // edits flow through without touching the instance file, so there is
@@ -3005,7 +3130,9 @@ const APP_ADAPTERS = {
     // Mirrors computeEnabledPluginsPatch's arbitration: a faithful mirror
     // gets no vote; among voting instances the most recent edit (mtime) wins
     // per path; the plugin channel's subtree is excluded so the two channels
-    // never double-report or double-vote.
+    // never double-report or double-vote; runtime-state paths (the /model
+    // pick) are excluded via runtimeStatePath — carried across prepare
+    // instead of synced.
     // Returns { instances: [{providerId, name, changes, mtimeMs}],
     //           commonPatch, providerPatches, conflicts: {path: count} } or null.
     // Upward drift of non-plugin fields — thin delegation to the shared
@@ -3200,7 +3327,9 @@ const APP_ADAPTERS = {
 // claude adapter when codex joined the C1-C5 capability set. The leaf diff,
 // per-path mtime arbitration, and the smart split are shared unchanged; the
 // adapter supplies only instance dir, baseline map, common-snippet parsing
-// [C4], provider-document extraction [C5], and the channel filter [C6].
+// [C4], provider-document extraction [C5], the channel filter [C6], and the
+// runtime-state filter (paths that never sync — they're carried across
+// prepare instead).
 // Reads instance files + DB; writes nothing.
 function detectConfigDriftGeneric(adapter, state) {
   const dir = join(INSTANCES_DIR, adapter.appType);
@@ -5475,6 +5604,7 @@ if (!process.env.CC_LAUNCH_SKIP_MAIN) {
 // the bag stays frozen so callers can't reach into the module's internals.
 export const __test = Object.freeze({
   mergeCommonOverProvider,
+  protectAggregationIdentityEnv,
   jsonDeepMerge,
   applyMergePatch,
   jsonNormalize,
@@ -5495,6 +5625,8 @@ export const __test = Object.freeze({
   buildCodexInstructionsTemplate,
   refreshCodexInstructionsSnapshot,
   buildClaudeEffectiveSettings,
+  claudeInstanceSettingsPath,
+  isClaudeRuntimeStatePath,
   applyStatusLineInjection,
   buildStatusLineWrapperScript,
   isStatusLineChannelPath,
