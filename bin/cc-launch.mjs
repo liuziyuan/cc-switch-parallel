@@ -2161,6 +2161,119 @@ function buildClaudeAggregationGroup() {
   };
 }
 
+// One-time migration for the pre-virtualization era: versions ≤0.19 INSERTed a
+// real DB row for the aggregation entry (randomUUID id, loopback + PROXY_MANAGED
+// signature). The virtual entry replaces it — the DB row would keep showing up
+// in the desktop GUI forever, so it is deleted here and every id-keyed reference
+// (launch history entries + pin slots, statusline colors) moves to the stable
+// virtual id. Runs on TUI open and before every claude launch (command mode
+// never opens the TUI). Idempotent: no signature rows → null, zero output.
+// Skips is_current rows (the desktop app is actively pointed at them — deleting
+// would dangle its current-provider state). Fail-open: a locked/unreadable DB
+// or a frozen history just skips this pass; the next run retries.
+// Old instance dirs (UUID-named) are deliberately NOT renamed — a running
+// session keeps working; `switch clean` reaps them once the session ends.
+function cleanupLegacyStackRows() {
+  let rows = [];
+  try {
+    rows = queryDB(
+      "SELECT id, name, settings_config, is_current FROM providers WHERE app_type = 'claude'",
+    );
+  } catch {
+    return null; // DB unavailable — retry next run
+  }
+  const legacy = [];
+  for (const r of rows) {
+    try {
+      if (isAggregationProviderSettings(JSON.parse(r.settings_config))) legacy.push(r);
+    } catch {}
+  }
+  if (!legacy.length) return null;
+  const removed = [];
+  const skippedCurrent = [];
+  for (const r of legacy) {
+    if (r.is_current) { skippedCurrent.push(r.name); continue; }
+    try {
+      execDB(`DELETE FROM providers WHERE id = ${sqlQuote(r.id)} AND app_type = 'claude'`);
+      removed.push({ id: r.id, name: r.name });
+    } catch {
+      // locked mid-write — the row survives this pass, next run retries
+    }
+  }
+  if (!removed.length) return { removed, skippedCurrent, migratedHistory: false, migratedColors: false };
+
+  // launch_history: point entries and pin slots at the virtual id; entries that
+  // collide after the rewrite (same cli|id|hotkey) merge keeping the stronger
+  // count/lastUsed. Frozen history (failed migration at load) is left alone —
+  // the rows are already deleted, so those entries read dead until cleanup.
+  if (!_historyFrozen) {
+    try {
+      const removedIds = new Set(removed.map((r) => r.id));
+      const { entries, order } = loadHistory();
+      let touched = false;
+      for (const e of entries) {
+        if (e.providerId && removedIds.has(e.providerId)) {
+          e.providerId = VIRTUAL_STACK_PROVIDER_ID;
+          touched = true;
+        }
+      }
+      // merge duplicates born from the rewrite: prefer count, then lastUsed
+      const byKey = new Map();
+      const merged = [];
+      for (const e of entries) {
+        const k = `${e.cli}|${e.providerId ?? e.provider}|${e.hotkey ?? ""}`;
+        const prev = byKey.get(k);
+        if (!prev) { byKey.set(k, e); merged.push(e); continue; }
+        if ((e.count || 0) > (prev.count || 0) || ((e.count || 0) === (prev.count || 0) && (e.lastUsed || 0) > (prev.lastUsed || 0))) {
+          byKey.set(k, e);
+          merged[merged.indexOf(prev)] = e;
+        }
+        touched = true;
+      }
+      const slotMap = new Map(removed.map((r) => [`claude|${r.id}`, `claude|${VIRTUAL_STACK_PROVIDER_ID}`]));
+      const nextOrder = order.map((slot) => (slot && slotMap.has(slot) ? slotMap.get(slot) : slot));
+      if (touched) saveHistory(merged, nextOrder);
+    } catch { /* history is best-effort — never block on it */ }
+  }
+
+  // statusline colors: same id-keyed move, existing value for the virtual id wins
+  let migratedColors = false;
+  try {
+    const prefs = loadStatuslinePreferences();
+    if (prefs && isPlainObject(prefs.colors?.claude)) {
+      const bucket = prefs.colors.claude;
+      const removedIds = removed.map((r) => r.id);
+      for (const oldId of removedIds) {
+        if (bucket[oldId] === undefined) continue;
+        if (bucket[VIRTUAL_STACK_PROVIDER_ID] === undefined) bucket[VIRTUAL_STACK_PROVIDER_ID] = bucket[oldId];
+        delete bucket[oldId];
+        migratedColors = true;
+      }
+      if (migratedColors) {
+        atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
+      }
+    }
+  } catch { /* best-effort */ }
+
+  return { removed, skippedCurrent, migratedHistory: true, migratedColors };
+}
+
+function reportLegacyStackCleanup(result) {
+  if (!result) return;
+  for (const r of result.removed) {
+    console.error(`◇ 已移除旧版聚合 provider 行「${r.name}」（现由运行时虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID} 承担，桌面端 GUI 不再显示）`);
+  }
+  if (result.migratedHistory) {
+    console.error(`  启动历史与置顶已迁移到虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID}`);
+  }
+  if (result.migratedColors) {
+    console.error(`  statusline 颜色偏好已迁移到虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID}`);
+  }
+  for (const name of result.skippedCurrent) {
+    console.error(`\x1b[33m⚠ 聚合行「${name}」正被桌面端使用（is_current），已保留 — 在桌面端切走后下次运行会自动清理\x1b[0m`);
+  }
+}
+
 // ─── Provider usage snapshot (app-agnostic, statusline) ───────────────
 // Optional usage segment for the instance statusline wrapper: zhipu/zai
 // coding-plan quota (5h + weekly) and DeepSeek balance, rendered in the
@@ -4931,6 +5044,8 @@ function tuiSelect(prompt, options, optsArg) {
 // survive into the next quick launch.
 async function runTUI() {
   await detectAndPromptSync({ tui: true });
+  // One-time migration of pre-virtualization aggregation rows (idempotent).
+  reportLegacyStackCleanup(cleanupLegacyStackRows());
 
   const cliOptions = Object.entries(APP_ADAPTERS).map(([value, adapter]) => ({
     label: adapter.label,
@@ -5074,6 +5189,14 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
   }
 
   await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
+
+  // One-time migration of pre-virtualization aggregation rows — command mode
+  // never opens the TUI, so the claude launch path carries its own pass.
+  // Runs BEFORE the lookup: a by-name launch of "Stack" must hit the virtual
+  // entry, not a legacy row that is about to be deleted.
+  if (adapter.appType === "claude") {
+    reportLegacyStackCleanup(cleanupLegacyStackRows());
+  }
 
   const row = queryProvider(providerName, adapter.appType);
   if (!row) {
@@ -5967,6 +6090,7 @@ export const __test = Object.freeze({
   buildStackUsageConfig,
   buildStackUsageWrapperLines,
   buildClaudeAggregationGroup,
+  cleanupLegacyStackRows,
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,

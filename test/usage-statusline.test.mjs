@@ -40,6 +40,7 @@ const {
   queryProvidersStrict,
   snapshotAliveByCli,
   isDeadEntry,
+  cleanupLegacyStackRows,
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,
@@ -1341,6 +1342,101 @@ test("split: virtual provider option routes provider-target edits to rejected, c
   assert.equal(virt.commonPatch.hooks.Stop, "edited-stop");
   assert.equal(virt.rejected.length, 1);
   assert.equal(virt.rejected[0].path, "env.ANTHROPIC_AUTH_TOKEN");
+});
+
+test("cleanupLegacyStackRows: deletes signature rows, migrates history/pins/colors, idempotent", () => {
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`);
+  const LEGACY_AGG_ID = "11111111-2222-3333-4444-555555555555";
+  const LEGACY_SC = JSON.stringify({
+    env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" },
+  });
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${LEGACY_AGG_ID}', 'claude', 'Stack', '${LEGACY_SC.replace(/'/g, "''")}', '{"stackManaged":true}')`);
+  // a user's own gateway: loopback + REAL token — never matches the signature
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('m-gw2', 'claude', 'My LiteLLM', '${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gw" } }).replace(/'/g, "''")}', '{}')`);
+  // history pointing at the legacy id, with a pin slot on it
+  const HISTORY_FILE = join(CC, "launch_history.json");
+  writeFileSync(HISTORY_FILE, JSON.stringify({
+    version: 2,
+    entries: [
+      { cli: "claude", providerId: LEGACY_AGG_ID, provider: "Stack", hotkey: null, extraArgs: [], count: 11, lastUsed: 100 },
+      { cli: "claude", providerId: "m-gw2", provider: "My LiteLLM", hotkey: null, extraArgs: [], count: 3, lastUsed: 50 },
+    ],
+    order: [`claude|${LEGACY_AGG_ID}`, null, null, null, null],
+  }));
+  // colors keyed on the legacy id
+  const PREFS_FILE = join(CC, "statusline-preferences.json");
+  writeFileSync(PREFS_FILE, JSON.stringify({ version: 1, colors: { claude: { [LEGACY_AGG_ID]: "32" } } }));
+
+  const result = cleanupLegacyStackRows();
+  assert.ok(result);
+  assert.deepEqual(result.removed.map((r) => r.id), [LEGACY_AGG_ID]);
+  assert.equal(result.skippedCurrent.length, 0);
+  // row deleted, gateway untouched
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE id = '${LEGACY_AGG_ID}'`).trim(), "0");
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE id = 'm-gw2'`).trim(), "1");
+  // history migrated to the virtual id, pin slot followed
+  const hist = JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
+  assert.equal(hist.entries[0].providerId, VIRTUAL_STACK_PROVIDER_ID);
+  assert.equal(hist.entries[0].count, 11);
+  assert.equal(hist.entries[1].providerId, "m-gw2", "unrelated entry untouched");
+  assert.deepEqual(hist.order, [`claude|${VIRTUAL_STACK_PROVIDER_ID}`, null, null, null, null]);
+  // colors migrated
+  const prefs = JSON.parse(readFileSync(PREFS_FILE, "utf8"));
+  assert.equal(prefs.colors.claude[VIRTUAL_STACK_PROVIDER_ID], "32");
+  assert.equal(prefs.colors.claude[LEGACY_AGG_ID], undefined);
+  // idempotent: no signature rows left → null
+  assert.equal(cleanupLegacyStackRows(), null);
+  sql(`DELETE FROM providers WHERE id = 'm-gw2'`);
+  rmSync(HISTORY_FILE, { force: true });
+  rmSync(PREFS_FILE, { force: true });
+});
+
+test("cleanupLegacyStackRows: is_current rows are skipped, duplicate history merges keep the stronger", () => {
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`);
+  const CUR_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const OLD_ID = "99999999-8888-7777-6666-555555555555";
+  const OLD2_ID = "77777777-6666-5555-4444-333333333333";
+  const sig = (base) => JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: base } });
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta, is_current)
+    VALUES ('${CUR_ID}', 'claude', 'Stack', '${sig("http://127.0.0.1:15721").replace(/'/g, "''")}', '{}', 1)`);
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${OLD_ID}', 'claude', 'Stack 2', '${sig("http://127.0.0.1:15720").replace(/'/g, "''")}', '{}')`);
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${OLD2_ID}', 'claude', 'Stack 3', '${sig("http://127.0.0.1:15719").replace(/'/g, "''")}', '{}')`);
+  // two legacy rows sharing a hotkey — both entries rewrite onto the virtual
+  // id and must merge, keeping the stronger (count 7)
+  const HISTORY_FILE = join(CC, "launch_history.json");
+  writeFileSync(HISTORY_FILE, JSON.stringify({
+    version: 2,
+    entries: [
+      { cli: "claude", providerId: CUR_ID, provider: "Stack", hotkey: null, extraArgs: [], count: 20, lastUsed: 200 },
+      { cli: "claude", providerId: OLD_ID, provider: "Stack 2", hotkey: null, extraArgs: [], count: 5, lastUsed: 300 },
+      { cli: "claude", providerId: OLD2_ID, provider: "Stack 3", hotkey: null, extraArgs: [], count: 7, lastUsed: 100 },
+    ],
+    order: [null, null, null, null, null],
+  }));
+  const result = cleanupLegacyStackRows();
+  assert.ok(result);
+  assert.equal(result.removed.length, 2, "both non-current rows go");
+  assert.deepEqual(result.skippedCurrent, ["Stack"]);
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE id = '${CUR_ID}'`).trim(), "1", "current row survives");
+  const hist = JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
+  assert.equal(hist.entries.length, 2, "rewritten duplicates merged");
+  assert.equal(hist.entries[0].providerId, CUR_ID, "the skipped row's entry is NOT migrated (row still lives)");
+  assert.equal(hist.entries[0].count, 20);
+  assert.equal(hist.entries[1].providerId, VIRTUAL_STACK_PROVIDER_ID);
+  assert.equal(hist.entries[1].count, 7, "stronger count wins the merge");
+  // cleanup the skipped row for later tests
+  sql(`DELETE FROM providers WHERE id IN ('${CUR_ID}', '${OLD_ID}', '${OLD2_ID}')`);
+  rmSync(HISTORY_FILE, { force: true });
 });
 
 test("aggregation: virtual entry re-derives the live contract on every query (no mirror step)", () => {
