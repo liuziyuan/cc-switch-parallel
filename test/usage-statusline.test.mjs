@@ -1,7 +1,7 @@
 import process from "node:process";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
@@ -195,7 +195,10 @@ test("wrapper: usageConfig null is byte-identical to omitting the argument", () 
   const a = buildStatusLineWrapperScript("P", "/g/settings.json", null, "auto");
   const b = buildStatusLineWrapperScript("P", "/g/settings.json", null, "auto", null);
   assert.equal(a, b);
-  assert.equal(a.includes("USAGE"), false);
+  // the usage RUNTIME must not be inlined (the refresh-skip guard in the
+  // skeleton legitimately mentions the CC_LAUNCH_USAGE_REFRESH env name)
+  assert.equal(a.includes("usageFetch"), false);
+  assert.equal(a.includes("usageReadCache"), false);
 });
 
 test("wrapper: with usage config the runtime is inlined (url/token/cache, never in settings.json)", () => {
@@ -350,6 +353,34 @@ test("e2e zhipu: fresh cache renders with zero requests; expired cache serves st
   const updated = JSON.parse(readFileSync(cachePath, "utf8"));
   assert.ok(updated.ts > 0, "refresh mode updates ts");
   assert.deepEqual(updated.data, { kind: "zhipu", fiveH: 40, weekly: 52 });
+});
+
+test("e2e zhipu: detached refresh mode never runs the relay command", async (t) => {
+  // The refresh child used to execute the relay (a full statusline tool run
+  // on empty stdin) before reaching the fetch branch — observe the relay via
+  // a marker file instead of stdout, which stays empty either way.
+  const marker = join(testHome, "relay-ran-marker");
+  rmSync(marker, { force: true });
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    meta: ZHIPU_META,
+    relayLine: { head: "Opus │ Context █░░░░░ 12%" },
+    respond: (req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
+    },
+  });
+  // the wrapper inlined no RELAY_COMMAND — it reads the global settings at
+  // run time, so swapping the entry takes effect for both runs below
+  writeGlobalSettings({ type: "command", command: `touch ${marker}` });
+  const normal = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(normal.status, 0, normal.stderr);
+  assert.ok(existsSync(marker), "normal mode runs the relay");
+  rmSync(marker, { force: true });
+  const refresh = await runWrapper(wrapperPath, STATUSLINE_INPUT, { CC_LAUNCH_USAGE_REFRESH: "1" });
+  assert.equal(refresh.status, 0, refresh.stderr);
+  assert.equal(refresh.stdout, "", "refresh mode prints nothing");
+  assert.ok(!existsSync(marker), "refresh mode must not run the relay");
 });
 
 function stripAnsi(s) {
@@ -1202,6 +1233,9 @@ test("aggregation e2e: unregistered ccs key falls to the side-by-side form (all 
   assert.ok(first.includes("[Stack]"), first); // tag stays on the launch provider
   assert.ok(first.includes("5h"), first);
   assert.ok(first.includes("[$12.34]"), first); // both members side by side
+  // each cell carries its member key — the stable ccs id segment
+  assert.ok(first.includes("zhipu 5h"), first);
+  assert.ok(first.includes("deepseek [$12.34]"), first);
 });
 
 test("aggregation e2e: prefix-less model id routes to the default member", async (t) => {
@@ -1214,6 +1248,9 @@ test("aggregation e2e: prefix-less model id routes to the default member", async
   const first = stripAnsiPublic(r.stdout.split("\n")[0]);
   assert.ok(first.includes("[Z.AI GLM]"), first);
   assert.ok(first.includes("5h ██░░░░ 40%"), first);
+  // attributed form renders bare — no member-key prefix when the model
+  // routes to exactly one member
+  assert.ok(!first.includes("zhipu "), first);
 });
 
 function stripAnsiPublic(s) {
