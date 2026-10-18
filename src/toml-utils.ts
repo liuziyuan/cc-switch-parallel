@@ -1,13 +1,14 @@
 // ─── toml-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { applyMergePatch, isPlainObject, jsonDeepClone } from "./json-utils.js";
+import { applyMergePatch, isPlainObject, isSafeObjectKey, jsonDeepClone } from "./json-utils.js";
 import { parseToml, stringifyToml } from "./toml.js";
 
 // ─── TOML utils (port of Rust merge_toml_table_like) ───────────────────
 
 function tomlDeepMerge(target, source) {
   for (const [key, sourceValue] of Object.entries(source)) {
-    if (key in target && isPlainObject(target[key]) && isPlainObject(sourceValue)) {
+    if (!isSafeObjectKey(key)) continue;
+    if (Object.prototype.hasOwnProperty.call(target, key) && isPlainObject(target[key]) && isPlainObject(sourceValue)) {
       tomlDeepMerge(target[key], sourceValue);
     } else {
       target[key] = sourceValue;
@@ -18,7 +19,8 @@ function tomlDeepMerge(target, source) {
 
 function tomlIsSubset(target, source) {
   for (const [key, sourceValue] of Object.entries(source)) {
-    if (!(key in target)) return false;
+    if (!isSafeObjectKey(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(target, key)) return false;
     const targetValue = target[key];
     if (isPlainObject(sourceValue)) {
       if (!isPlainObject(targetValue)) return false;

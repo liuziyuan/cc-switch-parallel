@@ -9,6 +9,18 @@ function isPlainObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+// Keys that must never be written through a merge: assigning them walks /
+// replaces the prototype instead of creating a config entry. JSON.parse can
+// produce "__proto__" as an OWN key, which is exactly the prototype-pollution
+// vector (`key in target` then recurses into Object.prototype).
+const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+function isSafeObjectKey(key: any): boolean {
+  return !UNSAFE_OBJECT_KEYS.has(String(key));
+}
+function hasOwn(obj: any, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 // Parse a DB column that is supposed to hold a JSON object. Missing/empty
 // values are the legitimate "no config" case → {}. Invalid JSON, arrays and
 // scalars → null: callers must warn and degrade to {} instead of handing the
@@ -34,7 +46,8 @@ function jsonDeepClone(obj) {
 function jsonDeepMerge(target, source) {
   if (isPlainObject(target) && isPlainObject(source)) {
     for (const [key, sourceValue] of Object.entries(source)) {
-      if (key in target) {
+      if (!isSafeObjectKey(key)) continue;
+      if (hasOwn(target, key)) {
         jsonDeepMerge(target[key], sourceValue);
       } else {
         target[key] = sourceValue;
@@ -73,6 +86,7 @@ function applyMergePatch(target, patch) {
   if (!isPlainObject(patch)) return jsonDeepClone(patch ?? null);
   if (!isPlainObject(target)) target = {};
   for (const [key, value] of Object.entries(patch)) {
+    if (!isSafeObjectKey(key)) continue;
     if (value === null) {
       delete target[key];
     } else if (isPlainObject(value)) {
@@ -103,7 +117,8 @@ function mergeCommonOverProvider(target, source) {
     return jsonDeepClone(source);
   }
   for (const [key, sourceValue] of Object.entries(source)) {
-    if (Object.prototype.hasOwnProperty.call(target, key)) {
+    if (!isSafeObjectKey(key)) continue;
+    if (hasOwn(target, key)) {
       target[key] = mergeCommonOverProvider(target[key], sourceValue);
     } else {
       target[key] = jsonDeepClone(sourceValue);
@@ -116,7 +131,8 @@ function jsonIsSubset(target, source) {
   if (isPlainObject(source)) {
     if (!isPlainObject(target)) return false;
     for (const [key, sourceValue] of Object.entries(source)) {
-      if (!(key in target)) return false;
+      if (!isSafeObjectKey(key)) continue;
+      if (!hasOwn(target, key)) return false;
       if (!jsonIsSubset(target[key], sourceValue)) return false;
     }
     return true;
@@ -215,4 +231,4 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: 
 }
 
 
-export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider, parseJsonObject };
+export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, isSafeObjectKey, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider, parseJsonObject };

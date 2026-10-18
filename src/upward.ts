@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
 import { atomicWrite } from "./fs-utils.js";
-import { deepEqualJson, isPlainObject } from "./json-utils.js";
+import { deepEqualJson, isPlainObject, isSafeObjectKey } from "./json-utils.js";
 import { DB_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { applyTomlPatchText } from "./toml-utils.js";
 
@@ -30,7 +30,7 @@ function resolvePathSegmentsDetailed(obj, path): { parts: string[]; resolved: bo
   const parts = String(path).split(".");
   function walk(node, i): string[] | null {
     if (!isPlainObject(node)) return null;
-    if (i === parts.length - 1) return parts[i] in node ? [parts[i]] : null;
+    if (i === parts.length - 1) return Object.prototype.hasOwnProperty.call(node, parts[i]) ? [parts[i]] : null;
     const exact = Object.prototype.hasOwnProperty.call(node, parts[i])
       ? walk(node[parts[i]], i + 1) : null;
     if (exact) return [parts[i], ...exact];
@@ -77,10 +77,10 @@ function pathExistsInSnippet(snippetObj, path) {
   const parts = resolvePathSegments(snippetObj, path);
   let cur = snippetObj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!isPlainObject(cur) || !(parts[i] in cur)) return false;
+    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, parts[i])) return false;
     cur = cur[parts[i]];
   }
-  return isPlainObject(cur) && (parts[parts.length - 1] in cur);
+  return isPlainObject(cur) && Object.prototype.hasOwnProperty.call(cur, parts[parts.length - 1]);
 }
 
 // Sensitive-key gate for the smart split's common direction — 1:1 port of
@@ -122,7 +122,7 @@ function isSensitiveConfigPath(path, segments: string[] | null = null) {
 function getPathValue(obj, path) {
   let cur = obj;
   for (const part of resolvePathSegments(obj, path)) {
-    if (!isPlainObject(cur) || !(part in cur)) return undefined;
+    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, part)) return undefined;
     cur = cur[part];
   }
   return cur;
@@ -258,6 +258,7 @@ function applyCodexSettingsFieldPatches(drift) {
 function foldRemovalPatch(patch, target) {
   if (!isPlainObject(patch)) return;
   for (const k of Object.keys(patch)) {
+    if (!isSafeObjectKey(k)) continue;
     const pv = patch[k];
     if (!isPlainObject(pv)) continue; // leaves (values and nulls) stay as-is
     const targetChild = isPlainObject(target) ? target[k] : undefined;
@@ -268,7 +269,7 @@ function foldRemovalPatch(patch, target) {
       pvKeys.every((key) => pv[key] === null) &&
       isPlainObject(targetChild) &&
       Object.keys(targetChild).length === pvKeys.length &&
-      pvKeys.every((key) => key in targetChild)
+      pvKeys.every((key) => isSafeObjectKey(key) && Object.prototype.hasOwnProperty.call(targetChild, key))
     ) {
       patch[k] = null;
     }
@@ -334,6 +335,9 @@ function splitChangesByTarget(changes: any[], providerId: string, commonObj: any
 // target document, corrupting it on write-back.
 function buildNestedAssign(patch, path, value, refObj, segments: string[] | null = null) {
   const parts = resolveWriteSegments(refObj, path, segments);
+  // Never build a patch through prototype keys: assigning them mutates the
+  // prototype instead of creating a config entry.
+  if (!parts.every((p) => isSafeObjectKey(p))) return;
   let cur = patch;
   for (let i = 0; i < parts.length - 1; i++) {
     if (!isPlainObject(cur[parts[i]])) cur[parts[i]] = {};
