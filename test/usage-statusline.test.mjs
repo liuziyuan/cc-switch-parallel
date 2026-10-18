@@ -1198,7 +1198,7 @@ test("aggregation: buildStackUsageConfig resolves members with own creds; unreso
   setupStackDB([
     ["m-zai", "Z.AI GLM", { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "zai-tok" }, ZHIPU_META],
     ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
-    ["m-nz", "P&G Nezha", { ANTHROPIC_BASE_URL: "https://agent-gateway.example.com/x", ANTHROPIC_AUTH_TOKEN: "nz" }, {}],
+    ["m-nz", "Example Provider", { ANTHROPIC_BASE_URL: "https://agent-gateway.example.com/x", ANTHROPIC_AUTH_TOKEN: "nz" }, {}],
   ]);
   writeLiveState(
     { enabled: true, members: ["m-ds", "m-zai", "m-nz"], keys: { deepseek: "m-ds", zhipu: "m-zai", nezha: "m-nz" } },

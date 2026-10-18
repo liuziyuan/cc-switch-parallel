@@ -303,7 +303,7 @@ test("wrapper: per-provider colors are stable and do not collide on real names",
   cleanInstance("p-col-a");
   cleanInstance("p-col-b");
   buildClaudeEffectiveSettings({}, {}, "", "Zhipu GLM en", "p-col-a");
-  buildClaudeEffectiveSettings({}, {}, "", "P&G Nezha", "p-col-b");
+  buildClaudeEffectiveSettings({}, {}, "", "Example Provider", "p-col-b");
   const colorOf = (id) => {
     const m = readFileSync(instanceFile(id), "utf8").match(/PALETTE\[hash % PALETTE\.length\]/);
     assert.ok(m, "palette expression present");
@@ -407,8 +407,8 @@ test("wrapper: corrupted global settings file → tag only", () => {
 // ─── wrapper script source (no execution) ─────────────────────────────
 
 test("wrapper script: quoted strings survive shell round-trip", () => {
-  const script = buildStatusLineWrapperScript("P&G Nezha 'quoted'", GLOBAL_SETTINGS);
-  assert.ok(script.includes(JSON.stringify("P&G Nezha 'quoted'")));
+  const script = buildStatusLineWrapperScript("Example Provider 'quoted'", GLOBAL_SETTINGS);
+  assert.ok(script.includes(JSON.stringify("Example Provider 'quoted'")));
   assert.ok(script.includes(JSON.stringify(GLOBAL_SETTINGS)));
 });
 

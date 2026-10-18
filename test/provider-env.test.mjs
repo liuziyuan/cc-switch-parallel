@@ -24,9 +24,9 @@ const {
 
 test("buildLaunchExtraEnv: injects name and id", () => {
   assert.deepEqual(
-    buildLaunchExtraEnv("P&G Nezha", "4e2249cb-7cec-493c-a8f0-d437cfd3aea6"),
+    buildLaunchExtraEnv("Example Provider", "4e2249cb-7cec-493c-a8f0-d437cfd3aea6"),
     {
-      CC_SWITCH_PROVIDER: "P&G Nezha",
+      CC_SWITCH_PROVIDER: "Example Provider",
       CC_SWITCH_PROVIDER_ID: "4e2249cb-7cec-493c-a8f0-d437cfd3aea6",
     },
   );

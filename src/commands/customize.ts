@@ -268,8 +268,7 @@ Commands: ${Object.keys(APP_ADAPTERS).join(", ")}
 
 Examples:
   switch "Claude Official" claude
-  switch "Zhipu GLM en" claude --continue
-  switch "P&G Nezha" codex`);
+  switch "Zhipu GLM en" claude --continue`);
 }
 
 

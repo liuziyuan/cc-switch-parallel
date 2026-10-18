@@ -57,7 +57,7 @@ switch [--sync|--no-sync] --id <providerId> <cmd> [args...]
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
 switch --sync "Claude Official" claude   # 启动前就地交互确认配置漂移
-switch --no-sync "P&G Nezha" codex       # 静默启动，抑制漂移警告
+switch --no-sync "Example Provider" codex       # 静默启动，抑制漂移警告
 switch --id <providerId> claude          # 按 id 启动（同名 provider 时消歧）
 ```
 
@@ -81,8 +81,8 @@ switch --help     # 列出所有命令
 `switch ps` 每个会话一行 —— 同一 provider 并发跑多个终端时各占一行，互不覆盖：
 
 ```
-  claude  P&G Nezha      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
-  claude  P&G Nezha      RFP2                ~/workspace/company/daneng/RFP2         up 2d
+  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
+  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d
 ```
 
 第三列是 tmux 会话名（不在 tmux 里运行时回退显示终端 tty），第四列是启动时所在的项目目录（`~` 缩写）。
