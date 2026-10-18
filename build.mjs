@@ -1,4 +1,4 @@
-// Build script: bundles src/main.mjs into a single-file CLI at
+// Build script: bundles the bin shell (and through it src/main.ts) into a single-file CLI at
 // dist/cc-launch.mjs, injects the package version, and makes it executable.
 //
 // The published artifact stays one self-contained file (the npm package
@@ -14,8 +14,8 @@ import { build } from "esbuild";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf8"));
 
-// The entry is the bin shell, not src/main.mjs: the shell owns the shebang
-// and the CC_LAUNCH_SKIP_MAIN guard that starts main(). Bundling src/main.mjs
+// The entry is the bin shell, not src/main.ts: the shell owns the shebang
+// and the CC_LAUNCH_SKIP_MAIN guard that starts main(). Bundling src/main.ts
 // directly would produce a library with no CLI entry point.
 // esbuild preserves the entry file's hashbang at the top of the output, so
 // no banner is used here (a banner would risk a second `#!` line).
@@ -30,7 +30,7 @@ const result = await build({
   logLevel: "warning",
 });
 
-// `VERSION` is a string literal ("__VERSION__") in src/paths.mjs; esbuild's
+// `VERSION` is a string literal ("__VERSION__") in src/paths.ts; esbuild's
 // define only rewrites bare identifiers, so keep the text substitution.
 const outfile = join(__dirname, "dist", "cc-launch.mjs");
 const out = result.outputFiles[0].text.replace(/"__VERSION__"/g, JSON.stringify(pkg.version));
