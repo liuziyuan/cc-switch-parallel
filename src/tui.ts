@@ -625,6 +625,16 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
 // (providerId when known, name as fallback/display), the last permission
 // mode, and the full original argv (extraArgs) so `--continue`-style flags
 // survive into the next quick launch.
+// Launch refs: prefer the provider id so the launched row is exactly the
+// selected one even when several providers share a name. Legacy quick items
+// without a providerId fall back to the name (and can surface ambiguity).
+function launchRefForQuick(q: any) {
+  return q?.providerId ? { id: q.providerId, name: q.provider } : { name: q?.provider };
+}
+function launchRefForRow(row: any) {
+  return row?.id ? { id: row.id, name: row.name } : { name: row?.name };
+}
+
 async function runTUI() {
   const sync = await detectAndPromptSync({ tui: true });
   if (sync.interrupted) {
@@ -705,7 +715,7 @@ async function runTUI() {
     // for pre-extraArgs entries).
     if (cli.quick) {
       const args = cli.extraArgs.length > 0 ? cli.extraArgs : APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey);
-      await launchProvider(cli.cli, cli.provider, args, null, { hotkey: cli.hotkey });
+      await launchProvider(cli.cli, launchRefForQuick(cli), args, null, { hotkey: cli.hotkey });
       return;
     }
 
@@ -762,10 +772,10 @@ async function runTUI() {
       throw e; // Ctrl+C → propagate to main()
     }
     const provider = providers.find((p) => p.id === selected.value);
-    await launchProvider(cli.value, provider!.name, adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
+    await launchProvider(cli.value, launchRefForRow(provider), adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
     return;
   }
 }
 
 
-export { runTUI, tuiSelect };
+export { launchRefForQuick, launchRefForRow, runTUI, tuiSelect };
