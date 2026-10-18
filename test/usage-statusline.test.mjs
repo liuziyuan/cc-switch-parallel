@@ -30,6 +30,7 @@ const {
   readStackState,
   readGlobalModelPicker,
   buildStackUsageConfig,
+  ensureStackProviderRow,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -659,7 +660,7 @@ function cleanStackInstance() {
   rmSync(join(INSTANCES, STACK_PROVIDER_ID), { recursive: true, force: true });
 }
 
-test("aggregation unit: loopback detection", () => {
+test("aggregation unit: loopback detection + PROXY_MANAGED stack signature", () => {
   assert.equal(isLoopbackBaseUrl("http://127.0.0.1:15721"), true);
   assert.equal(isLoopbackBaseUrl("http://localhost:15721"), true);
   assert.equal(isLoopbackBaseUrl("http://[::1]:15721"), true);
@@ -667,6 +668,16 @@ test("aggregation unit: loopback detection", () => {
   assert.equal(isLoopbackBaseUrl(""), false);
   assert.equal(isLoopbackBaseUrl("not a url"), false);
   assert.equal(isAggregationProviderSettings(STACK_SETTINGS), true);
+  // a user's own local gateway (loopback + REAL token) is not a Stack row
+  assert.equal(
+    isAggregationProviderSettings({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gateway" } }),
+    false,
+  );
+  // the placeholder without a loopback base URL is not one either
+  assert.equal(
+    isAggregationProviderSettings({ env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" } }),
+    false,
+  );
   assert.equal(isAggregationProviderSettings(ZHIPU_SETTINGS), false);
 });
 
@@ -814,12 +825,27 @@ test("aggregation: protectAggregationIdentityEnv unit — row env wins, ccs mode
 });
 
 test("aggregation: explicit commonConfigEnabled:false still wins on a loopback row", () => {
-  // isAggregationProviderSettings cannot tell a desktop Stack row from a
-  // user's own local gateway row — the gateway user's explicit off holds
-  // (the documented temporary fix, un-ticked, keeps working)
+  // the desktop app can turn the common config off on the Stack row itself —
+  // the explicit meta choice outranks the forced merge either way
   const effective = buildClaudeEffectiveSettings(STACK_SETTINGS, { commonConfigEnabled: false }, STACK_COMMON);
   assert.equal(effective.hooks, undefined);
   assert.equal(effective.permissions, undefined);
+});
+
+test("aggregation: local-gateway row (loopback + real token) is NOT force-merged anymore", () => {
+  // v0.17.1's loopback-only signature mistook a user's own gateway row
+  // (LiteLLM, one-api …) for a Stack row: forced common merge + identity-key
+  // deletion. The PROXY_MANAGED signature puts gateway rows back on the
+  // normal subset fallback — a full gateway row is not a subset of the
+  // common config, so nothing merges and its own auth survives untouched.
+  const gateway = { env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gateway" } };
+  const effective = buildClaudeEffectiveSettings(gateway, {}, STACK_COMMON);
+  assert.equal(effective.hooks, undefined, "no forced merge for gateway rows");
+  assert.equal(effective.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, undefined);
+  assert.equal(effective.env.ANTHROPIC_AUTH_TOKEN, "sk-gateway");
+  // control: the SAME row as a Stack row (placeholder token) still merges
+  const stack = buildClaudeEffectiveSettings(STACK_SETTINGS, {}, STACK_COMMON);
+  assert.ok(stack.hooks.SessionStart, "control: Stack rows keep force-merging");
 });
 
 test("aggregation: common statusLine becomes the wrapper relay source, never the entry itself", () => {
@@ -947,6 +973,51 @@ test("aggregation: buildStackUsageConfig resolves members with own creds; unreso
   assert.equal(cfg.defaultKey, "zhipu"); // proxy_route member
   assert.deepEqual(cfg.names, { zhipu: "Z.AI GLM", deepseek: "DeepSeek" });
   removeLiveState();
+});
+
+test("aggregation: ensureStackProviderRow creates alongside a gateway row, is idempotent, never overwrites", () => {
+  cleanStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  // desktop aggregation on: global env loopback + live stack
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-zhipu--glm-5.3[1M]",
+    },
+    modelPicker: PICKER_FIXTURE,
+  }));
+  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+  setupStackDB([
+    // a user's OWN local gateway row — loopback + REAL token; under the old
+    // loopback-only signature this satisfied the existing-row search and the
+    // Stack row was never created
+    ["m-gw", "My LiteLLM", { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gateway" }, {}],
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+  ]);
+  const created = ensureStackProviderRow();
+  assert.ok(created, "gateway row must not satisfy the stack-row search");
+  assert.equal(created.name, "Stack");
+  // the created row carries the live contract from the global settings
+  const rows = JSON.parse(execFileSync("sqlite3", ["-json", join(CC, "cc-switch.db"),
+    "SELECT id, name, settings_config FROM providers WHERE app_type = 'claude' AND id = '" + created.id + "'"],
+  { encoding: "utf8" }) || "[]");
+  const sc = JSON.parse(rows[0].settings_config);
+  assert.equal(sc.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
+  assert.equal(sc.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(sc.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-zhipu--glm-5.3[1M]");
+  assert.deepEqual(sc.modelPicker, PICKER_FIXTURE);
+  // the gateway row is untouched
+  const gw = JSON.parse(execFileSync("sqlite3", ["-json", join(CC, "cc-switch.db"),
+    "SELECT settings_config FROM providers WHERE id = 'm-gw'"],
+  { encoding: "utf8" }) || "[]");
+  assert.equal(JSON.parse(gw[0].settings_config).env.ANTHROPIC_AUTH_TOKEN, "sk-gateway");
+  // idempotent: the row now exists — nothing more to create
+  assert.equal(ensureStackProviderRow(), null);
+  // stack off in the desktop app → nothing to create at all
+  removeLiveState();
+  sql(`DELETE FROM providers WHERE id IN ('${created.id}', 'm-gw')`);
+  assert.equal(ensureStackProviderRow(), null);
 });
 
 test("aggregation: wrapper source — stack tail inlines map, decode and makeTag; no stack keeps legacy bytes", () => {

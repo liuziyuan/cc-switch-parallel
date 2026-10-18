@@ -1011,14 +1011,12 @@ function isClaudeRuntimeStatePath(path) {
 // derivations makes the overwrite guard misfire.
 function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, providerName, providerId) {
   let effective = jsonDeepClone(settingsConfig);
-  // Aggregation rows (loopback base URL) always merge the common config: the
-  // row carries only routing env + modelPicker, so the subset fallback in
-  // providerUsesCommonConfig can never see the common content (hooks!) and
-  // the row would launch without every shared setting. Forced merge applies
-  // ONLY where meta carries no explicit choice — an explicit
-  // commonConfigEnabled:false still wins, because the loopback test cannot
-  // tell a desktop-created Stack row from a user's own local gateway row,
-  // and the gateway user's explicit off must keep working. Not gated on
+  // Aggregation rows (loopback + PROXY_MANAGED signature) always merge the
+  // common config: the row carries only routing env + modelPicker, so the
+  // subset fallback in providerUsesCommonConfig can never see the common
+  // content (hooks!) and the row would launch without every shared setting.
+  // An explicit commonConfigEnabled:false still wins — the desktop app can
+  // turn the common config off on the Stack row itself. Not gated on
   // readStackState: the row launches with the stack off too, and a merge
   // decision that flips with desktop state would break prepare determinism.
   const isAgg = isAggregationProviderSettings(settingsConfig);
@@ -1077,7 +1075,28 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, provi
   if (providerId !== undefined) {
     try {
       const current = JSON.parse(readFileSync(claudeInstanceSettingsPath(providerId), "utf8"));
-      if (typeof current?.model === "string" && current.model) effective.model = current.model;
+      if (typeof current?.model === "string" && current.model) {
+        let model = current.model;
+        // Dangling ccs model fallback: a carried /model pick still pointing at
+        // a Stack key that is no longer live (stack off in the desktop app, or
+        // the member since removed) would fail at the proxy on every launch —
+        // drop the carry and let the merged value stand. Key liveness mirrors
+        // the wrapper's decode (ccs-claude-<key>--…; key never contains "--").
+        // Runs in buildClaudeEffectiveSettings (not the write site) so the
+        // guard's computeEffectiveSettings [C3] drops it identically — the
+        // one-time overwrite note the guard shows for the rollback is the
+        // desired signal, not a false positive.
+        const ccs = model.match(/^ccs-claude-([a-z0-9-]+?)--/i);
+        if (ccs) {
+          const stack = readStackState("claude");
+          const key = ccs[1].toLowerCase();
+          if (!stack || !(key in stack.keys)) {
+            console.error(`\x1b[2mℹ 聚合模型 "${model}" 已不在当前聚合栈中（栈已关闭或成员被移除）— 本次启动回退默认模型，恢复后请在 /model 重选\x1b[0m`);
+            model = null;
+          }
+        }
+        if (model) effective.model = model;
+      }
     } catch {
       // no instance file yet (first prepare) or unreadable — generated value stands
     }
@@ -1785,9 +1804,17 @@ function isLoopbackBaseUrl(baseUrl) {
   }
 }
 
+// Deterministic Stack-row signature: loopback base URL + the upstream
+// placeholder token (the shape both the desktop live projection and
+// ensureStackProviderRow write). Loopback alone cannot tell a Stack row from
+// a user's own local gateway (LiteLLM, one-api …) — the earlier loopback-only
+// test mistook gateway rows for Stack rows (forced common merge, picker
+// injection, ensureStackProviderRow swallowing the gateway row as the
+// "existing" Stack). Still no readStackState here: the merge decision must
+// not flip with desktop state (prepare determinism).
 function isAggregationProviderSettings(settingsConfig) {
   const env = isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
-  return !!env && isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL);
+  return !!env && isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL) && env.ANTHROPIC_AUTH_TOKEN === "PROXY_MANAGED";
 }
 
 // Identity keys the aggregation merge must never let the common config win
@@ -5654,6 +5681,7 @@ export const __test = Object.freeze({
   buildStackUsageConfig,
   buildStackUsageWrapperLines,
   buildClaudeAggregationGroup,
+  ensureStackProviderRow,
   USAGE_CACHE_FILENAME,
   APP_ADAPTERS,
 });
