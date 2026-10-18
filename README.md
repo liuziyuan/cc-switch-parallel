@@ -147,7 +147,7 @@ Each instance is ~8KB — the heavy data (plugins, session history, credentials)
 
 ## Adding a new CLI
 
-Each CLI is a small adapter (`APP_ADAPTERS` in `bin/cc-launch.mjs`). To add e.g. Gemini, add one object — `runTUI`, `launchProvider`, and `main` stay generic:
+Each CLI is a small adapter (`APP_ADAPTERS` in `src/adapters.mjs`). To add e.g. Gemini, add one object — `runTUI`, `launchProvider`, and `main` stay generic:
 
 ```js
 const APP_ADAPTERS = {

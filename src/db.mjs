@@ -1,0 +1,135 @@
+// ─── db (split from bin/cc-launch.mjs) ─────────────────────────────
+
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { DB_PATH, SETTINGS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "./paths.mjs";
+import { appendVirtualStackRow, virtualStackProviderFor } from "./stack/state.mjs";
+
+// ─── DB queries ───────────────────────────────────────────────────────
+
+function queryDB(sql) {
+  try {
+    const json = execFileSync("sqlite3", ["-json", DB_PATH, sql], {
+      encoding: "utf8",
+      maxBuffer: 50 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return JSON.parse(json || "[]");
+  } catch (e) {
+    if (e.status === 1 && (!e.stdout || !e.stderr)) return [];
+    throw e;
+  }
+}
+
+// Write helper for SQLite (mirrors queryDB without -json / JSON.parse).
+// Used by runtime-preference recycling to atomically patch common_config_claude.
+// ".timeout 3000" is a sqlite3 dot-command setting the busy timeout — the
+// 2s `timeout` option below only bounds the PROCESS, and can't make sqlite
+// wait out a lock held by the cc-switch desktop app mid-write.
+function execDB(sql) {
+  execFileSync("sqlite3", [DB_PATH, ".timeout 3000", sql], {
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: 2000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function sqlQuote(str) {
+  return "'" + String(str).replace(/'/g, "''") + "'";
+}
+
+function queryProvider(name, appType) {
+  const rows = queryDB(
+    `SELECT id, name, settings_config, category, meta FROM providers WHERE name = ${sqlQuote(name)} AND app_type = ${sqlQuote(appType)} ORDER BY id LIMIT 1`,
+  );
+  if (rows[0]) return rows[0];
+  // Virtual aggregation entry: DB-first by name, the derived row answers only
+  // under its own (collision-dodged) display name. Fail-open on derive trouble.
+  try {
+    if (VIRTUAL_STACK_APPS.has(appType)) {
+      const v = virtualStackProviderFor(appType);
+      if (v && v.name === name) return v;
+    }
+  } catch { /* fall through to null */ }
+  return null;
+}
+
+function queryProviderById(id, appType) {
+  const rows = queryDB(
+    `SELECT id, name, settings_config, category, meta FROM providers WHERE id = ${sqlQuote(id)} AND app_type = ${sqlQuote(appType)} LIMIT 1`,
+  );
+  if (rows[0]) return rows[0];
+  try {
+    if (id === VIRTUAL_STACK_PROVIDER_ID && VIRTUAL_STACK_APPS.has(appType)) {
+      return virtualStackProviderFor(appType);
+    }
+  } catch { /* fall through to null */ }
+  return null;
+}
+
+function queryProvidersByApp(appType) {
+  const rows = queryDB(
+    `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
+  );
+  return appendVirtualStackRow(rows, appType);
+}
+
+// Same query, but errors PROPAGATE (queryDB's silent-catch collapses any
+// sqlite3 failure — missing binary, missing table, locked DB — to [], which
+// would corrupt callers that must fail open: the v1→v2 history migration
+// (every live entry would be marked dead) and the TUI's alive snapshot
+// (every Recent row would be flagged ✗ missing).
+function queryProvidersStrict(appType) {
+  const json = execFileSync("sqlite3", ["-json", DB_PATH,
+    `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // Virtual row merges ONLY onto a successful read — a DB failure must
+  // propagate untouched so history migration / alive snapshots stay honest.
+  return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
+}
+
+function queryCommonConfig(appType) {
+  const key = `common_config_${appType}`;
+  const rows = queryDB(`SELECT value FROM settings WHERE key = ${sqlQuote(key)}`);
+  return rows[0]?.value || null;
+}
+
+// Atomically merge a patch into common_config_claude via sqlite json_patch
+// (RFC 7396 merge patch: keys present in the patch override/add; absent keys
+// are left untouched). A single UPDATE is atomic, so concurrent launches can't
+// lose updates on disjoint keys. Only updates an existing row — never creates
+// the common config if absent.
+function patchCommonConfigClaude(patchObj) {
+  const key = "common_config_claude";
+  const patchLit = sqlQuote(JSON.stringify(patchObj));
+  execDB(
+    `UPDATE settings SET value = json_patch(value, json(${patchLit})) WHERE key = ${sqlQuote(key)}`,
+  );
+}
+
+// Atomically merge a patch into one provider's settings_config via sqlite
+// json_patch (RFC 7396 — same contract as patchCommonConfigClaude, but the
+// target is providers.settings_config, a TEXT column holding JSON). A single
+// UPDATE is atomic, so concurrent launches can't lose updates on disjoint
+// keys. Only updates an existing row — never INSERTs a provider.
+function patchProviderSettingsConfig(providerId, appType, patchObj) {
+  const patchLit = sqlQuote(JSON.stringify(patchObj));
+  execDB(
+    `UPDATE providers SET settings_config = json_patch(settings_config, json(${patchLit})) ` +
+    `WHERE id = ${sqlQuote(providerId)} AND app_type = ${sqlQuote(appType)}`,
+  );
+}
+
+// ─── Settings reader ──────────────────────────────────────────────────
+
+function loadSettings() {
+  try {
+    return JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+
+export { execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict, sqlQuote };
