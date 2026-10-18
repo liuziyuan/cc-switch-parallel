@@ -3,18 +3,19 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS } from "../adapters.mjs";
-import { instanceInstructionsPath } from "./customize.mjs";
-import { pruneInstanceBaselines } from "./ps.mjs";
-import { queryCommonConfig, queryDB, queryProviderById, queryProvidersByApp } from "../db.mjs";
-import { lstatSyncSafe, readdirSyncSafe } from "../fs-utils.mjs";
-import { pruneInstanceSettingsBackups } from "../guard.mjs";
-import { isPlainObject } from "../json-utils.mjs";
-import { DB_PATH, INSTANCES_DIR, LIVE_STATE_PATH, SYNC_STATE_PATH } from "../paths.mjs";
-import { codexAggregationRoute } from "../stack/catalog.mjs";
-import { isAggregationProviderSettings, probeTcpReachable, readStackState, virtualStackProviderFor } from "../stack/state.mjs";
-import { parseToml } from "../toml.mjs";
-import { tuiSelect } from "../tui.mjs";
+import type { DoctorCheck, InstanceInfo } from "../types.js";
+import { APP_ADAPTERS } from "../adapters.js";
+import { instanceInstructionsPath } from "./customize.js";
+import { pruneInstanceBaselines } from "./ps.js";
+import { queryCommonConfig, queryDB, queryProviderById, queryProvidersByApp } from "../db.js";
+import { lstatSyncSafe, readdirSyncSafe } from "../fs-utils.js";
+import { pruneInstanceSettingsBackups } from "../guard.js";
+import { isPlainObject } from "../json-utils.js";
+import { DB_PATH, INSTANCES_DIR, LIVE_STATE_PATH, SYNC_STATE_PATH } from "../paths.js";
+import { codexAggregationRoute } from "../stack/catalog.js";
+import { isAggregationProviderSettings, probeTcpReachable, readStackState, virtualStackProviderFor } from "../stack/state.js";
+import { parseToml } from "../toml.js";
+import { tuiSelect } from "../tui.js";
 
 // ─── doctor / clean ────────────────────────────────────────────────────
 
@@ -27,8 +28,8 @@ function which(bin) {
   }
 }
 
-function collectInstances() {
-  const instances = [];
+function collectInstances(): InstanceInfo[] {
+  const instances: InstanceInfo[] = [];
   for (const adapter of Object.values(APP_ADAPTERS)) {
     const dir = join(INSTANCES_DIR, adapter.appType);
     if (!existsSync(dir)) continue;
@@ -45,21 +46,21 @@ function collectInstances() {
 // is simply off (pass). Real inconsistencies fail — members whose provider
 // rows are gone, an unreachable proxy. Returns [{label, pass, detail}] for
 // runDoctor's renderer, so the checks stay unit-testable without the UI.
-async function aggregationDoctorChecks() {
-  const checks = [];
-  const add = (label, pass, detail) => checks.push({ label, pass, detail });
+async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
   if (!existsSync(LIVE_STATE_PATH)) {
     add("aggregation live-state", true, "not present (aggregation off)");
     return checks;
   }
-  let raw = null;
+  let raw: any = null;
   try { raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8")); } catch {}
   if (!isPlainObject(raw)) {
     add("aggregation live-state", false, "exists but unparseable");
     return checks;
   }
-  if (raw.version !== undefined && raw.version !== 1) {
-    add("aggregation live-state", false, `unsupported contract version ${raw.version} (expected 1) — read as off`);
+  if (raw!.version !== undefined && raw!.version !== 1) {
+    add("aggregation live-state", false, `unsupported contract version ${raw!.version} (expected 1) — read as off`);
     return checks;
   }
   const stack = readStackState("claude");
@@ -88,7 +89,7 @@ async function aggregationDoctorChecks() {
     add("aggregation Stack row", false, "live stack but no virtual entry derivable — global ~/.claude/settings.json env is missing or not loopback");
     return checks;
   }
-  let baseUrl = null;
+  let baseUrl: string | null = null;
   try { baseUrl = JSON.parse(virtual.settings_config)?.env?.ANTHROPIC_BASE_URL ?? null; } catch {}
   // Legacy auto-created DB rows (pre-virtualization) are cleaned up on the
   // next TUI open / launch; report them so the state is visible until then.
@@ -120,9 +121,9 @@ async function aggregationDoctorChecks() {
 // a failure) and the proxy must answer. No member-row check (codex has no
 // legacy DB aggregation rows; a removed member shows in the TUI label) and no
 // catalog check (prepare's copy warning already surfaces that).
-async function codexAggregationDoctorChecks() {
-  const checks = [];
-  const add = (label, pass, detail) => checks.push({ label, pass, detail });
+async function codexAggregationDoctorChecks(): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
   const stack = readStackState("codex");
   if (!stack) return checks;
   const virtual = virtualStackProviderFor("codex");
@@ -131,7 +132,7 @@ async function codexAggregationDoctorChecks() {
       "live stack but no virtual entry derivable — global ~/.codex/config.toml is missing, has no custom model_provider, or its base_url is not loopback");
     return checks;
   }
-  let baseUrl = null;
+  let baseUrl: string | null = null;
   try {
     const r = codexAggregationRoute(JSON.parse(virtual.settings_config)?.config || "");
     baseUrl = r?.baseUrl ?? null;
@@ -146,9 +147,9 @@ async function codexAggregationDoctorChecks() {
   return checks;
 }
 
-async function runDoctor() {
-  const checks = [];
-  const add = (label, pass, detail) => checks.push({ label, pass, detail });
+async function runDoctor(): Promise<void> {
+  const checks: DoctorCheck[] = [];
+  const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
 
   // sqlite3
   const sqliteOk = !!which("sqlite3");
@@ -165,14 +166,14 @@ async function runDoctor() {
       if (tables.length === 0) {
         counts = "providers table missing";
       } else {
-        const parts = [];
+        const parts: string[] = [];
         for (const adapter of Object.values(APP_ADAPTERS)) {
           parts.push(`${adapter.appType}: ${queryProvidersByApp(adapter.appType).length}`);
         }
         counts = parts.join(", ");
         dbOk = true;
       }
-    } catch (e) {
+    } catch (e: any) {
       counts = e.message;
     }
   }
@@ -212,7 +213,7 @@ async function runDoctor() {
       globalOk,
       globalOk ? globalPath : `${globalPath} not found (instances fall back to empty snapshots)`,
     );
-    let broken = [];
+    let broken: string[] = [];
     for (const inst of collectInstances().filter((i) => i.appType === adapter.appType)) {
       const p = instanceInstructionsPath(adapter.appType, inst.name);
       const st = lstatSyncSafe(p);

@@ -3,13 +3,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { queryProviderById } from "./db.mjs";
-import { atomicWrite } from "./fs-utils.mjs";
-import { isPlainObject } from "./json-utils.mjs";
-import { HOME, INSTANCES_DIR } from "./paths.mjs";
-import { buildStackUsageConfig, isAggregationProviderSettings, readStackState } from "./stack/state.mjs";
-import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, resolveUsageIdentity } from "./stack/usage.mjs";
-import { isValidStatuslineColor, statuslineColorFor } from "./statusline-colors.mjs";
+import { queryProviderById } from "./db.js";
+import { atomicWrite } from "./fs-utils.js";
+import { isPlainObject } from "./json-utils.js";
+import { HOME, INSTANCES_DIR } from "./paths.js";
+import { buildStackUsageConfig, isAggregationProviderSettings, readStackState } from "./stack/state.js";
+import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, resolveUsageIdentity } from "./stack/usage.js";
+import { isValidStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
 
 // ─── Instance statusline (claude) ──────────────────────────────────────
 // Every prepared instance settings.json carries a generated statusLine whose
@@ -637,7 +637,7 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
     // source (inlined at generation time), so deliberate configuration
     // keeps rendering while the provider tag is still added. Only a command
     // that IS the wrapper (a previous injection) relays nothing extra.
-    let relayCommand = null;
+    let relayCommand: string | null = null;
     if (
       isPlainObject(existing) &&
       typeof existing.command === "string" && existing.command.trim() &&
@@ -654,8 +654,8 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
     // (shouldn't happen — resolution is guarded) means no usage segment,
     // never a failed injection. Aggregation instances (loopback base URL +
     // live stack) take the per-member map instead of a single identity.
-    let usageConfig = null;
-    let stackConfig = null;
+    let usageConfig: any = null;
+    let stackConfig: any = null;
     try {
       const stack = isAggregationProviderSettings(settingsConfig) ? readStackState("claude") : null;
       if (stack) stackConfig = buildStackUsageConfig(stack, instanceDir, wrapperPath);

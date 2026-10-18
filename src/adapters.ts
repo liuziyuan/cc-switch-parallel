@@ -2,19 +2,19 @@
 
 import { readFileSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildClaudeEffectiveSettings, isClaudeRuntimeStatePath } from "./claude-config.mjs";
-import { buildCodexInstructionsTemplate, refreshCodexInstructionsSnapshot } from "./commands/customize.mjs";
-import { patchCommonConfigClaude, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.mjs";
-import { atomicWrite, ensureSymlink, readdirSyncSafe, setupClaudeInstance, setupCodexInstance } from "./fs-utils.mjs";
-import { isPluginChannelPath } from "./guard.mjs";
-import { deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepMerge, jsonNormalize } from "./json-utils.mjs";
-import { HOME, INSTANCES_DIR } from "./paths.mjs";
-import { buildLaunchExtraEnv, launchTracked, shallowEqualPlugins } from "./sessions.mjs";
-import { CC_SWITCH_CATALOG_FILENAME, buildCodexConfig, codexAuthHasLoginMaterial, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexStatusLineChannelPath, mergeCodexRuntimeState } from "./stack/catalog.mjs";
-import { isCodexAggModelPath } from "./stack/state.mjs";
-import { claudeProviderName, collectEnabledPluginsPatch, isStatusLineChannelPath } from "./statusline.mjs";
-import { parseToml } from "./toml.mjs";
-import { applyClaudeSettingsFieldPatches, applyCodexSettingsFieldPatches, normalizeInstalledPluginPaths, pathExistsInSnippet, splitChangesByTarget } from "./upward.mjs";
+import { buildClaudeEffectiveSettings, isClaudeRuntimeStatePath } from "./claude-config.js";
+import { buildCodexInstructionsTemplate, refreshCodexInstructionsSnapshot } from "./commands/customize.js";
+import { patchCommonConfigClaude, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.js";
+import { atomicWrite, ensureSymlink, readdirSyncSafe, setupClaudeInstance, setupCodexInstance } from "./fs-utils.js";
+import { isPluginChannelPath } from "./guard.js";
+import { deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepMerge, jsonNormalize } from "./json-utils.js";
+import { HOME, INSTANCES_DIR } from "./paths.js";
+import { buildLaunchExtraEnv, launchTracked, shallowEqualPlugins } from "./sessions.js";
+import { CC_SWITCH_CATALOG_FILENAME, buildCodexConfig, codexAuthHasLoginMaterial, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexStatusLineChannelPath, mergeCodexRuntimeState } from "./stack/catalog.js";
+import { isCodexAggModelPath } from "./stack/state.js";
+import { claudeProviderName, collectEnabledPluginsPatch, isStatusLineChannelPath } from "./statusline.js";
+import { parseToml } from "./toml.js";
+import { applyClaudeSettingsFieldPatches, applyCodexSettingsFieldPatches, normalizeInstalledPluginPaths, pathExistsInSnippet, splitChangesByTarget } from "./upward.js";
 
 // ─── App adapters (per-CLI strategy) ──────────────────────────────────
 // Each CLI implements a small adapter so adding a new CLI (e.g. gemini) means
@@ -207,7 +207,7 @@ const APP_ADAPTERS = {
 
       const added = installedKeys.filter((k) => !prevKeys.has(k));
       const removed = [...prevKeys].filter((k) => !curKeys.has(k));
-      const toggled = [];
+      const toggled: any[] = [];
       for (const [k, v] of Object.entries(patch || {})) {
         if (v !== null && v !== prevEnabled[k]) toggled.push({ key: k, from: prevEnabled[k], to: v });
       }
@@ -451,7 +451,7 @@ function detectConfigDriftGeneric(adapter, state) {
   // and for "already equal in DB" filtering.
   const commonObj = adapter.parseCommonSnippet(queryCommonConfig(adapter.appType)) ?? {};
 
-  const candidates = [];
+  const candidates: any[] = [];
   for (const name of readdirSyncSafe(dir) || []) {
     try {
       const instDir = join(dir, name);
@@ -476,17 +476,17 @@ function detectConfigDriftGeneric(adapter, state) {
   // Per-path vote: a candidate that never changed a path relative to ITS
   // OWN baseline has no say on that path (it only diverges from the
   // group, not from what it was given). Winner = newest mtime.
-  const votes = new Map(); // path → [{candidate, change}]
+  const votes = new Map<string, any[]>(); // path → [{candidate, change}]
   for (const cand of candidates) {
     for (const ch of cand.changes) {
       if (!votes.has(ch.path)) votes.set(ch.path, []);
-      votes.get(ch.path).push({ cand, ch });
+      votes.get(ch.path)!.push({ cand, ch });
     }
   }
   const commonPatch = {};
   const providerPatches = {};
   const conflicts = {};
-  const rejectedPaths = [];
+  const rejectedPaths: string[] = [];
   const rejectedReasons = {}; // path → "sensitive" | "virtual" (prompt wording)
   let virtualBlocked = false; // provider-target changes refused for the virtual Stack entry
   for (const [path, voters] of votes.entries()) {
@@ -498,7 +498,7 @@ function detectConfigDriftGeneric(adapter, state) {
     const providerSettings = row
       ? adapter.providerDocFromSettingsConfig(JSON.parse(row.settings_config || "{}"))
       : null;
-    if (!providerSettings) continue; // provider row gone — provider-target path is dropped
+    if (!providerSettings || !row) continue; // provider row gone — provider-target path is dropped
 
     const { commonPatch: cp, providerPatch: pp, rejected: rj } = splitChangesByTarget(
       [winner.ch], winner.cand.providerId, commonObj, providerSettings,
@@ -594,7 +594,7 @@ function computeEnabledPluginsPatch(state) {
     const dir = join(INSTANCES_DIR, "claude");
     const installedUser = readUserInstalledPluginSet();
     const baselines = state?.instances?.claude || {};
-    const candidates = [];
+    const candidates: any[] = [];
     if (existsSync(dir)) {
       for (const name of readdirSync(dir)) {
         try {

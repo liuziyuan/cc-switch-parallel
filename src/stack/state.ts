@@ -3,15 +3,16 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import net from "node:net";
-import { execDB, queryDB, queryProviderById, sqlQuote } from "../db.mjs";
-import { atomicWrite } from "../fs-utils.mjs";
-import { _historyFrozen, loadHistory, saveHistory } from "../history.mjs";
-import { isPlainObject } from "../json-utils.mjs";
-import { HOME, INSTANCES_DIR, LIVE_STATE_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "../paths.mjs";
-import { CC_SWITCH_CATALOG_FILENAME, codexAggregationRoute, isCustomCodexModelProviderId } from "./catalog.mjs";
-import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.mjs";
-import { loadStatuslinePreferences } from "../statusline-colors.mjs";
-import { parseToml, stringifyToml } from "../toml.mjs";
+import { execDB, queryDB, queryProviderById, sqlQuote } from "../db.js";
+import { atomicWrite } from "../fs-utils.js";
+import { _historyFrozen, loadHistory, saveHistory } from "../history.js";
+import { isPlainObject } from "../json-utils.js";
+import type { ProviderRow } from "../types.js";
+import { HOME, INSTANCES_DIR, LIVE_STATE_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "../paths.js";
+import { CC_SWITCH_CATALOG_FILENAME, codexAggregationRoute, isCustomCodexModelProviderId } from "./catalog.js";
+import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.js";
+import { loadStatuslinePreferences } from "../statusline-colors.js";
+import { parseToml, stringifyToml } from "../toml.js";
 
 // ─── cc-switch 4.0 aggregation (Stack) ────────────────────────────────
 // Upstream cc-switch 4.0 "aggregation" runs a local HTTP proxy (default
@@ -158,7 +159,7 @@ function readStackState(appType) {
       ? stack.members.filter((id) => typeof id === "string" && keys && Object.values(keys).includes(id))
       : [];
     if (!Object.keys(keys).length || !members.length) return null;
-    const proxyRoute = typeof app.proxy_route === "string" ? app.proxy_route : null;
+    const proxyRoute = typeof app!.proxy_route === "string" ? app!.proxy_route : null;
     return { keys, members, proxyRoute };
   } catch {
     return null;
@@ -184,7 +185,7 @@ function isCodexAggModelPath(appType, providerId, path) {
 // 300ms TCP probe of a base URL's host:port. Warn-only by design — the
 // aggregation proxy lives and dies with the desktop app (README: "re-open
 // the desktop app"), so an unreachable proxy must gate nothing, just say so.
-async function probeTcpReachable(baseUrl, timeoutMs = 300) {
+async function probeTcpReachable(baseUrl: string, timeoutMs = 300): Promise<boolean> {
   try {
     const u = new URL(baseUrl);
     const port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
@@ -227,19 +228,19 @@ function readGlobalModelPicker() {
 // mirror step. Returns { settings: {env[, modelPicker]}, baseUrl }, or null when
 // the global env is missing/not loopback (no usable contract to derive).
 function buildStackSettingsFromGlobal() {
-  let globalEnv = null;
+  let globalEnv: any = null;
   try {
     globalEnv = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"))?.env || null;
   } catch { globalEnv = null; }
   if (!isPlainObject(globalEnv) || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return null;
-  const env = {
+  const env: Record<string, any> = {
     ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
     ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL,
   };
   for (const k of AGGREGATION_MODEL_ALIAS_KEYS) {
     if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
   }
-  const settings = { env };
+  const settings: any = { env };
   const picker = readGlobalModelPicker();
   if (picker && picker.options.length) settings.modelPicker = picker;
   return { settings, baseUrl: globalEnv.ANTHROPIC_BASE_URL };
@@ -261,15 +262,15 @@ function buildStackSettingsFromGlobal() {
 // same looseness as the claude derive, which only checks loopback and forces
 // the token.
 function buildCodexStackSettingsFromGlobal() {
-  let doc = null;
+  let doc: any = null;
   try { doc = parseToml(readFileSync(join(HOME, ".codex", "config.toml"), "utf8")); } catch { return null; }
   if (!isPlainObject(doc)) return null;
   const providerId = typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
   if (!providerId || !isCustomCodexModelProviderId(providerId)) return null;
-  const table = isPlainObject(doc.model_providers?.[providerId]) ? doc.model_providers[providerId] : null;
+  const table: any = isPlainObject(doc.model_providers?.[providerId]) ? doc.model_providers[providerId] : null;
   const baseUrl = typeof table?.base_url === "string" ? table.base_url.trim() : "";
   if (!baseUrl || !isLoopbackBaseUrl(baseUrl)) return null;
-  const proj = {
+  const proj: any = {
     model_provider: providerId,
     model_catalog_json: CC_SWITCH_CATALOG_FILENAME,
     model_providers: {
@@ -345,8 +346,8 @@ function virtualStackProviderFor(appType) {
   if (!VIRTUAL_STACK_APPS.has(appType)) return null;
   try {
     const deriver = STACK_SETTINGS_DERIVERS[appType];
-    let settings = null;
-    let baseUrl = null;
+    let settings: any = null;
+    let baseUrl: string | null = null;
     if (readStackState(appType)) {
       const derived = deriver.fromGlobal();
       if (derived) ({ settings, baseUrl } = derived);
@@ -402,18 +403,18 @@ function appendVirtualStackRow(rows, appType) {
 // get as a direct provider. Members without a resolvable identity are simply
 // absent from the map (no usage cell for them, never an error).
 function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
-  const map = {};
-  const names = {};
-  for (const [key, providerId] of Object.entries(stack.keys)) {
-    let row = null;
+  const map: Record<string, any> = {};
+  const names: Record<string, any> = {};
+  for (const [key, providerId] of Object.entries(stack.keys) as [string, string][]) {
+    let row: ProviderRow | null = null;
     try {
       row = queryProviderById(providerId, "claude");
     } catch {
       row = null;
     }
     if (!row) continue;
-    let sc = null;
-    let meta = null;
+    let sc: any = null;
+    let meta: any = null;
     try { sc = JSON.parse(row.settings_config); } catch { sc = null; }
     try { meta = JSON.parse(row.meta); } catch { meta = null; }
     const cfg = buildUsageQueryConfig(
@@ -426,7 +427,7 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
     names[key] = row.name;
   }
   if (!Object.keys(map).length) return null;
-  let defaultKey = null;
+  let defaultKey: string | null = null;
   if (stack.proxyRoute) {
     defaultKey = Object.keys(stack.keys).find((k) => stack.keys[k] === stack.proxyRoute) || null;
     if (defaultKey && !map[defaultKey]) defaultKey = null;
@@ -446,7 +447,7 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
 // aggregation provider exists at all.
 function buildAggregationGroup(appType) {
   const rows = queryDB(`SELECT id, name, settings_config FROM providers WHERE app_type = ${sqlQuote(appType)}`);
-  const aggRows = [];
+  const aggRows: any[] = [];
   for (const r of rows) {
     try {
       if (providerIsAggregation(appType, JSON.parse(r.settings_config))) aggRows.push(r);
@@ -485,7 +486,7 @@ function buildAggregationGroup(appType) {
 // Old instance dirs (UUID-named) are deliberately NOT renamed — a running
 // session keeps working; `switch clean` reaps them once the session ends.
 function cleanupLegacyStackRows() {
-  let rows = [];
+  let rows: any[] = [];
   try {
     rows = queryDB(
       "SELECT id, name, settings_config, is_current FROM providers WHERE app_type = 'claude'",
@@ -493,15 +494,15 @@ function cleanupLegacyStackRows() {
   } catch {
     return null; // DB unavailable — retry next run
   }
-  const legacy = [];
+  const legacy: any[] = [];
   for (const r of rows) {
     try {
       if (isAggregationProviderSettings(JSON.parse(r.settings_config))) legacy.push(r);
     } catch {}
   }
   if (!legacy.length) return null;
-  const removed = [];
-  const skippedCurrent = [];
+  const removed: any[] = [];
+  const skippedCurrent: any[] = [];
   for (const r of legacy) {
     if (r.is_current) { skippedCurrent.push(r.name); continue; }
     try {
@@ -530,7 +531,7 @@ function cleanupLegacyStackRows() {
       }
       // merge duplicates born from the rewrite: prefer count, then lastUsed
       const byKey = new Map();
-      const merged = [];
+      const merged: any[] = [];
       for (const e of entries) {
         const k = `${e.cli}|${e.providerId ?? e.provider}|${e.hotkey ?? ""}`;
         const prev = byKey.get(k);

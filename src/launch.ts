@@ -1,12 +1,12 @@
 // ─── launch (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join } from "node:path";
-import { APP_ADAPTERS } from "./adapters.mjs";
-import { loadSettings, queryCommonConfig, queryProvider, queryProvidersByApp } from "./db.mjs";
-import { detectAndPromptSync, recordInstanceBaseline } from "./drift.mjs";
-import { guardInstanceConfigBeforeOverwrite } from "./guard.mjs";
-import { recordLaunch } from "./history.mjs";
-import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.mjs";
+import { APP_ADAPTERS } from "./adapters.js";
+import { loadSettings, queryCommonConfig, queryProvider, queryProvidersByApp } from "./db.js";
+import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
+import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
+import { recordLaunch } from "./history.js";
+import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.js";
 
 // ─── Launch logic ──────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, repor
 // record: optional {hotkey} from the TUI quick/permission selection — the
 //         mode the user actually picked, preferred over inferring it back
 //         out of extraArgs (which quick-launch replays without flags).
-async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, record = null) {
+async function launchProvider(cmd: string, providerName: string, extraArgs: string[], syncFlag: string | null = null, record: { hotkey?: string } | null = null) {
   const adapter = APP_ADAPTERS[cmd];
   if (!adapter) {
     console.error(`✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`);

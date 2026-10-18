@@ -1,12 +1,14 @@
 // ─── history (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { readFileSync } from "node:fs";
-import { APP_ADAPTERS } from "./adapters.mjs";
-import { queryProvidersStrict } from "./db.mjs";
-import { atomicWrite } from "./fs-utils.mjs";
-import { HISTORY_PATH } from "./paths.mjs";
+import { APP_ADAPTERS } from "./adapters.js";
+import { queryProvidersStrict } from "./db.js";
+import { atomicWrite } from "./fs-utils.js";
+import { HISTORY_PATH } from "./paths.js";
 
 // ─── Launch history (top 5 quick-launch + manual pin ordering) ─────────
+
+import type { HistoryEntry } from "./types.js";
 
 const QUICK_KEYS = ["a", "s", "d", "f", "g"];
 
@@ -28,13 +30,13 @@ let _historyFrozen = false;
 // `order` is a sparse 5-slot array — a pinned entry key keeps its slot, null
 // slots are filled by natural count/lastUsed ranking. Normalized from any
 // stored value (missing field, dense legacy array, junk entries).
-function normalizeOrder(raw) {
-  const out = [null, null, null, null, null];
+function normalizeOrder(raw: any): (string | null)[] {
+  const out: (string | null)[] = [null, null, null, null, null];
   if (Array.isArray(raw)) raw.slice(0, 5).forEach((v, i) => { if (typeof v === "string") out[i] = v; });
   return out;
 }
 
-function loadHistory() {
+function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
   if (_historyFrozen) return { entries: [], order: normalizeOrder(undefined) };
   let data;
   try {
@@ -43,7 +45,7 @@ function loadHistory() {
     return { entries: [], order: normalizeOrder(undefined) }; // no file yet — fresh history
   }
   if (data?.version === HISTORY_VERSION) {
-    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    const entries: HistoryEntry[] = Array.isArray(data?.entries) ? data.entries : [];
     const order = normalizeOrder(data?.order);
     // Heal files written before one-shot flags were stripped at record time:
     // an already-poisoned quick-launch row cures itself on the next load
@@ -87,12 +89,12 @@ function loadHistory() {
 function migrateHistory(data) {
   const entries = (Array.isArray(data?.entries) ? data.entries : [])
     .filter((e) => e && typeof e.cli === "string" && typeof e.provider === "string");
-  const appTypes = new Set();
+  const appTypes = new Set<string>();
   for (const e of entries) {
     const t = APP_ADAPTERS[e.cli]?.appType;
     if (t) appTypes.add(t);
   }
-  const idByName = new Map(); // `appType|name` → id, first wins (queryProvider's ORDER BY id semantics)
+  const idByName = new Map<string, string>(); // `appType|name` → id, first wins (queryProvider's ORDER BY id semantics)
   for (const appType of appTypes) {
     for (const p of queryProvidersStrict(appType)) {
       const k = `${appType}|${p.name}`;
@@ -162,15 +164,15 @@ function mergeTop5(entries, order, aliveByCli) {
   const pinnedSet = new Set(valid.filter(Boolean));
   const cmp = (a, b) => byStrength(a, b, aliveByCli);
   const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(cmp)[0];
-  const seen = new Set();
-  const natural = [];
+  const seen = new Set<string>();
+  const natural: HistoryEntry[] = [];
   for (const e of [...entries].sort(cmp)) {
     const k = entryKey(e);
     if (pinnedSet.has(k) || seen.has(k)) continue;
     seen.add(k);
     natural.push(e);
   }
-  const out = [];
+  const out: HistoryEntry[] = [];
   let ni = 0;
   for (let i = 0; i < 5; i++) {
     if (valid[i]) out.push(rep(valid[i]));
@@ -258,13 +260,13 @@ function top5(aliveByCli) {
 // Remove every permission flag a launch argv might carry — both CLIs, both
 // spellings (separated `--permission-mode VALUE` and joined `=VALUE`), so the
 // non-permission tail (`--continue` etc.) survives a mode edit intact.
-function stripPermissionArgs(args) {
+function stripPermissionArgs(args: string[]): string[] {
   const single = new Set([
     "--dangerously-skip-permissions",
     "--approve-for-me",
     "--dangerously-bypass-approvals-and-sandbox",
   ]);
-  const out = [];
+  const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (single.has(a)) continue;

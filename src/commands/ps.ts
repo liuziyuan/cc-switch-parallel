@@ -3,11 +3,12 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { collectInstances } from "./doctor.mjs";
-import { queryProviderById } from "../db.mjs";
-import { HOME } from "../paths.mjs";
-import { loadSyncState, readSessions, saveSyncState, sessionIsAlive } from "../sessions.mjs";
-import { isAggregationProviderSettings, readStackState } from "../stack/state.mjs";
+import { collectInstances } from "./doctor.js";
+import type { InstanceInfo, ProviderRow } from "../types.js";
+import { queryProviderById } from "../db.js";
+import { HOME } from "../paths.js";
+import { loadSyncState, readSessions, saveSyncState, sessionIsAlive } from "../sessions.js";
+import { isAggregationProviderSettings, readStackState } from "../stack/state.js";
 
 // ─── switch ps ────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ function tmuxSessionByTty() {
 }
 
 function runPs() {
-  const running = [];
+  const running: { inst: InstanceInfo; session: any }[] = [];
   for (const inst of collectInstances()) {
     for (const { path, session } of readSessions(inst.path)) {
       if (sessionIsAlive(session)) {
@@ -89,7 +90,7 @@ function runPs() {
   const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
   const rows = running.map(({ inst, session }) => {
     let name = session.providerId || inst.name;
-    let row = null;
+    let row: ProviderRow | null = null;
     try {
       row = queryProviderById(inst.name, inst.appType);
       if (row?.name) name = row.name;

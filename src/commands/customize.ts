@@ -3,11 +3,11 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { APP_ADAPTERS } from "../adapters.mjs";
-import { queryProvider, queryProvidersByApp } from "../db.mjs";
-import { confirmSync } from "../drift.mjs";
-import { atomicWrite, lstatSyncSafe } from "../fs-utils.mjs";
-import { INSTANCES_DIR } from "../paths.mjs";
+import { APP_ADAPTERS } from "../adapters.js";
+import { queryProvider, queryProvidersByApp } from "../db.js";
+import { confirmSync } from "../drift.js";
+import { atomicWrite, lstatSyncSafe } from "../fs-utils.js";
+import { INSTANCES_DIR } from "../paths.js";
 
 // ─── Instance-only instructions file (customize / uncustomize) ────────
 
@@ -171,7 +171,7 @@ async function runUncustomize(args) {
   }
   try {
     unlinkSync(file);
-  } catch (e) {
+  } catch (e: any) {
     console.error(`✗ ${e.message}`);
     process.exit(1);
   }

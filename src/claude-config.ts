@@ -2,12 +2,12 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isPlainObject, jsonDeepClone, jsonIsSubset, mergeCommonOverProvider } from "./json-utils.mjs";
-import { INSTANCES_DIR } from "./paths.mjs";
-import { isAggregationProviderSettings, protectAggregationIdentityEnv, readGlobalModelPicker, readStackState } from "./stack/state.mjs";
-import { applyStatusLineInjection } from "./statusline.mjs";
-import { parseToml } from "./toml.mjs";
-import { tomlIsSubset } from "./toml-utils.mjs";
+import { isPlainObject, jsonDeepClone, jsonIsSubset, mergeCommonOverProvider } from "./json-utils.js";
+import { INSTANCES_DIR } from "./paths.js";
+import { isAggregationProviderSettings, protectAggregationIdentityEnv, readGlobalModelPicker, readStackState } from "./stack/state.js";
+import { applyStatusLineInjection } from "./statusline.js";
+import { parseToml } from "./toml.js";
+import { tomlIsSubset } from "./toml-utils.js";
 
 // ─── Common config detection (port of Rust provider_uses_common_config) ─
 
@@ -119,7 +119,7 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, provi
         // must never re-point or re-auth it. See protectAggregationIdentityEnv.
         if (isAgg) protectAggregationIdentityEnv(effective, settingsConfig);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(`⚠ Common config merge failed: ${e.message}`);
     }
   }
