@@ -5033,7 +5033,8 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
 
   await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
 
-  const row = queryProvider(providerName, adapter.appType);
+  // let, not const: the managed-Stack mirror below may replace the row.
+  let row = queryProvider(providerName, adapter.appType);
   if (!row) {
     console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
     console.error(`  Available providers:`);
