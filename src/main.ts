@@ -8,12 +8,13 @@ import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRunti
 import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.js";
 import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
 import { runPs, stackBillingMemberName } from "./commands/ps.js";
-import { queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict } from "./db.js";
+import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.js";
 import { applyMergePatch, deepEqualJson, diffSettingsLeaves, jsonDeepMerge, jsonNormalize, mergeCommonOverProvider, parseJsonObject } from "./json-utils.js";
 import { launchProvider } from "./launch.js";
+import { formatAmbiguousProvider, resolveProviderRef } from "./provider-ref.js";
 import { HOME, NPM_PACKAGE_NAME, VERSION, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { buildLaunchExtraEnv } from "./sessions.js";
 import { applyCodexStatusLineInjection, codexAggregationRoute, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexRuntimeStatePath, isCodexStatusLineChannelPath, mergeCodexRuntimeState, protectCodexAggregationIdentity, readGlobalCodexCatalogText } from "./stack/catalog.js";
@@ -22,7 +23,7 @@ import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, extractClaudeUsageSource, 
 import { applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineWrapperScript, buildUsageWrapperLines, claudeProviderName, isStatusLineChannelPath } from "./statusline.js";
 import { STATUSLINE_COLOR_CHOICES, loadStatuslinePreferences, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
 import { applyTomlPatchText } from "./toml-utils.js";
-import { runTUI } from "./tui.js";
+import { launchRefForQuick, launchRefForRow, runTUI } from "./tui.js";
 import { buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.js";
 
 // ─── Main entry ────────────────────────────────────────────────────────
@@ -122,17 +123,49 @@ async function runUpdate() {
   reportUpdateOutcome(latestVersion);
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-
-  // Leading --sync / --no-sync flag (command mode only). Must be stripped
-  // before any other parsing since the remainder of argv is forwarded
-  // verbatim to the launched CLI (e.g. `claude --continue`) — a flag parsed
-  // anywhere but the front could be mistaken for a CLI argument.
+// Parse leading launch flags. `--id` selects a provider by id and is
+// mutually exclusive with the positional provider name (with --id the first
+// positional token is the command); everything after that is forwarded
+// verbatim to the launched CLI.
+function parseLaunchArgs(argv: string[]) {
+  const rest = [...argv];
   let syncFlag: string | null = null;
-  while (args.length && (args[0] === "--sync" || args[0] === "--no-sync")) {
-    syncFlag = args.shift() === "--sync" ? "on" : "off";
+  let providerId: string | null = null;
+  while (rest.length) {
+    const a = rest[0];
+    if (a === "--sync") { syncFlag = "on"; rest.shift(); continue; }
+    if (a === "--no-sync") { syncFlag = "off"; rest.shift(); continue; }
+    if (a === "--id") {
+      rest.shift();
+      const value = rest.shift();
+      if (!value) return { error: "missing --id value" as const };
+      providerId = value;
+      continue;
+    }
+    if (a.startsWith("--id=")) {
+      const value = a.slice("--id=".length);
+      if (!value) return { error: "missing --id value" as const };
+      providerId = value;
+      rest.shift();
+      continue;
+    }
+    break;
   }
+  return { syncFlag, providerId, rest };
+}
+
+async function main() {
+  // Leading flags (command mode only). They must be stripped before any other
+  // parsing since the remainder of argv is forwarded verbatim to the launched
+  // CLI (e.g. `claude --continue`) — a flag parsed anywhere but the front
+  // could be mistaken for a CLI argument.
+  const parsed = parseLaunchArgs(process.argv.slice(2));
+  if ("error" in parsed) {
+    console.error(`✗ ${parsed.error}`);
+    console.error(`Usage: switch [--sync|--no-sync] [--id <providerId>] <cmd> [args...]`);
+    process.exit(1);
+  }
+  const { syncFlag, providerId, rest: args } = parsed;
 
   if (args.length === 0) {
     try {
@@ -221,19 +254,29 @@ async function main() {
     process.exit(0);
   }
 
+  if (providerId !== null) {
+    if (args.length < 1) {
+      console.error(`Usage: switch --id <providerId> <cmd> [args...]`);
+      process.exit(1);
+    }
+    await launchProvider(args[0], { id: providerId }, args.slice(1), syncFlag);
+    return;
+  }
+
   if (args.length < 2) {
     console.error(`Usage: switch <provider> <cmd> [args...]`);
+    console.error(`       switch --id <providerId> <cmd> [args...]`);
     console.error(`  Run \`switch --help\` for all commands.`);
     console.error(`Examples: switch "Claude Official" claude`);
     console.error(`          switch "Zhipu GLM en" claude --continue`);
-    console.error(`          switch "P&G Nezha" codex`);
+    console.error(`          switch --id <providerId> claude`);
     process.exit(1);
   }
 
   const providerName = args[0];
   const cmd = args[1];
   const extraArgs = args.slice(2);
-  await launchProvider(cmd, providerName, extraArgs, syncFlag);
+  await launchProvider(cmd, { name: providerName }, extraArgs, syncFlag);
 }
 
 
@@ -253,8 +296,14 @@ export const __test = Object.freeze({
   healRecordedArgs,
   queryProvider,
   queryProviderById,
+  queryProviderMatches,
   queryProvidersByApp,
   queryProvidersStrict,
+  parseLaunchArgs,
+  resolveProviderRef,
+  formatAmbiguousProvider,
+  launchRefForQuick,
+  launchRefForRow,
   snapshotAliveByCli,
   isDeadEntry,
   splitChangesByTarget,
