@@ -31,6 +31,8 @@ const {
   readGlobalModelPicker,
   buildStackUsageConfig,
   ensureStackProviderRow,
+  probeTcpReachable,
+  aggregationDoctorChecks,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -695,6 +697,15 @@ test("aggregation unit: readStackState is fail-open", () => {
   assert.deepEqual(st.keys, { zhipu: "m1", deepseek: "m2" });
   assert.deepEqual(st.members, ["m1", "m2"]); // orphan (not in keys) filtered
   assert.equal(st.proxyRoute, "m1");
+  // contract gate: an unknown version is a schema this build cannot read —
+  // both the file-level version and the app's contract block read as "off"
+  const liveStack = { enabled: true, members: ["m1"], keys: { zhipu: "m1" } };
+  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({ version: 2, apps: { claude: { stack: liveStack } } }));
+  assert.equal(readStackState("claude"), null, "file version 2 → off");
+  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({ version: 1, apps: { claude: { contract: { version: 2 }, stack: liveStack } } }));
+  assert.equal(readStackState("claude"), null, "contract version 2 → off");
+  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({ apps: { claude: { stack: liveStack } } }));
+  assert.notEqual(readStackState("claude"), null, "no version field → tolerated");
   removeLiveState();
 });
 
@@ -705,6 +716,67 @@ test("aggregation unit: readGlobalModelPicker needs a non-empty options array", 
   assert.equal(readGlobalModelPicker(), null);
   writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: PICKER_FIXTURE }));
   assert.deepEqual(readGlobalModelPicker(), PICKER_FIXTURE);
+});
+
+test("aggregation: probeTcpReachable — live port passes, dead/garbage fail fast", async () => {
+  const srv = createServer(() => {});
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  assert.equal(await probeTcpReachable(`http://127.0.0.1:${port}/api/anthropic`), true, "listening port");
+  await new Promise((r) => srv.close(r));
+  assert.equal(await probeTcpReachable(`http://127.0.0.1:${port}/api`), false, "port just closed");
+  assert.equal(await probeTcpReachable("not a url"), false, "garbage URL");
+  assert.equal(await probeTcpReachable("http://127.0.0.1:1/"), false, "port 1 refused");
+});
+
+test("aggregation doctor checks: off / unparseable / version gate / live-stack matrix", async () => {
+  cleanStackInstance();
+  // aggregation off — a single pass, nothing else probed
+  removeLiveState();
+  let checks = await aggregationDoctorChecks();
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].pass, true);
+  assert.ok(checks[0].detail.includes("off"));
+  // unparseable live-state
+  writeFileSync(LIVE_STATE_PATH_T, "{corrupt");
+  checks = await aggregationDoctorChecks();
+  assert.equal(checks[0].pass, false);
+  // unsupported file-level version
+  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({ version: 9, apps: {} }));
+  checks = await aggregationDoctorChecks();
+  assert.equal(checks[0].pass, false);
+  assert.ok(checks[0].detail.includes("9"));
+  // live stack: members present + Stack row + proxy state, on a port that
+  // is genuinely dead (bound then released)
+  const srv = createServer(() => {});
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const livePort = srv.address().port;
+  setupStackDB([
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+    ["agg-doc", "Stack", { ANTHROPIC_BASE_URL: `http://127.0.0.1:${livePort}`, ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" }, {}],
+  ]);
+  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+  const byLabel = (cs) => Object.fromEntries(cs.map((c) => [c.label, c]));
+  checks = await aggregationDoctorChecks();
+  assert.equal(byLabel(checks)["aggregation members"].pass, true);
+  assert.equal(byLabel(checks)["aggregation Stack row"].pass, true);
+  assert.equal(byLabel(checks)["aggregation proxy"].pass, true, "proxy up while server listens");
+  await new Promise((r) => srv.close(r));
+  checks = await aggregationDoctorChecks();
+  assert.equal(byLabel(checks)["aggregation proxy"].pass, false, "proxy down after close");
+  // member row deleted → members check fails, naming the dangling key
+  sql(`DELETE FROM providers WHERE id = 'm-ds'`);
+  checks = await aggregationDoctorChecks();
+  assert.equal(byLabel(checks)["aggregation members"].pass, false);
+  assert.ok(byLabel(checks)["aggregation members"].detail.includes("deepseek"));
+  // no Stack row at all → self-healing note, not a failure; proxy skipped
+  sql(`DELETE FROM providers WHERE id = 'agg-doc'`);
+  checks = await aggregationDoctorChecks();
+  assert.equal(byLabel(checks)["aggregation Stack row"].pass, true);
+  assert.ok(byLabel(checks)["aggregation Stack row"].detail.includes("auto-created"));
+  assert.equal(byLabel(checks)["aggregation proxy"], undefined);
+  removeLiveState();
+  sql(`DELETE FROM providers WHERE id IN ('m-ds', 'agg-doc')`);
 });
 
 test("aggregation: modelPicker syncs into effective settings only while stack is live", () => {
