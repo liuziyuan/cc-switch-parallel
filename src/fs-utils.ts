@@ -1,6 +1,7 @@
 // ─── fs-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { writeFileSync, mkdirSync, existsSync, symlinkSync, readlinkSync, lstatSync, readdirSync, unlinkSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, symlinkSync, readlinkSync, lstatSync, readdirSync, unlinkSync, renameSync, rmSync, openSync, writeSync, fsyncSync, closeSync, chmodSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { HOME, INSTANCES_DIR } from "./paths.js";
 
@@ -70,9 +71,17 @@ const CLAUDE_SHARED_PATHS = [
   ".claude.json",  // contains OAuth login info (oauthAccount); missing forces re-login
 ];
 
+// Instance dirs hold credentials, so they are owner-only. Existing dirs from
+// older versions are tightened in place (best-effort: a read-only parent or
+// exotic filesystem must not block the launch).
+function ensurePrivateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { chmodSync(dir, 0o700); } catch {}
+}
+
 function setupClaudeInstance(providerId) {
   const instanceDir = join(INSTANCES_DIR, "claude", providerId);
-  mkdirSync(instanceDir, { recursive: true });
+  ensurePrivateDir(instanceDir);
   const globalClaudeDir = join(HOME, ".claude");
 
   // .claude.json lives in two places:
@@ -116,7 +125,7 @@ const CODEX_SHARED_PATHS = [
 
 function setupCodexInstance(providerId) {
   const instanceDir = join(INSTANCES_DIR, "codex", providerId);
-  mkdirSync(instanceDir, { recursive: true });
+  ensurePrivateDir(instanceDir);
   const globalCodexDir = join(HOME, ".codex");
   for (const name of CODEX_SHARED_PATHS) {
     const globalPath = join(globalCodexDir, name);
@@ -129,13 +138,31 @@ function setupCodexInstance(providerId) {
 
 // ─── Atomic write ──────────────────────────────────────────────────────
 
-function atomicWrite(path, data) {
+// Atomic write with a private mode. The temp file is created 0600 under an
+// exclusive, unique name (pid + time + random), fsynced, and renamed into
+// place. The final chmod ENFORCES `mode` even when the previous file was more
+// permissive: credentials must shrink, not inherit a stale 0644. On failure
+// the temp file is removed so no half-written secret is left behind.
+function atomicWrite(path, data, mode = 0o600) {
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true });
-  const tmp = join(parent, `.tmp.${basename(path)}.${Date.now()}.${process.pid}`);
-  writeFileSync(tmp, data, "utf8");
-  renameSync(tmp, path);
+  const tmp = join(parent, `.tmp.${basename(path)}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`);
+  let fd: number | null = null;
+  try {
+    fd = openSync(tmp, "wx", mode);
+    if (Buffer.isBuffer(data)) writeSync(fd, data);
+    else writeSync(fd, String(data), null, "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tmp, path);
+    try { chmodSync(path, mode); } catch {}
+  } catch (e) {
+    if (fd !== null) { try { closeSync(fd); } catch {} }
+    try { unlinkSync(tmp); } catch {}
+    throw e;
+  }
 }
 
 
-export { CLAUDE_SHARED_PATHS, CODEX_SHARED_PATHS, atomicWrite, ensureSymlink, isBrokenSymlink, lstatSyncSafe, readdirSyncSafe, setupClaudeInstance, setupCodexInstance };
+export { CLAUDE_SHARED_PATHS, CODEX_SHARED_PATHS, atomicWrite, ensurePrivateDir, ensureSymlink, isBrokenSymlink, lstatSyncSafe, readdirSyncSafe, setupClaudeInstance, setupCodexInstance };

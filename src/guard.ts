@@ -1,8 +1,8 @@
 // ─── guard (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { readFileSync, mkdirSync, existsSync, unlinkSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWrite, readdirSyncSafe } from "./fs-utils.js";
+import { atomicWrite, ensurePrivateDir, readdirSyncSafe } from "./fs-utils.js";
 import { deepEqualJson, diffSettingsLeaves, isPlainObject, parseJsonObject } from "./json-utils.js";
 import { CC_SWITCH_DIR } from "./paths.js";
 import { loadSyncState } from "./sessions.js";
@@ -27,7 +27,7 @@ function backupInstanceSettings(appType, providerId, instanceDir, fileName = "se
     const src = join(instanceDir, fileName);
     if (!existsSync(src)) return null;
     const dir = backupDirFor(appType, providerId);
-    mkdirSync(dir, { recursive: true });
+    ensurePrivateDir(dir);
     const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
     const dest = join(dir, `${fileName}.${ts}`);
     atomicWrite(dest, readFileSync(src, "utf8"));

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, lstatSync, readlinkSync, readFileSync, readdirSync, chmodSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,12 @@ import { join } from "node:path";
 const TEST_HOME = mkdtempSync(join(tmpdir(), "cc-switch-fs-"));
 process.env.CC_SWITCH_TEST_HOME = TEST_HOME;
 
-const { setupClaudeInstance } = await import("../src/fs-utils.ts");
+const { setupClaudeInstance, atomicWrite } = await import("../src/fs-utils.ts");
+const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
+
+function tempDir() {
+  return mkdtempSync(join(TEST_HOME, "case-"));
+}
 
 function globalPluginsDir() {
   const dir = join(TEST_HOME, ".claude", "plugins");
@@ -56,4 +61,52 @@ test("ensureSymlink: a real file is preserved (never replaced)", () => {
 
   assert.equal(lstatSync(file).isSymbolicLink(), false);
   assert.equal(lstatSync(file).isFile(), true);
+});
+
+// ─── private permissions ──────────────────────────────────────────────
+// Instance files carry provider tokens; a default umask made them 0644.
+
+test("atomicWrite: new files are 0600 and leave no temp file behind", () => {
+  const dir = tempDir();
+  const file = join(dir, "secret.json");
+  atomicWrite(file, '{"token":"x"}');
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.equal(readFileSync(file, "utf8"), '{"token":"x"}');
+  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith(".tmp.")), []);
+});
+
+test("atomicWrite: an existing permissive file is tightened to 0600", () => {
+  const dir = tempDir();
+  const file = join(dir, "old.json");
+  writeFileSync(file, "old");
+  chmodSync(file, 0o640);
+  atomicWrite(file, "new");
+  assert.equal(statSync(file).mode & 0o777, 0o600, "credentials must shrink, not inherit");
+  assert.equal(readFileSync(file, "utf8"), "new");
+});
+
+test("atomicWrite: repeated writes keep the full content", () => {
+  const dir = tempDir();
+  const file = join(dir, "repeat.json");
+  atomicWrite(file, "first");
+  atomicWrite(file, JSON.stringify({ v: 2 }));
+  assert.equal(readFileSync(file, "utf8"), '{"v":2}');
+});
+
+test("setupClaudeInstance: the instance directory is 0700", () => {
+  const dir = setupClaudeInstance("private-dir-provider");
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+});
+
+test("statusline wrapper: generated script is 0600 (it inlines usage tokens)", () => {
+  const providerId = "wrapper-perm-provider";
+  buildClaudeEffectiveSettings(
+    { env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "tok" } },
+    { usage_script: { codingPlanProvider: "zhipu" } },
+    "",
+    "Z.AI GLM",
+    providerId,
+  );
+  const wrapper = join(TEST_HOME, ".cc-switch", "instances", "claude", providerId, "statusline-wrapper.mjs");
+  assert.equal(statSync(wrapper).mode & 0o777, 0o600);
 });

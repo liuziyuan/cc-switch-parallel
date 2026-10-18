@@ -1,10 +1,9 @@
 // ─── statusline (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { queryProviderById } from "./db.js";
-import { atomicWrite } from "./fs-utils.js";
+import { atomicWrite, ensurePrivateDir } from "./fs-utils.js";
 import { isPlainObject } from "./json-utils.js";
 import { HOME, INSTANCES_DIR } from "./paths.js";
 import { buildStackUsageConfig, isAggregationProviderSettings, readStackState } from "./stack/state.js";
@@ -676,7 +675,7 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
       typeof existing.command === "string" && existing.command.trim() &&
       !existing.command.includes(STATUSLINE_WRAPPER_FILENAME)
     ) relayCommand = existing.command;
-    mkdirSync(instanceDir, { recursive: true });
+    ensurePrivateDir(instanceDir);
     // Tag color comes from the TUI preference file (fail-open "auto"). It is
     // inlined into the WRAPPER's content only — never into settings.json —
     // so the guard/baseline comparison of settings.json cannot see it and
@@ -701,7 +700,9 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
       }
     } catch {}
     atomicWrite(wrapperPath, buildStatusLineWrapperScript(providerName, join(HOME, ".claude", "settings.json"), relayCommand, colorCode, usageConfig, stackConfig) + "\n");
-    try { chmodSync(wrapperPath, 0o755); } catch {}
+    // No chmod 0755: the statusLine command runs `node <path>`, so the wrapper
+    // only needs to be READABLE by the owner. atomicWrite lands it at 0600 —
+    // it contains the inlined usage token(s).
     // Keep display-related fields the user tuned (refreshInterval, padding)
     // when upgrading a previous injection; drop nothing else.
     effective.statusLine = {
