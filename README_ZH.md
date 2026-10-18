@@ -1,8 +1,10 @@
 # cc-switch-parallel
 
-> 为 Claude Code 和 Codex 提供按 provider 隔离的配置启动 —— 在多个终端并行运行不同 provider，无需切换。
+> [cc-switch](https://github.com/farion1231/cc-switch) 的并行启动器 —— 为 Claude Code 和 Codex 提供按 provider 隔离的配置启动，在多个终端并行运行不同 provider，无需切换。
 
 [English](README.md) | [中文](README_ZH.md)
+
+> **前提：必须先安装并配置好 [cc-switch](https://github.com/farion1231/cc-switch)。** `switch` 本身不管理 provider —— 它从 cc-switch 的数据库读取你已配置好的 provider，在此基础上为 Claude Code 和 Codex 提供**并行打开**能力：每个 provider 拥有一个隔离的配置目录，因此多个 provider 可以同时在不同终端里运行。
 
 ## 它做什么
 
@@ -205,7 +207,9 @@ const APP_ADAPTERS = {
 
 ## 系统要求
 
-- [cc-switch](https://github.com/farion1231/cc-switch) 桌面应用，并已配置 provider
+**cc-switch 是必需项** —— 本项目是在它之上提供并行打开能力，缺少它无法运行。
+
+- [cc-switch](https://github.com/farion1231/cc-switch) 桌面应用，且已配置至少一个 provider
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI（`claude`）在 PATH 中
 - [Codex](https://github.com/openai/codex) CLI（`codex`）在 PATH 中（可选，用于 Codex 支持）
 - Node.js ≥ 18
