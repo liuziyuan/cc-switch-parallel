@@ -54,13 +54,25 @@ function extractClaudeUsageSource(settingsConfig) {
   return { baseUrl, token };
 }
 
+// Loopback check kept local on purpose: importing isLoopbackBaseUrl from
+// stack/state.ts would create a state → usage → state cycle. Same host set.
+function isLoopbackHost(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
 // Query endpoint for a kind, derived from the provider's own base-url
 // origin (https://api.z.ai/api/anthropic → https://api.z.ai/api/monitor/…;
 // https://api.deepseek.com/anthropic → https://api.deepseek.com/user/balance).
+// The usage request carries the provider token in clear, so anything other
+// than https is rejected — except plain http to a loopback host, which is
+// the local-proxy case. URL.origin is the string "null" for non-special
+// schemes (file:, ftp: …); the protocol check below rejects those.
 function usageEndpointFor(kind, baseUrl) {
-  let origin;
-  try { origin = new URL(baseUrl).origin; } catch { return null; }
-  if (origin !== "null" && !/^https?:\/\//.test(origin)) return null;
+  let url;
+  try { url = new URL(baseUrl); } catch { return null; }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHost(url.hostname))) return null;
+  const origin = url.origin;
   if (kind === "zhipu") return origin + "/api/monitor/usage/quota/limit";
   if (kind === "deepseek") return origin + "/user/balance";
   return null;

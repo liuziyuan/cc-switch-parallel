@@ -122,7 +122,7 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 
 聚合实例的 statusline 有两点跟随模型切换：
 
-- **计费段**：wrapper 在运行时从模型 id 解出 `ccs-claude-<key>--` 前缀，按 key 用**该成员自己的凭据直连其真实 origin** 查询计费（zhipu 5h/周窗口、DeepSeek 余额）——计费流量不经聚合代理，代理也不参与。无前缀的模型 id 走默认供应商；key 未登记时并列显示所有可识别成员的用量段。
+- **计费段**：wrapper 在运行时从模型 id 解出 `ccs-claude-<key>--` 前缀，按 key 用**该成员自己的凭据直连其真实 origin** 查询计费（zhipu 5h/周窗口、DeepSeek 余额）——计费流量不经聚合代理，代理也不参与。无前缀的模型 id 走默认供应商；key 未登记时并列显示所有可识别成员的用量段。用量查询仅支持 `https`；`http` 仅允许 loopback 地址（`127.0.0.1` / `localhost` / `[::1]`，用于本地代理）——请求会携带 provider 自己的 token，远程明文 http 会被拒绝。
 - **provider 标签**：TUI 内标签动态跟随当前计费供应商（`[DeepSeek]` / `[Z.AI GLM]`）；tmux 状态栏标签仍显示启动时的 provider 名（`Stack`）——两者语义不同：tmux 标识「此 pane 是聚合实例」，TUI 标签标识「当前计费供应商」。
 
 **限制与注意**：

@@ -198,6 +198,14 @@ test("endpoint: origin-derived per kind; garbage baseUrl → null", () => {
   assert.equal(usageEndpointFor("deepseek", "https://api.deepseek.com/anthropic"), "https://api.deepseek.com/user/balance");
   assert.equal(usageEndpointFor("zhipu", "not a url"), null);
   assert.equal(usageEndpointFor("kimi", "https://api.kimi.com/coding"), null);
+  // Plain http is allowed only for loopback (local-proxy case); the token is
+  // sent in clear, so remote http and non-http(s) schemes are refused.
+  assert.equal(usageEndpointFor("zhipu", "http://127.0.0.1:15721"), "http://127.0.0.1:15721/api/monitor/usage/quota/limit");
+  assert.equal(usageEndpointFor("zhipu", "http://localhost:15721/anthropic"), "http://localhost:15721/api/monitor/usage/quota/limit");
+  assert.equal(usageEndpointFor("zhipu", "http://[::1]:15721/anthropic"), "http://[::1]:15721/api/monitor/usage/quota/limit");
+  assert.equal(usageEndpointFor("zhipu", "http://example.com/anthropic"), null);
+  assert.equal(usageEndpointFor("zhipu", "file:///tmp/x"), null);
+  assert.equal(usageEndpointFor("zhipu", "ftp://example.com/x"), null);
 });
 
 // ─── wrapper source: byte-stability and inline shape ──────────────────
