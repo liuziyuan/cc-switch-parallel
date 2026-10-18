@@ -52,7 +52,13 @@ function lockIsStale(lockPath: string, staleMs: number): boolean {
   }
   if (Date.now() - st.mtimeMs > staleMs) return true;
   const c = readLock(lockPath);
-  if (!c || !Number.isInteger(c.pid) || (c.pid as number) <= 0) return true;
+  if (!c || !Number.isInteger(c.pid) || (c.pid as number) <= 0) {
+    // A lock file exists but its content is empty/partial: the owner is very
+    // likely between open(create) and write (milliseconds). Reclaiming it
+    // immediately would let two processes into the critical section, so give
+    // a genuinely corrupt lock a short grace period instead.
+    return Date.now() - st.mtimeMs > 5_000;
+  }
   if (typeof c.host === "string" && c.host && c.host !== HOST) return false;
   try {
     process.kill(c.pid as number, 0);
