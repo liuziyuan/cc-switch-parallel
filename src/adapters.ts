@@ -7,7 +7,7 @@ import { buildCodexInstructionsTemplate, refreshCodexInstructionsSnapshot } from
 import { patchCommonConfigClaude, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.js";
 import { atomicWrite, ensureSymlink, readdirSyncSafe, setupClaudeInstance, setupCodexInstance } from "./fs-utils.js";
 import { isPluginChannelPath } from "./guard.js";
-import { deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepMerge, jsonNormalize } from "./json-utils.js";
+import { deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepMerge, jsonNormalize, parseJsonObject } from "./json-utils.js";
 import { HOME, INSTANCES_DIR } from "./paths.js";
 import { buildLaunchExtraEnv, launchTracked, shallowEqualPlugins } from "./sessions.js";
 import { CC_SWITCH_CATALOG_FILENAME, buildCodexConfig, codexAuthHasLoginMaterial, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexStatusLineChannelPath, mergeCodexRuntimeState } from "./stack/catalog.js";
@@ -489,14 +489,26 @@ function detectConfigDriftGeneric(adapter, state) {
   const rejectedPaths: string[] = [];
   const rejectedReasons = {}; // path → "sensitive" | "virtual" (prompt wording)
   let virtualBlocked = false; // provider-target changes refused for the virtual Stack entry
+  const warnedMalformedRows = new Set<string>();
   for (const [path, voters] of votes.entries()) {
     voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
     const winner = voters[voters.length - 1];
     if (voters.length > 1) conflicts[path] = voters.length;
 
     const row = queryProviderById(winner.cand.providerId, adapter.appType);
-    const providerSettings = row
-      ? adapter.providerDocFromSettingsConfig(JSON.parse(row.settings_config || "{}"))
+    const parsedRowSettings = row ? parseJsonObject(row.settings_config) : null;
+    // One malformed row used to throw out of this loop and abort the whole
+    // drift pass (every launch failed). Skip that row's write-back and keep
+    // the other providers syncing; warn once per provider.
+    if (row && !parsedRowSettings) {
+      if (!warnedMalformedRows.has(row.id)) {
+        warnedMalformedRows.add(row.id);
+        console.error(`⚠ Provider "${row.name || row.id}" has malformed settings_config JSON — skipping its drift write-back.`);
+      }
+      continue;
+    }
+    const providerSettings = parsedRowSettings
+      ? adapter.providerDocFromSettingsConfig(parsedRowSettings)
       : null;
     if (!providerSettings || !row) continue; // provider row gone — provider-target path is dropped
 

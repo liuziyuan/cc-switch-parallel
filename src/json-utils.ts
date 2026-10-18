@@ -9,6 +9,24 @@ function isPlainObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+// Parse a DB column that is supposed to hold a JSON object. Missing/empty
+// values are the legitimate "no config" case → {}. Invalid JSON, arrays and
+// scalars → null: callers must warn and degrade to {} instead of handing the
+// value to prepare, which would atomically write a corrupt instance file
+// ("null", "[]", "\"{}\"").
+function parseJsonObject(value: any): Record<string, any> | null {
+  if (value === undefined || value === null) return {};
+  if (isPlainObject(value)) return value;
+  if (typeof value !== "string") return null;
+  if (!value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function jsonDeepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
@@ -194,4 +212,4 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = ""): SettingsC
 }
 
 
-export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider };
+export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider, parseJsonObject };

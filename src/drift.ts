@@ -6,6 +6,7 @@ import { loadSettings, queryCommonConfig, queryProviderById, queryProvidersByApp
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { loadSyncState, saveSyncState, sha256 } from "./sessions.js";
+import { parseJsonObject } from "./json-utils.js";
 import { collectPatchPaths } from "./upward.js";
 
 // ─── Config drift detection & sync ────────────────────────────────────
@@ -69,8 +70,14 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
         continue;
       }
       try {
-        const settingsConfig = JSON.parse(row.settings_config || "{}");
-        const meta = JSON.parse(row.meta || "{}");
+        const parsedSettings = parseJsonObject(row.settings_config);
+        const parsedMeta = parseJsonObject(row.meta);
+        if (!parsedSettings || !parsedMeta) {
+          console.error(`⚠ Provider "${row.name || row.id}" has malformed ${!parsedSettings ? "settings_config" : "meta"} JSON — skipping refresh.`);
+          continue; // keep the old baseline so the drift stays visible
+        }
+        const settingsConfig = parsedSettings;
+        const meta = parsedMeta;
         const instanceDir = adapter.setupInstance(row.id);
         // Guard BEFORE prepare overwrites — this refresh path historically
         // wiped other instances' own unsynced edits with zero warning.

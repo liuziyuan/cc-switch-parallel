@@ -91,6 +91,11 @@ function isClaudeRuntimeStatePath(path) {
 // recompute exactly what prepare would write, and a fork between the two
 // derivations makes the overwrite guard misfire.
 function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, providerName, providerId) {
+  // Defensive: callers pass parsed DB columns. A non-object (null, array,
+  // scalar) would be cloned and handed to prepare, which writes it back as
+  // the instance settings.json — degrade to {} instead.
+  if (!isPlainObject(settingsConfig)) settingsConfig = {};
+  if (!isPlainObject(meta)) meta = {};
   let effective = jsonDeepClone(settingsConfig);
   // Aggregation rows (loopback + PROXY_MANAGED signature) always merge the
   // common config: the row carries only routing env + modelPicker, so the

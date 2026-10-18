@@ -6,6 +6,7 @@ import { loadSettings, queryCommonConfig, queryProvider, queryProvidersByApp } f
 import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
 import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { recordLaunch } from "./history.js";
+import { parseJsonObject } from "./json-utils.js";
 import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.js";
 
 // ─── Launch logic ──────────────────────────────────────────────────────
@@ -41,8 +42,19 @@ async function launchProvider(cmd: string, providerName: string, extraArgs: stri
     process.exit(1);
   }
 
-  const settingsConfig = JSON.parse(row.settings_config || "{}");
-  const meta = JSON.parse(row.meta || "{}");
+  const parsedSettingsConfig = parseJsonObject(row.settings_config);
+  const parsedMeta = parseJsonObject(row.meta);
+  // Malformed rows must not reach prepare: it would atomically write "null",
+  // "[]" or a quoted scalar as the instance's settings.json. Degrade to {}
+  // with a loud warning instead of aborting the launch.
+  if (!parsedSettingsConfig) {
+    console.error(`⚠ Provider "${row.name}" has malformed settings_config JSON — launching with an empty config (repair the row in cc-switch).`);
+  }
+  if (!parsedMeta) {
+    console.error(`⚠ Provider "${row.name}" has malformed meta JSON — launching with empty meta.`);
+  }
+  const settingsConfig = parsedSettingsConfig ?? {};
+  const meta = parsedMeta ?? {};
   const category = row.category;
   const commonSnippet = queryCommonConfig(adapter.appType);
   const settings = loadSettings();

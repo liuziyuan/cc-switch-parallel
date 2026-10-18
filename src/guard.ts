@@ -3,7 +3,7 @@
 import { readFileSync, mkdirSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite, readdirSyncSafe } from "./fs-utils.js";
-import { deepEqualJson, diffSettingsLeaves, isPlainObject } from "./json-utils.js";
+import { deepEqualJson, diffSettingsLeaves, isPlainObject, parseJsonObject } from "./json-utils.js";
 import { CC_SWITCH_DIR } from "./paths.js";
 import { loadSyncState } from "./sessions.js";
 import { isCodexAggModelPath } from "./stack/state.js";
@@ -115,7 +115,7 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
     // and future guards are exact.
     if (!isPlainObject(entry?.preparedSettings)) {
       const effective = adapter.computeEffectiveSettings(
-        JSON.parse(row.settings_config || "{}"), JSON.parse(row.meta || "{}"),
+        parseJsonObject(row.settings_config) ?? {}, parseJsonObject(row.meta) ?? {},
         row.category, commonSnippet, row.id, settings,
       );
       const backfilled = effective != null && deepEqualJson(effective, current);

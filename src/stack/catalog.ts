@@ -480,6 +480,10 @@ function protectCodexAggregationIdentity(configObj, settingsConfig) {
 }
 
 function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provider, settings) {
+  // Defensive: a malformed DB row (null/array/scalar) would throw on
+  // settingsConfig.config below and abort prepare.
+  if (!isPlainObject(settingsConfig)) settingsConfig = {};
+  if (!isPlainObject(meta)) meta = {};
   const configText = settingsConfig.config || "";
   // Aggregation rows (codex signature: loopback active table + PROXY_MANAGED)
   // always merge the common config — same reasoning as claude's
