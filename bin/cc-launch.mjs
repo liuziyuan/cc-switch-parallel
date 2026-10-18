@@ -59,6 +59,21 @@ const STATUSLINE_PREFS_VERSION = 1;
 // cc-switch 4.0 aggregation (Stack) device-local state — written only by the
 // desktop app; this CLI reads it fail-open (missing/corrupt = aggregation off).
 const LIVE_STATE_PATH = join(CC_SWITCH_DIR, "live-state.json");
+// The aggregation entry is a RUNTIME-VIRTUAL provider row: never stored in the
+// cc-switch DB (which the desktop GUI renders — an auto-generated row would
+// show up there as a non-user entry), derived on every query from live-state +
+// the global ~/.claude/settings.json projection. Fixed id so instance dirs,
+// launch history and statusline colors key on something stable.
+const VIRTUAL_STACK_PROVIDER_ID = "__stack__";
+// Upstream's default proxy port — only used when the stack is OFF but the
+// virtual entry still shows (a `__stack__` instance dir exists): live-state
+// carries no port then, and this is what the desktop app writes a fresh
+// projection with. Same value the docs and warnings already name.
+const STACK_FALLBACK_BASE_URL = "http://127.0.0.1:15721";
+// Apps whose aggregation entry goes through the virtual layer. Codex has no
+// aggregation support in this CLI yet (docs/codex-stack-plan.md) — extend the
+// set when it lands, the layer below is already appType-parameterized.
+const VIRTUAL_STACK_APPS = new Set(["claude"]);
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
@@ -1957,6 +1972,99 @@ function readGlobalModelPicker() {
   } catch {
     return null;
   }
+}
+
+// Derive the aggregation routing contract from the GLOBAL ~/.claude/settings.json
+// the desktop app writes when its stack is live (loopback env + ccs alias tiers
+// + modelPicker). Extraction of the derive half of the old ensureStackProviderRow
+// — now the single source the virtual row computes from on every query, so a
+// desktop re-point or member swap surfaces on the next TUI open / launch with no
+// mirror step. Returns { settings: {env[, modelPicker]}, baseUrl }, or null when
+// the global env is missing/not loopback (no usable contract to derive).
+function buildStackSettingsFromGlobal() {
+  let globalEnv = null;
+  try {
+    globalEnv = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"))?.env || null;
+  } catch { globalEnv = null; }
+  if (!isPlainObject(globalEnv) || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return null;
+  const env = {
+    ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+    ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL,
+  };
+  for (const k of AGGREGATION_MODEL_ALIAS_KEYS) {
+    if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
+  }
+  const settings = { env };
+  const picker = readGlobalModelPicker();
+  if (picker && picker.options.length) settings.modelPicker = picker;
+  return { settings, baseUrl: globalEnv.ANTHROPIC_BASE_URL };
+}
+
+// The virtual aggregation provider row (appType-parameterized; claude until the
+// Codex stack lands). Same shape as a DB row so every consumer — prepare, guard,
+// statusline injection, drift — treats it like any other provider, plus
+// `is_virtual: true` (never written to the DB; the query layer and write-back
+// paths key on it). meta carries stackManaged:true so the existing
+// buildClaudeEffectiveSettings behaviors (forced common merge, picker
+// drop-with-stack-off) apply unchanged. Three states:
+//   stack on + loopback global env        → full live row (contract derived fresh)
+//   stack off + a __stack__ instance dir  → dormant row (fallback base URL, no
+//                                           aliases/picker) — "（未激活）", still
+//                                           launchable, probe warns
+//   otherwise                             → null (aggregation never used: zero noise)
+// Computed on every call — no cache; the CLI calls it a handful of times per run.
+function virtualStackProviderFor(appType) {
+  if (!VIRTUAL_STACK_APPS.has(appType)) return null;
+  try {
+    let settings = null;
+    let baseUrl = null;
+    if (readStackState(appType)) {
+      const derived = buildStackSettingsFromGlobal();
+      if (derived) ({ settings, baseUrl } = derived);
+    }
+    if (!settings) {
+      // Dormant path: only surface the entry when the user actually used
+      // aggregation before (the instance dir is the durable trace; live-state
+      // and the DB row both come and go with the desktop app).
+      const dir = join(INSTANCES_DIR, appType, VIRTUAL_STACK_PROVIDER_ID);
+      if (!existsSync(dir)) return null;
+      baseUrl = STACK_FALLBACK_BASE_URL;
+      settings = { env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: baseUrl } };
+    }
+    // Avoid colliding with an unrelated provider that already owns the name
+    // (same dodge the old auto-created row used). DB-first everywhere: a real
+    // row named "Stack" keeps the name, the virtual entry shows as "Stack 2".
+    let name = "Stack";
+    try {
+      const taken = new Set(queryDB(
+        `SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`,
+      ).map((r) => r.name));
+      for (let i = 2; taken.has(name); i++) name = `Stack ${i}`;
+    } catch { /* DB unavailable — plain "Stack" is fine */ }
+    return {
+      id: VIRTUAL_STACK_PROVIDER_ID,
+      app_type: appType,
+      name,
+      settings_config: JSON.stringify(settings),
+      category: null,
+      meta: '{"stackManaged":true}',
+      is_virtual: true,
+    };
+  } catch {
+    return null; // fail-open: construction trouble = "no aggregation entry"
+  }
+}
+
+// Query-exit merge helper: append the virtual row to a DB result set unless the
+// DB itself already carries an id-addressable row for it (defensive — a future
+// desktop that writes its own row wins). `rows` keeps the caller's projection
+// shape ({id, name} for the list queries; full rows for the single-row ones).
+// is_virtual stays on the row — the drift split and write-back paths key on it.
+function appendVirtualStackRow(rows, appType) {
+  const v = virtualStackProviderFor(appType);
+  if (!v) return rows;
+  if (rows.some((r) => r.id === VIRTUAL_STACK_PROVIDER_ID)) return rows;
+  return [...rows, v];
 }
 
 // Per-member usage config map for an aggregation instance. Each member is
@@ -5911,6 +6019,10 @@ export const __test = Object.freeze({
   isAggregationProviderSettings,
   readStackState,
   readGlobalModelPicker,
+  buildStackSettingsFromGlobal,
+  virtualStackProviderFor,
+  appendVirtualStackRow,
+  VIRTUAL_STACK_PROVIDER_ID,
   buildStackUsageConfig,
   buildStackUsageWrapperLines,
   buildClaudeAggregationGroup,
