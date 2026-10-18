@@ -59,6 +59,21 @@ const STATUSLINE_PREFS_VERSION = 1;
 // cc-switch 4.0 aggregation (Stack) device-local state — written only by the
 // desktop app; this CLI reads it fail-open (missing/corrupt = aggregation off).
 const LIVE_STATE_PATH = join(CC_SWITCH_DIR, "live-state.json");
+// The aggregation entry is a RUNTIME-VIRTUAL provider row: never stored in the
+// cc-switch DB (which the desktop GUI renders — an auto-generated row would
+// show up there as a non-user entry), derived on every query from live-state +
+// the global ~/.claude/settings.json projection. Fixed id so instance dirs,
+// launch history and statusline colors key on something stable.
+const VIRTUAL_STACK_PROVIDER_ID = "__stack__";
+// Upstream's default proxy port — only used when the stack is OFF but the
+// virtual entry still shows (a `__stack__` instance dir exists): live-state
+// carries no port then, and this is what the desktop app writes a fresh
+// projection with. Same value the docs and warnings already name.
+const STACK_FALLBACK_BASE_URL = "http://127.0.0.1:15721";
+// Apps whose aggregation entry goes through the virtual layer. Codex has no
+// aggregation support in this CLI yet (docs/codex-stack-plan.md) — extend the
+// set when it lands, the layer below is already appType-parameterized.
+const VIRTUAL_STACK_APPS = new Set(["claude"]);
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
@@ -147,20 +162,36 @@ function queryProvider(name, appType) {
   const rows = queryDB(
     `SELECT id, name, settings_config, category, meta FROM providers WHERE name = ${sqlQuote(name)} AND app_type = ${sqlQuote(appType)} ORDER BY id LIMIT 1`,
   );
-  return rows[0] || null;
+  if (rows[0]) return rows[0];
+  // Virtual aggregation entry: DB-first by name, the derived row answers only
+  // under its own (collision-dodged) display name. Fail-open on derive trouble.
+  try {
+    if (VIRTUAL_STACK_APPS.has(appType)) {
+      const v = virtualStackProviderFor(appType);
+      if (v && v.name === name) return v;
+    }
+  } catch { /* fall through to null */ }
+  return null;
 }
 
 function queryProviderById(id, appType) {
   const rows = queryDB(
     `SELECT id, name, settings_config, category, meta FROM providers WHERE id = ${sqlQuote(id)} AND app_type = ${sqlQuote(appType)} LIMIT 1`,
   );
-  return rows[0] || null;
+  if (rows[0]) return rows[0];
+  try {
+    if (id === VIRTUAL_STACK_PROVIDER_ID && VIRTUAL_STACK_APPS.has(appType)) {
+      return virtualStackProviderFor(appType);
+    }
+  } catch { /* fall through to null */ }
+  return null;
 }
 
 function queryProvidersByApp(appType) {
-  return queryDB(
+  const rows = queryDB(
     `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
   );
+  return appendVirtualStackRow(rows, appType);
 }
 
 // Same query, but errors PROPAGATE (queryDB's silent-catch collapses any
@@ -172,7 +203,9 @@ function queryProvidersStrict(appType) {
   const json = execFileSync("sqlite3", ["-json", DB_PATH,
     `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
   ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  return JSON.parse(json || "[]");
+  // Virtual row merges ONLY onto a successful read — a DB failure must
+  // propagate untouched so history migration / alive snapshots stay honest.
+  return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
 }
 
 function queryCommonConfig(appType) {
@@ -1837,11 +1870,11 @@ function isLoopbackBaseUrl(baseUrl) {
 }
 
 // Deterministic Stack-row signature: loopback base URL + the upstream
-// placeholder token (the shape both the desktop live projection and
-// ensureStackProviderRow write). Loopback alone cannot tell a Stack row from
-// a user's own local gateway (LiteLLM, one-api …) — the earlier loopback-only
-// test mistook gateway rows for Stack rows (forced common merge, picker
-// injection, ensureStackProviderRow swallowing the gateway row as the
+// placeholder token (the shape the desktop live projection and the virtual
+// entry write). Loopback alone cannot tell a Stack row from a user's own
+// local gateway (LiteLLM, one-api …) — the earlier loopback-only test
+// mistook gateway rows for Stack rows (forced common merge, picker
+// injection, the old auto-create swallowing the gateway row as the
 // "existing" Stack). Still no readStackState here: the merge decision must
 // not flip with desktop state (prepare determinism).
 function isAggregationProviderSettings(settingsConfig) {
@@ -1861,7 +1894,7 @@ const AGGREGATION_IDENTITY_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
 ];
 
-// The ccs model aliases ensureStackProviderRow copies from the global env
+// The ccs model aliases the virtual entry copies from the global env
 // (ANTHROPIC_DEFAULT_*_MODEL/_NAME) route default models through the proxy's
 // key map — a common scalar would silently swap them and mis-attribute
 // billing. Row value wins when present; when the row lacks a key the common
@@ -1959,6 +1992,99 @@ function readGlobalModelPicker() {
   }
 }
 
+// Derive the aggregation routing contract from the GLOBAL ~/.claude/settings.json
+// the desktop app writes when its stack is live (loopback env + ccs alias tiers
+// + modelPicker). Extraction of the derive half of the old ensureStackProviderRow
+// — now the single source the virtual row computes from on every query, so a
+// desktop re-point or member swap surfaces on the next TUI open / launch with no
+// mirror step. Returns { settings: {env[, modelPicker]}, baseUrl }, or null when
+// the global env is missing/not loopback (no usable contract to derive).
+function buildStackSettingsFromGlobal() {
+  let globalEnv = null;
+  try {
+    globalEnv = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"))?.env || null;
+  } catch { globalEnv = null; }
+  if (!isPlainObject(globalEnv) || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return null;
+  const env = {
+    ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+    ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL,
+  };
+  for (const k of AGGREGATION_MODEL_ALIAS_KEYS) {
+    if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
+  }
+  const settings = { env };
+  const picker = readGlobalModelPicker();
+  if (picker && picker.options.length) settings.modelPicker = picker;
+  return { settings, baseUrl: globalEnv.ANTHROPIC_BASE_URL };
+}
+
+// The virtual aggregation provider row (appType-parameterized; claude until the
+// Codex stack lands). Same shape as a DB row so every consumer — prepare, guard,
+// statusline injection, drift — treats it like any other provider, plus
+// `is_virtual: true` (never written to the DB; the query layer and write-back
+// paths key on it). meta carries stackManaged:true so the existing
+// buildClaudeEffectiveSettings behaviors (forced common merge, picker
+// drop-with-stack-off) apply unchanged. Three states:
+//   stack on + loopback global env        → full live row (contract derived fresh)
+//   stack off + a __stack__ instance dir  → dormant row (fallback base URL, no
+//                                           aliases/picker) — "（未激活）", still
+//                                           launchable, probe warns
+//   otherwise                             → null (aggregation never used: zero noise)
+// Computed on every call — no cache; the CLI calls it a handful of times per run.
+function virtualStackProviderFor(appType) {
+  if (!VIRTUAL_STACK_APPS.has(appType)) return null;
+  try {
+    let settings = null;
+    let baseUrl = null;
+    if (readStackState(appType)) {
+      const derived = buildStackSettingsFromGlobal();
+      if (derived) ({ settings, baseUrl } = derived);
+    }
+    if (!settings) {
+      // Dormant path: only surface the entry when the user actually used
+      // aggregation before (the instance dir is the durable trace; live-state
+      // and the DB row both come and go with the desktop app).
+      const dir = join(INSTANCES_DIR, appType, VIRTUAL_STACK_PROVIDER_ID);
+      if (!existsSync(dir)) return null;
+      baseUrl = STACK_FALLBACK_BASE_URL;
+      settings = { env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: baseUrl } };
+    }
+    // Avoid colliding with an unrelated provider that already owns the name
+    // (same dodge the old auto-created row used). DB-first everywhere: a real
+    // row named "Stack" keeps the name, the virtual entry shows as "Stack 2".
+    let name = "Stack";
+    try {
+      const taken = new Set(queryDB(
+        `SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`,
+      ).map((r) => r.name));
+      for (let i = 2; taken.has(name); i++) name = `Stack ${i}`;
+    } catch { /* DB unavailable — plain "Stack" is fine */ }
+    return {
+      id: VIRTUAL_STACK_PROVIDER_ID,
+      app_type: appType,
+      name,
+      settings_config: JSON.stringify(settings),
+      category: null,
+      meta: '{"stackManaged":true}',
+      is_virtual: true,
+    };
+  } catch {
+    return null; // fail-open: construction trouble = "no aggregation entry"
+  }
+}
+
+// Query-exit merge helper: append the virtual row to a DB result set unless the
+// DB itself already carries an id-addressable row for it (defensive — a future
+// desktop that writes its own row wins). `rows` keeps the caller's projection
+// shape ({id, name} for the list queries; full rows for the single-row ones).
+// is_virtual stays on the row — the drift split and write-back paths key on it.
+function appendVirtualStackRow(rows, appType) {
+  const v = virtualStackProviderFor(appType);
+  if (!v) return rows;
+  if (rows.some((r) => r.id === VIRTUAL_STACK_PROVIDER_ID)) return rows;
+  return [...rows, v];
+}
+
 // Per-member usage config map for an aggregation instance. Each member is
 // resolved with its OWN settings_config + meta (never the aggregation row's
 // proxy placeholder token) — the same resolveUsageIdentity the member would
@@ -1997,121 +2123,17 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
   return { defaultKey, names, map, selfPath: wrapperPath };
 }
 
-// Auto-create the aggregation provider row when the desktop app has
-// aggregation enabled but no loopback provider exists. Pure INSERT (never
-// overwrites), modeled after the upstream live projection: proxy base URL +
-// PROXY_MANAGED placeholder + the four alias tiers + modelPicker snapshot,
-// all read from the global settings.json the desktop app itself wrote. The
-// row's meta carries stackManaged:true — the launch-time mirror below keys
-// on it. Returns the new row's {id, name}, or null when creation is not
-// possible/desired.
-function ensureStackProviderRow() {
-  const stack = readStackState("claude");
-  if (!stack) return null;
-  const rows = queryDB("SELECT id, name, settings_config FROM providers WHERE app_type = 'claude'");
-  const isAggRow = (r) => {
-    try { return isAggregationProviderSettings(JSON.parse(r.settings_config)); } catch { return false; }
-  };
-  const existing = rows.find(isAggRow);
-  if (existing) return null; // already there — nothing to create
-  const picker = readGlobalModelPicker();
-  let globalEnv = null;
-  try {
-    globalEnv = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"))?.env || null;
-  } catch { globalEnv = null; }
-  if (!isPlainObject(globalEnv) || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return null;
-  // Prefer the live contract from the global file; fall back to the bare
-  // proxy defaults if the desktop app wrote a shape we do not recognize.
-  const env = {
-    ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
-    ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL,
-  };
-  for (const k of [
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-  ]) {
-    if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
-  }
-  const settings = { env };
-  if (picker && picker.options.length) settings.modelPicker = picker;
-  // Avoid colliding with an unrelated provider that already owns the name.
-  let name = "Stack";
-  const taken = new Set(rows.map((r) => r.name));
-  for (let i = 2; taken.has(name); i++) name = `Stack ${i}`;
-  const id = randomUUID();
-  const maxSort = queryDB(
-    "SELECT COALESCE(MAX(sort_index), 0) AS s FROM providers WHERE app_type = 'claude'",
-  )[0]?.s || 0;
-  execDB(
-    `INSERT INTO providers (id, app_type, name, settings_config, category, created_at, sort_index, meta, is_current, in_failover_queue) ` +
-    `VALUES (${sqlQuote(id)}, 'claude', ${sqlQuote(name)}, ${sqlQuote(JSON.stringify(settings))}, NULL, ` +
-    `${Math.floor(Date.now() / 1000)}, ${Number(maxSort) + 1}, '{"stackManaged":true}', 0, 0)`,
-  );
-  return { id, name };
-}
-
-// Launch-time maintenance for auto-created Stack rows (meta.stackManaged):
-// while the desktop aggregation is live, MIRROR the routing contract from
-// the global ~/.claude/settings.json into the row — base URL, the ccs alias
-// tiers, and the picker snapshot. The desktop app re-points the proxy port
-// or swaps the default provider without ever touching our row, and a stale
-// row means dead-port launches forever (the row is only ever created, never
-// updated). Mirroring is additive-to-live: with the stack off, or when the
-// row lost its managed marker / its Stack signature (user re-purposed it),
-// the row is returned untouched — hand-made rows are never written. Returns
-// the (possibly updated) row so the caller's guard/prepare derive from the
-// fresh state in one pass.
-function syncStackManagedRow(row) {
-  let meta = null;
-  try { meta = JSON.parse(row.meta || "{}"); } catch { meta = null; }
-  if (!isPlainObject(meta) || meta.stackManaged !== true) return row;
-  let sc = null;
-  try { sc = JSON.parse(row.settings_config || "{}"); } catch { sc = null; }
-  if (!isPlainObject(sc) || !isAggregationProviderSettings(sc)) return row;
-  if (!readStackState("claude")) return row; // stack off — row stays as-is
-  let globalEnv = null;
-  try {
-    const g = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"));
-    if (isPlainObject(g) && isPlainObject(g.env)) globalEnv = g.env;
-  } catch {}
-  if (!globalEnv || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return row;
-  const env = { ...sc.env, ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL };
-  for (const k of AGGREGATION_MODEL_ALIAS_KEYS) {
-    // mirror semantics: a tier the desktop stopped publishing goes away too
-    if (typeof globalEnv[k] === "string") env[k] = globalEnv[k];
-    else delete env[k];
-  }
-  const settings = { ...sc, env };
-  const picker = readGlobalModelPicker();
-  if (picker && picker.options.length) settings.modelPicker = picker;
-  else delete settings.modelPicker;
-  const next = JSON.stringify(settings);
-  if (next === row.settings_config) return row; // nothing drifted — no write
-  try {
-    execDB(`UPDATE providers SET settings_config = ${sqlQuote(next)} ` +
-      `WHERE id = ${sqlQuote(row.id)} AND app_type = 'claude'`);
-  } catch {
-    return row; // DB hiccup — the stale row still launches; next launch retries
-  }
-  return { ...row, settings_config: next };
-}
-
-// TUI helper: the aggregation group for the claude provider list. Auto-creates
-// the entry row first (desktop aggregation on + no loopback provider), then
-// labels every loopback provider with the live member names — "◆ 聚合 ·
+// TUI helper: the aggregation group for the claude provider list. The entry is
+// the RUNTIME-VIRTUAL row (virtualStackProviderFor) — never written to the DB,
+// so the desktop GUI sees nothing — plus any DB rows matching the loopback +
+// PROXY_MANAGED signature (legacy auto-created rows pending one-time cleanup,
+// and hand-made ones, which today already take the aggregation label). Every
+// loopback provider is labeled with the live member names — "◆ 聚合 ·
 // Stack（DeepSeek + Z.AI GLM）", or "（未激活）" when the desktop app has the
-// stack off (the row still launches; it just proxies nothing until re-enabled).
-// Returns { ids: Set, labels: Map<id, label>, created: string|null }, or null
-// when no aggregation provider exists at all.
+// stack off (the entry still launches; it just proxies nothing until
+// re-enabled). Returns { ids: Set, labels: Map<id, label> }, or null when no
+// aggregation provider exists at all.
 function buildClaudeAggregationGroup() {
-  let created = null;
-  try {
-    created = ensureStackProviderRow();
-  } catch {
-    created = null;
-  }
   const rows = queryDB("SELECT id, name, settings_config FROM providers WHERE app_type = 'claude'");
   const aggRows = [];
   for (const r of rows) {
@@ -2119,6 +2141,8 @@ function buildClaudeAggregationGroup() {
       if (isAggregationProviderSettings(JSON.parse(r.settings_config))) aggRows.push(r);
     } catch {}
   }
+  const virtual = virtualStackProviderFor("claude");
+  if (virtual && !aggRows.some((r) => r.id === virtual.id)) aggRows.push(virtual);
   if (!aggRows.length) return null;
   const stack = readStackState("claude");
   const nameById = new Map(rows.map((r) => [r.id, r.name]));
@@ -2134,8 +2158,120 @@ function buildClaudeAggregationGroup() {
   return {
     ids: new Set(aggRows.map((r) => r.id)),
     labels: new Map(aggRows.map((r) => [r.id, `◆ 聚合 · ${r.name}${memberText}`])),
-    created: created ? created.name : null,
   };
+}
+
+// One-time migration for the pre-virtualization era: versions ≤0.19 INSERTed a
+// real DB row for the aggregation entry (randomUUID id, loopback + PROXY_MANAGED
+// signature). The virtual entry replaces it — the DB row would keep showing up
+// in the desktop GUI forever, so it is deleted here and every id-keyed reference
+// (launch history entries + pin slots, statusline colors) moves to the stable
+// virtual id. Runs on TUI open and before every claude launch (command mode
+// never opens the TUI). Idempotent: no signature rows → null, zero output.
+// Skips is_current rows (the desktop app is actively pointed at them — deleting
+// would dangle its current-provider state). Fail-open: a locked/unreadable DB
+// or a frozen history just skips this pass; the next run retries.
+// Old instance dirs (UUID-named) are deliberately NOT renamed — a running
+// session keeps working; `switch clean` reaps them once the session ends.
+function cleanupLegacyStackRows() {
+  let rows = [];
+  try {
+    rows = queryDB(
+      "SELECT id, name, settings_config, is_current FROM providers WHERE app_type = 'claude'",
+    );
+  } catch {
+    return null; // DB unavailable — retry next run
+  }
+  const legacy = [];
+  for (const r of rows) {
+    try {
+      if (isAggregationProviderSettings(JSON.parse(r.settings_config))) legacy.push(r);
+    } catch {}
+  }
+  if (!legacy.length) return null;
+  const removed = [];
+  const skippedCurrent = [];
+  for (const r of legacy) {
+    if (r.is_current) { skippedCurrent.push(r.name); continue; }
+    try {
+      execDB(`DELETE FROM providers WHERE id = ${sqlQuote(r.id)} AND app_type = 'claude'`);
+      removed.push({ id: r.id, name: r.name });
+    } catch {
+      // locked mid-write — the row survives this pass, next run retries
+    }
+  }
+  if (!removed.length) return { removed, skippedCurrent, migratedHistory: false, migratedColors: false };
+
+  // launch_history: point entries and pin slots at the virtual id; entries that
+  // collide after the rewrite (same cli|id|hotkey) merge keeping the stronger
+  // count/lastUsed. Frozen history (failed migration at load) is left alone —
+  // the rows are already deleted, so those entries read dead until cleanup.
+  if (!_historyFrozen) {
+    try {
+      const removedIds = new Set(removed.map((r) => r.id));
+      const { entries, order } = loadHistory();
+      let touched = false;
+      for (const e of entries) {
+        if (e.providerId && removedIds.has(e.providerId)) {
+          e.providerId = VIRTUAL_STACK_PROVIDER_ID;
+          touched = true;
+        }
+      }
+      // merge duplicates born from the rewrite: prefer count, then lastUsed
+      const byKey = new Map();
+      const merged = [];
+      for (const e of entries) {
+        const k = `${e.cli}|${e.providerId ?? e.provider}|${e.hotkey ?? ""}`;
+        const prev = byKey.get(k);
+        if (!prev) { byKey.set(k, e); merged.push(e); continue; }
+        if ((e.count || 0) > (prev.count || 0) || ((e.count || 0) === (prev.count || 0) && (e.lastUsed || 0) > (prev.lastUsed || 0))) {
+          byKey.set(k, e);
+          merged[merged.indexOf(prev)] = e;
+        }
+        touched = true;
+      }
+      const slotMap = new Map(removed.map((r) => [`claude|${r.id}`, `claude|${VIRTUAL_STACK_PROVIDER_ID}`]));
+      const nextOrder = order.map((slot) => (slot && slotMap.has(slot) ? slotMap.get(slot) : slot));
+      if (touched) saveHistory(merged, nextOrder);
+    } catch { /* history is best-effort — never block on it */ }
+  }
+
+  // statusline colors: same id-keyed move, existing value for the virtual id wins
+  let migratedColors = false;
+  try {
+    const prefs = loadStatuslinePreferences();
+    if (prefs && isPlainObject(prefs.colors?.claude)) {
+      const bucket = prefs.colors.claude;
+      const removedIds = removed.map((r) => r.id);
+      for (const oldId of removedIds) {
+        if (bucket[oldId] === undefined) continue;
+        if (bucket[VIRTUAL_STACK_PROVIDER_ID] === undefined) bucket[VIRTUAL_STACK_PROVIDER_ID] = bucket[oldId];
+        delete bucket[oldId];
+        migratedColors = true;
+      }
+      if (migratedColors) {
+        atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
+      }
+    }
+  } catch { /* best-effort */ }
+
+  return { removed, skippedCurrent, migratedHistory: true, migratedColors };
+}
+
+function reportLegacyStackCleanup(result) {
+  if (!result) return;
+  for (const r of result.removed) {
+    console.error(`◇ 已移除旧版聚合 provider 行「${r.name}」（现由运行时虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID} 承担，桌面端 GUI 不再显示）`);
+  }
+  if (result.migratedHistory) {
+    console.error(`  启动历史与置顶已迁移到虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID}`);
+  }
+  if (result.migratedColors) {
+    console.error(`  statusline 颜色偏好已迁移到虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID}`);
+  }
+  for (const name of result.skippedCurrent) {
+    console.error(`\x1b[33m⚠ 聚合行「${name}」正被桌面端使用（is_current），已保留 — 在桌面端切走后下次运行会自动清理\x1b[0m`);
+  }
 }
 
 // ─── Provider usage snapshot (app-agnostic, statusline) ───────────────
@@ -3517,6 +3653,7 @@ function detectConfigDriftGeneric(adapter, state) {
   const providerPatches = {};
   const conflicts = {};
   const rejectedPaths = [];
+  let virtualBlocked = false; // provider-target changes refused for the virtual Stack entry
   for (const [path, voters] of votes.entries()) {
     voters.sort((a, b) => a.cand.mtimeMs - b.cand.mtimeMs);
     const winner = voters[voters.length - 1];
@@ -3530,7 +3667,12 @@ function detectConfigDriftGeneric(adapter, state) {
 
     const { commonPatch: cp, providerPatch: pp, rejected: rj } = splitChangesByTarget(
       [winner.ch], winner.cand.providerId, commonObj, providerSettings,
+      // The virtual Stack entry has no DB row: provider-target edits cannot be
+      // written back (they'd be silently rebuilt by the next prepare anyway) —
+      // route them to rejected so the prompt says so instead of dropping them.
+      row.is_virtual ? { virtualProvider: true } : {},
     );
+    if (row.is_virtual && rj.length) virtualBlocked = true;
     Object.assign(commonPatch, cp);
     if (rj.length) rejectedPaths.push(...rj.map((ch) => ch.path));
     // pp is ONE change's nested patch object (path-keyed), not {pid: patch} —
@@ -3554,7 +3696,7 @@ function detectConfigDriftGeneric(adapter, state) {
     changes: c.changes,
     mtimeMs: c.mtimeMs,
   }));
-  return { instances, commonPatch, providerPatches, conflicts, rejected: rejectedPaths };
+  return { instances, commonPatch, providerPatches, conflicts, rejected: rejectedPaths, virtualBlocked };
 }
 
 // Set of plugin keys ("name@source") with a user-scope install record — the
@@ -3777,6 +3919,10 @@ function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
   }
   for (const [providerId, patchObj] of Object.entries(providerPatches || {})) {
     if (!patchObj || !Object.keys(patchObj).length) continue;
+    // Virtual Stack entry: no DB row — an UPDATE here would silently match 0
+    // rows. The drift split already refuses provider-target edits for it; this
+    // guard keeps any future caller from losing an edit the same silent way.
+    if (providerId === VIRTUAL_STACK_PROVIDER_ID) continue;
     try {
       patchProviderSettingsConfig(providerId, "claude", patchObj);
     } catch (e) {
@@ -3917,8 +4063,11 @@ function foldRemovalPatch(patch, target) {
 // a sensitive key FROM common clears a historical leak. providerPatch is
 // never gated — provider rows are per-provider secrets by construction.
 // Returns { commonPatch, providerPatch, rejected } — rejected carries the
-// refused changes so the prompt can say so BEFORE the user confirms.
-function splitChangesByTarget(changes, providerId, commonObj, providerSettings) {
+// refused changes so the prompt can say so BEFORE the user confirms. opts:
+// virtualProvider — the winning provider row is the runtime-virtual Stack
+// entry (no DB row to write back to): provider-target changes land in
+// rejected too (surfaced as "blocked"), common-target changes still flow.
+function splitChangesByTarget(changes, providerId, commonObj, providerSettings, opts = {}) {
   const commonPatch = {};
   const providerPatch = {};
   const rejected = [];
@@ -3931,6 +4080,8 @@ function splitChangesByTarget(changes, providerId, commonObj, providerSettings) 
       if (!deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)) {
         buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to, commonObj);
       }
+    } else if (opts.virtualProvider) {
+      rejected.push(ch);
     } else {
       const cur = getPathValue(providerSettings, ch.path);
       if (!deepEqualJson(cur, ch.op === "remove" ? undefined : ch.to)) {
@@ -3984,8 +4135,9 @@ function collectPatchPaths(patch, prefix = "") {
 // installed_plugins.json back to the global ~/.claude/plugins path. cc-switch
 // points CLAUDE_CONFIG_DIR at a per-instance dir, so Claude Code records newly
 // installed user plugins under that instance and other instances can't resolve
-// them. Idempotent (already-global paths are untouched) and best-effort.
-const INSTANCE_PLUGIN_PATH_RE = /^.*?\/instances\/claude\/[0-9a-f-]+\/plugins\//;
+// them. Any dir name matches ([^/]+) — UUID rows AND the virtual `__stack__`
+// instance. Idempotent (already-global paths are untouched) and best-effort.
+const INSTANCE_PLUGIN_PATH_RE = /^.*?\/instances\/claude\/[^/]+\/plugins\//;
 function normalizeInstalledPluginPaths() {
   try {
     const globalPluginsDir = join(HOME, ".claude", "plugins");
@@ -4267,6 +4419,11 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // lose comments/formatting on write-back — say so BEFORE the confirm.
     if (APP_ADAPTERS[cmd]?.rewritesCommonOnSync && Object.keys(d.commonPatch || {}).length) {
       lines.push(`\x1b[2m(note: write-back rewrites common config (${cmd}) — comments and formatting in the TOML will be lost)\x1b[0m`);
+    }
+    // Virtual Stack entry: provider-target edits have no DB row to land in —
+    // shown as blocked above; spell out why so it doesn't read as a bug.
+    if (d.virtualBlocked) {
+      lines.push(`\x1b[2m(聚合入口「${VIRTUAL_STACK_PROVIDER_ID}」为运行时虚拟行，不写回数据库——实例配置每次启动由桌面端状态重新生成)\x1b[0m`);
     }
   }
   for (const d of Object.values(pluginDrifts)) {
@@ -4887,6 +5044,8 @@ function tuiSelect(prompt, options, optsArg) {
 // survive into the next quick launch.
 async function runTUI() {
   await detectAndPromptSync({ tui: true });
+  // One-time migration of pre-virtualization aggregation rows (idempotent).
+  reportLegacyStackCleanup(cleanupLegacyStackRows());
 
   const cliOptions = Object.entries(APP_ADAPTERS).map(([value, adapter]) => ({
     label: adapter.label,
@@ -4965,15 +5124,13 @@ async function runTUI() {
       process.exit(1);
     }
     let providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
-    // cc-switch 4.0 aggregation (claude only): loopback providers sink to the
-    // tail of the list under a labeled group showing the live member names —
-    // launch, recent, pin and colors behave exactly like any other provider.
+    // cc-switch 4.0 aggregation (claude only): the virtual entry (and any DB
+    // rows matching the loopback signature) sink to the tail of the list under
+    // a labeled group showing the live member names — launch, recent, pin and
+    // colors behave exactly like any other provider.
     if (adapter.appType === "claude") {
       const group = buildClaudeAggregationGroup();
       if (group) {
-        if (group.created) {
-          console.error(`◇ cc-switch 聚合已激活 — 已自动创建聚合 provider「${group.created}」`);
-        }
         const plain = providers.filter((p) => !group.ids.has(p.id));
         const aggs = providers.filter((p) => group.ids.has(p.id));
         providerOptions = [
@@ -5033,8 +5190,15 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
 
   await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
 
-  // let, not const: the managed-Stack mirror below may replace the row.
-  let row = queryProvider(providerName, adapter.appType);
+  // One-time migration of pre-virtualization aggregation rows — command mode
+  // never opens the TUI, so the claude launch path carries its own pass.
+  // Runs BEFORE the lookup: a by-name launch of "Stack" must hit the virtual
+  // entry, not a legacy row that is about to be deleted.
+  if (adapter.appType === "claude") {
+    reportLegacyStackCleanup(cleanupLegacyStackRows());
+  }
+
+  const row = queryProvider(providerName, adapter.appType);
   if (!row) {
     console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
     console.error(`  Available providers:`);
@@ -5042,11 +5206,6 @@ async function launchProvider(cmd, providerName, extraArgs, syncFlag = null, rec
     process.exit(1);
   }
 
-  // Managed Stack rows mirror the desktop app's live routing contract (base
-  // URL / ccs aliases / picker) BEFORE the guard and prepare run — both then
-  // derive from the fresh row in this same pass, with no second launch
-  // needed to converge. No-op for every other row.
-  if (adapter.appType === "claude") row = syncStackManagedRow(row);
   const settingsConfig = JSON.parse(row.settings_config || "{}");
   const meta = JSON.parse(row.meta || "{}");
   const category = row.category;
@@ -5287,23 +5446,30 @@ async function aggregationDoctorChecks() {
       ? `${Object.keys(stack.keys).length} key(s) → provider rows all present`
       : `stack key(s) with no provider row: ${missing.join(", ")}`,
   );
-  let stackRow = null;
+  // The aggregation entry is the runtime-virtual row (not a DB row), derived
+  // fresh from live-state + the global settings.json. "Present" = the derive
+  // succeeds; a live stack whose global env is not loopback yields no usable
+  // entry, which IS a failure (nothing to launch the stack through).
+  const virtual = virtualStackProviderFor("claude");
+  if (!virtual) {
+    add("aggregation Stack row", false, "live stack but no virtual entry derivable — global ~/.claude/settings.json env is missing or not loopback");
+    return checks;
+  }
+  let baseUrl = null;
+  try { baseUrl = JSON.parse(virtual.settings_config)?.env?.ANTHROPIC_BASE_URL ?? null; } catch {}
+  // Legacy auto-created DB rows (pre-virtualization) are cleaned up on the
+  // next TUI open / launch; report them so the state is visible until then.
+  let legacy = 0;
   try {
     for (const r of queryDB("SELECT settings_config FROM providers WHERE app_type = 'claude'")) {
       try {
-        if (isAggregationProviderSettings(JSON.parse(r.settings_config))) { stackRow = r; break; }
+        if (isAggregationProviderSettings(JSON.parse(r.settings_config))) legacy++;
       } catch {}
     }
   } catch {}
-  if (!stackRow) {
-    // Live stack but no row to launch it from — the TUI auto-creates one on
-    // open (ensureStackProviderRow), so this is self-healing, not a failure.
-    add("aggregation Stack row", true, "missing — auto-created next time the TUI opens");
-    return checks;
-  }
-  add("aggregation Stack row", true, "present");
-  let baseUrl = null;
-  try { baseUrl = JSON.parse(stackRow.settings_config)?.env?.ANTHROPIC_BASE_URL ?? null; } catch {}
+  add("aggregation Stack row", true, legacy
+    ? `virtual entry derived (${baseUrl}, not stored in DB); ${legacy} legacy DB row(s) pending auto-cleanup`
+    : `virtual entry derived (${baseUrl}, not stored in DB)`);
   const reachable = typeof baseUrl === "string" ? await probeTcpReachable(baseUrl) : false;
   add(
     "aggregation proxy",
@@ -5874,6 +6040,12 @@ export const __test = Object.freeze({
   isSensitiveConfigPath,
   stripOneShotFlags,
   healRecordedArgs,
+  queryProvider,
+  queryProviderById,
+  queryProvidersByApp,
+  queryProvidersStrict,
+  snapshotAliveByCli,
+  isDeadEntry,
   splitChangesByTarget,
   buildNestedAssign,
   pathExistsInSnippet,
@@ -5911,11 +6083,14 @@ export const __test = Object.freeze({
   isAggregationProviderSettings,
   readStackState,
   readGlobalModelPicker,
+  buildStackSettingsFromGlobal,
+  virtualStackProviderFor,
+  appendVirtualStackRow,
+  VIRTUAL_STACK_PROVIDER_ID,
   buildStackUsageConfig,
   buildStackUsageWrapperLines,
   buildClaudeAggregationGroup,
-  ensureStackProviderRow,
-  syncStackManagedRow,
+  cleanupLegacyStackRows,
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,

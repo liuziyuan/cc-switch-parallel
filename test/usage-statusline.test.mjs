@@ -29,13 +29,22 @@ const {
   APP_ADAPTERS,
   readStackState,
   readGlobalModelPicker,
+  buildStackSettingsFromGlobal,
+  virtualStackProviderFor,
+  appendVirtualStackRow,
+  VIRTUAL_STACK_PROVIDER_ID,
   buildStackUsageConfig,
-  ensureStackProviderRow,
+  queryProvider,
+  queryProviderById,
+  queryProvidersByApp,
+  queryProvidersStrict,
+  snapshotAliveByCli,
+  isDeadEntry,
+  cleanupLegacyStackRows,
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,
   buildClaudeAggregationGroup,
-  syncStackManagedRow,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -695,6 +704,11 @@ function stackInstanceFile(name) {
 function cleanStackInstance() {
   rmSync(join(INSTANCES, STACK_PROVIDER_ID), { recursive: true, force: true });
 }
+// The virtual id's instance dir — the durable "aggregation was used" trace the
+// dormant virtual row keys on. Distinct from cleanStackInstance (old row id).
+function cleanVirtualStackInstance() {
+  rmSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true, force: true });
+}
 
 test("aggregation unit: loopback detection + PROXY_MANAGED stack signature", () => {
   assert.equal(isLoopbackBaseUrl("http://127.0.0.1:15721"), true);
@@ -768,7 +782,7 @@ test("aggregation: probeTcpReachable — live port passes, dead/garbage fail fas
   assert.equal(await probeTcpReachable("http://127.0.0.1:1/"), false, "port 1 refused");
 });
 
-test("aggregation doctor checks: off / unparseable / version gate / live-stack matrix", async () => {
+test("aggregation doctor checks: off / unparseable / version gate / live-stack matrix", async (t) => {
   cleanStackInstance();
   // aggregation off — a single pass, nothing else probed
   removeLiveState();
@@ -785,20 +799,24 @@ test("aggregation doctor checks: off / unparseable / version gate / live-stack m
   checks = await aggregationDoctorChecks();
   assert.equal(checks[0].pass, false);
   assert.ok(checks[0].detail.includes("9"));
-  // live stack: members present + Stack row + proxy state, on a port that
-  // is genuinely dead (bound then released)
+  // live stack: members present + virtual entry + proxy state. The proxy
+  // URL the entry derives from comes from the global env, so it can be
+  // pointed at a port that is genuinely dead (bound then released).
   const srv = createServer(() => {});
+  t.after(() => { srv.closeAllConnections?.(); try { srv.close(); } catch {} });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const livePort = srv.address().port;
   setupStackDB([
     ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
     ["agg-doc", "Stack", { ANTHROPIC_BASE_URL: `http://127.0.0.1:${livePort}`, ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" }, {}],
   ]);
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${livePort}` } }));
   writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
   const byLabel = (cs) => Object.fromEntries(cs.map((c) => [c.label, c]));
   checks = await aggregationDoctorChecks();
   assert.equal(byLabel(checks)["aggregation members"].pass, true);
   assert.equal(byLabel(checks)["aggregation Stack row"].pass, true);
+  assert.ok(byLabel(checks)["aggregation Stack row"].detail.includes("virtual entry derived"));
   assert.equal(byLabel(checks)["aggregation proxy"].pass, true, "proxy up while server listens");
   await new Promise((r) => srv.close(r));
   checks = await aggregationDoctorChecks();
@@ -808,13 +826,19 @@ test("aggregation doctor checks: off / unparseable / version gate / live-stack m
   checks = await aggregationDoctorChecks();
   assert.equal(byLabel(checks)["aggregation members"].pass, false);
   assert.ok(byLabel(checks)["aggregation members"].detail.includes("deepseek"));
-  // no Stack row at all → self-healing note, not a failure; proxy skipped
+  // legacy DB rows (pre-virtualization) are reported as pending auto-cleanup
+  checks = await aggregationDoctorChecks();
+  assert.ok(byLabel(checks)["aggregation Stack row"].detail.includes("1 legacy DB row"));
+  // the virtual entry needs no DB row at all — and the proxy probe still runs
+  // against the derived base URL (now down: the server was closed above)
   sql(`DELETE FROM providers WHERE id = 'agg-doc'`);
   checks = await aggregationDoctorChecks();
   assert.equal(byLabel(checks)["aggregation Stack row"].pass, true);
-  assert.ok(byLabel(checks)["aggregation Stack row"].detail.includes("auto-created"));
-  assert.equal(byLabel(checks)["aggregation proxy"], undefined);
+  assert.ok(byLabel(checks)["aggregation Stack row"].detail.includes("virtual entry derived"));
+  assert.equal(byLabel(checks)["aggregation proxy"].pass, false);
   removeLiveState();
+  writeGlobalSettings(undefined);
+  cleanVirtualStackInstance();
   sql(`DELETE FROM providers WHERE id IN ('m-ds', 'agg-doc')`);
 });
 
@@ -1115,8 +1139,103 @@ test("aggregation: buildStackUsageConfig resolves members with own creds; unreso
   removeLiveState();
 });
 
-test("aggregation: ensureStackProviderRow creates alongside a gateway row, is idempotent, never overwrites", () => {
+test("aggregation virtual row: buildStackSettingsFromGlobal derives the live contract", () => {
+  writeGlobalSettings(undefined);
+  // no global settings / non-loopback env → no contract to derive
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic" } }));
+  assert.equal(buildStackSettingsFromGlobal(), null);
+  // loopback env + aliases + picker → full contract, aliases copied only as strings
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-zhipu--glm-5.3[1M]",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 42, // non-string tiers are skipped
+    },
+    modelPicker: PICKER_FIXTURE,
+  }));
+  const d = buildStackSettingsFromGlobal();
+  assert.equal(d.baseUrl, "http://127.0.0.1:15721");
+  assert.equal(d.settings.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
+  assert.equal(d.settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-zhipu--glm-5.3[1M]");
+  assert.equal(d.settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined);
+  assert.deepEqual(d.settings.modelPicker, PICKER_FIXTURE);
+  // a CLEARED desktop picker (empty options array) is not snapshotted
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" },
+    modelPicker: { replaceBuiltInOptions: true, options: [] },
+  }));
+  assert.equal(buildStackSettingsFromGlobal().settings.modelPicker, undefined, "empty desktop list must not snapshot");
+  writeGlobalSettings(undefined);
+});
+
+test("aggregation virtual row: virtualStackProviderFor three states + name dodging", () => {
   cleanStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META]]);
+  // never used aggregation (no stack, no __stack__ instance dir) → null, zero noise
+  assert.equal(virtualStackProviderFor("claude"), null);
+  // dormant: stack off but a __stack__ instance dir exists → fallback base URL, no aliases/picker
+  mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
+  const dormant = virtualStackProviderFor("claude");
+  assert.ok(dormant);
+  assert.equal(dormant.id, VIRTUAL_STACK_PROVIDER_ID);
+  assert.equal(dormant.name, "Stack");
+  assert.equal(dormant.is_virtual, true);
+  assert.equal(dormant.app_type, "claude");
+  assert.equal(dormant.category, null);
+  let sc = JSON.parse(dormant.settings_config);
+  assert.deepEqual(sc.env, { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" });
+  assert.equal(sc.modelPicker, undefined);
+  assert.equal(JSON.parse(dormant.meta).stackManaged, true, "virtual rows are stackManaged");
+  // other apps (codex until its stack lands) never get a virtual row
+  assert.equal(virtualStackProviderFor("codex"), null);
+  // live: stack on + loopback global env → full derived row, fresh on every call
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-zhipu--glm-5.3[1M]",
+    },
+    modelPicker: PICKER_FIXTURE,
+  }));
+  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+  const live = virtualStackProviderFor("claude");
+  sc = JSON.parse(live.settings_config);
+  assert.equal(sc.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(sc.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-zhipu--glm-5.3[1M]");
+  assert.deepEqual(sc.modelPicker, PICKER_FIXTURE);
+  // name dodging: a DB row already named "Stack" pushes the virtual entry to "Stack 2"
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('m-stackname', 'claude', 'Stack', '{}', '{}')`);
+  const dodged = virtualStackProviderFor("claude");
+  assert.equal(dodged.name, "Stack 2");
+  sql(`DELETE FROM providers WHERE id = 'm-stackname'`);
+  // cleanup
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  cleanVirtualStackInstance();
+});
+
+test("aggregation virtual row: appendVirtualStackRow merges at query exits, DB wins on id collision", () => {
+  cleanVirtualStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META]]);
+  mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
+  // dormant entry exists → appended to a projection-shaped list
+  const list = appendVirtualStackRow([{ id: "m-ds", name: "DeepSeek" }], "claude");
+  assert.deepEqual(list.map((r) => r.id), ["m-ds", VIRTUAL_STACK_PROVIDER_ID]);
+  assert.equal(list[1].name, "Stack");
+  // DB already carries a __stack__ id → not appended (DB wins)
+  const collided = appendVirtualStackRow([{ id: VIRTUAL_STACK_PROVIDER_ID, name: "Stack" }], "claude");
+  assert.equal(collided.length, 1);
+  // null entry (aggregation never used) → rows pass through untouched
+  cleanVirtualStackInstance();
+  assert.deepEqual(appendVirtualStackRow([{ id: "m-ds", name: "DeepSeek" }], "claude"), [{ id: "m-ds", name: "DeepSeek" }]);
+});
+
+test("aggregation: query layer merges the virtual row — DB first, fail-open exits", () => {
+  cleanVirtualStackInstance();
   removeLiveState();
   writeGlobalSettings(undefined);
   // desktop aggregation on: global env loopback + live stack
@@ -1128,119 +1247,245 @@ test("aggregation: ensureStackProviderRow creates alongside a gateway row, is id
     modelPicker: PICKER_FIXTURE,
   }));
   writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`); // shared DB — drop other tests' rows
   setupStackDB([
-    // a user's OWN local gateway row — loopback + REAL token; under the old
-    // loopback-only signature this satisfied the existing-row search and the
-    // Stack row was never created
+    // a user's OWN local gateway row — loopback + REAL token; it must never
+    // collide with the virtual entry's name dodge or signature scans
     ["m-gw", "My LiteLLM", { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gateway" }, {}],
     ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
   ]);
-  const created = ensureStackProviderRow();
-  assert.ok(created, "gateway row must not satisfy the stack-row search");
-  assert.equal(created.name, "Stack");
-  // the created row carries the live contract from the global settings
-  const rows = JSON.parse(execFileSync("sqlite3", ["-json", join(CC, "cc-switch.db"),
-    "SELECT id, name, settings_config, meta FROM providers WHERE app_type = 'claude' AND id = '" + created.id + "'"],
-  { encoding: "utf8" }) || "[]");
-  const sc = JSON.parse(rows[0].settings_config);
-  assert.equal(sc.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
-  assert.equal(sc.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
-  assert.equal(sc.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-zhipu--glm-5.3[1M]");
-  assert.deepEqual(sc.modelPicker, PICKER_FIXTURE);
-  assert.equal(JSON.parse(rows[0].meta).stackManaged, true, "auto-created rows are stackManaged");
-  // the gateway row is untouched
-  const gw = JSON.parse(execFileSync("sqlite3", ["-json", join(CC, "cc-switch.db"),
-    "SELECT settings_config FROM providers WHERE id = 'm-gw'"],
-  { encoding: "utf8" }) || "[]");
-  assert.equal(JSON.parse(gw[0].settings_config).env.ANTHROPIC_AUTH_TOKEN, "sk-gateway");
-  // idempotent: the row now exists — nothing more to create
-  assert.equal(ensureStackProviderRow(), null);
-  // stack off in the desktop app → nothing to create at all
-  removeLiveState();
-  sql(`DELETE FROM providers WHERE id IN ('${created.id}', 'm-gw')`);
-  assert.equal(ensureStackProviderRow(), null);
-  // a CLEARED desktop picker (empty options) is not snapshotted into the row
-  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
-    env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" },
-    modelPicker: { replaceBuiltInOptions: true, options: [] },
-  }));
-  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
-  const created2 = ensureStackProviderRow();
-  assert.ok(created2);
-  const sc2 = JSON.parse(sql(`SELECT settings_config FROM providers WHERE id = '${created2.id}'`));
-  assert.equal(sc2.modelPicker, undefined, "empty desktop list must not snapshot");
-  removeLiveState();
-  sql(`DELETE FROM providers WHERE id = '${created2.id}'`);
-});
-
-test("aggregation: syncStackManagedRow mirrors the live routing contract; leaves everything else alone", () => {
-  cleanStackInstance();
+  // byId: the virtual id resolves to the derived row; a real row still wins first
+  const v = queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "claude");
+  assert.ok(v, "virtual id resolves via queryProviderById");
+  assert.equal(v.is_virtual, true);
+  assert.equal(JSON.parse(v.settings_config).env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  assert.equal(JSON.parse(v.settings_config).modelPicker.options.length, PICKER_FIXTURE.options.length);
+  assert.equal(queryProviderById("m-gw", "claude").name, "My LiteLLM", "real rows unaffected");
+  // byId for an app without a virtual layer → null even for the magic id
+  assert.equal(queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "codex"), null);
+  // byName: the derived display name resolves; unknown names stay null
+  assert.equal(queryProvider(v.name, "claude")?.is_virtual, true);
+  assert.equal(queryProvider("no-such-provider", "claude"), null);
+  // byApp: virtual row appended at the tail; a DB row already owning the id wins
+  const list = queryProvidersByApp("claude");
+  assert.deepEqual(list.map((r) => r.id), ["m-ds", "m-gw", VIRTUAL_STACK_PROVIDER_ID]);
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${VIRTUAL_STACK_PROVIDER_ID}', 'claude', 'Stack', '{}', '{}')`);
+  const collided = queryProvidersByApp("claude");
+  assert.equal(collided.filter((r) => r.id === VIRTUAL_STACK_PROVIDER_ID).length, 1, "DB row wins the id, no duplicate");
+  sql(`DELETE FROM providers WHERE id = '${VIRTUAL_STACK_PROVIDER_ID}'`);
+  // strict: same merge on the error-propagating exit
+  const strict = queryProvidersStrict("claude");
+  assert.deepEqual(strict.map((r) => r.id), ["m-ds", "m-gw", VIRTUAL_STACK_PROVIDER_ID]);
+  // gateway row untouched by everything above
+  assert.equal(JSON.parse(queryProviderById("m-gw", "claude").settings_config).env.ANTHROPIC_AUTH_TOKEN, "sk-gateway");
   removeLiveState();
   writeGlobalSettings(undefined);
-  const oldSc = JSON.stringify({
-    env: {
-      ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:15720",
-      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-zhipu--old",
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: "ccs-claude-zhipu--old-flash",
-    },
-    modelPicker: { replaceBuiltInOptions: true, options: [{ model: "old" }] },
+  cleanVirtualStackInstance();
+});
+
+test("aggregation: queryProvider name dodge — a DB row named Stack keeps the name, the virtual entry moves", () => {
+  cleanVirtualStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`); // shared DB — drop other tests' rows
+  setupStackDB([
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+    ["m-user", "Stack", { ANTHROPIC_BASE_URL: "https://example.com", ANTHROPIC_AUTH_TOKEN: "sk-user" }, {}],
+  ]);
+  mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
+  assert.equal(queryProvider("Stack", "claude").id, "m-user", "DB-first by name");
+  assert.equal(queryProvider("Stack 2", "claude")?.is_virtual, true, "virtual entry answers under the dodged name");
+  rmSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true, force: true });
+  sql(`DELETE FROM providers WHERE id = 'm-user'`);
+});
+
+test("aggregation: virtual id is alive — history survives snapshotAliveByCli/isDeadEntry", () => {
+  cleanVirtualStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`); // shared DB — drop other tests' rows
+  setupStackDB([["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META]]);
+  // dormant entry (stack off + instance dir) is enough to be alive
+  mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
+  const aliveByCli = snapshotAliveByCli();
+  const snap = aliveByCli.get("claude");
+  assert.ok(snap, "snapshot built");
+  assert.ok(snap.idSet.has(VIRTUAL_STACK_PROVIDER_ID), "virtual id in the alive set");
+  assert.equal(snap.nameById.get(VIRTUAL_STACK_PROVIDER_ID), "Stack");
+  const entry = { cli: "claude", providerId: VIRTUAL_STACK_PROVIDER_ID, provider: "Stack", count: 11, lastUsed: Date.now() };
+  assert.equal(isDeadEntry(entry, aliveByCli), false, "migrated history entry stays alive");
+  // no instance dir + stack off → not in the set → dead (honest: nothing to launch)
+  rmSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true, force: true });
+  const alive2 = snapshotAliveByCli();
+  assert.equal(isDeadEntry(entry, alive2), true, "without the dormant trace the entry reads dead");
+  cleanVirtualStackInstance();
+});
+
+test("split: virtual provider option routes provider-target edits to rejected, common still flows", () => {
+  const commonObj = { hooks: { Stop: "common-stop" } };
+  const providerSettings = { env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" } };
+  const changes = [
+    { path: "env.ANTHROPIC_AUTH_TOKEN", op: "replace", to: "user-rotated" }, // provider-target
+    { path: "hooks.Stop", op: "replace", to: "edited-stop" },                // common-target
+  ];
+  // without the flag: provider-target edits land in the provider patch (real rows)
+  const plain = splitChangesByTarget(changes, VIRTUAL_STACK_PROVIDER_ID, commonObj, providerSettings);
+  assert.equal(plain.providerPatch.env?.ANTHROPIC_AUTH_TOKEN, "user-rotated");
+  assert.equal(plain.rejected.length, 0);
+  // with the flag: provider-target → rejected, common-target still flows
+  const virt = splitChangesByTarget(changes, VIRTUAL_STACK_PROVIDER_ID, commonObj, providerSettings, { virtualProvider: true });
+  assert.deepEqual(virt.providerPatch, {}, "no provider patch for a row that cannot be written");
+  assert.equal(virt.commonPatch.hooks.Stop, "edited-stop");
+  assert.equal(virt.rejected.length, 1);
+  assert.equal(virt.rejected[0].path, "env.ANTHROPIC_AUTH_TOKEN");
+});
+
+test("cleanupLegacyStackRows: deletes signature rows, migrates history/pins/colors, idempotent", () => {
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`);
+  const LEGACY_AGG_ID = "11111111-2222-3333-4444-555555555555";
+  const LEGACY_SC = JSON.stringify({
+    env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" },
   });
-  const mkRow = (id, meta, sc = oldSc) => ({ id, name: "Stack", settings_config: sc, category: null, meta });
-  const insertRow = (id, name, meta, sc) =>
-    sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
-      VALUES ('${id}', 'claude', '${name}', '${sc.replace(/'/g, "''")}', '${meta}')`);
-  insertRow("agg-sync", "Stack", '{"stackManaged":true}', oldSc);
-  insertRow("agg-hand", "Stack2", "{}", oldSc); // hand-made: same shape, no marker
-  // desktop re-points the port, swaps aliases (sonnet new tier, haiku tier
-  // GONE), clears the picker — stack live
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${LEGACY_AGG_ID}', 'claude', 'Stack', '${LEGACY_SC.replace(/'/g, "''")}', '{"stackManaged":true}')`);
+  // a user's own gateway: loopback + REAL token — never matches the signature
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('m-gw2', 'claude', 'My LiteLLM', '${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gw" } }).replace(/'/g, "''")}', '{}')`);
+  // history pointing at the legacy id, with a pin slot on it
+  const HISTORY_FILE = join(CC, "launch_history.json");
+  writeFileSync(HISTORY_FILE, JSON.stringify({
+    version: 2,
+    entries: [
+      { cli: "claude", providerId: LEGACY_AGG_ID, provider: "Stack", hotkey: null, extraArgs: [], count: 11, lastUsed: 100 },
+      { cli: "claude", providerId: "m-gw2", provider: "My LiteLLM", hotkey: null, extraArgs: [], count: 3, lastUsed: 50 },
+    ],
+    order: [`claude|${LEGACY_AGG_ID}`, null, null, null, null],
+  }));
+  // colors keyed on the legacy id
+  const PREFS_FILE = join(CC, "statusline-preferences.json");
+  writeFileSync(PREFS_FILE, JSON.stringify({ version: 1, colors: { claude: { [LEGACY_AGG_ID]: "32" } } }));
+
+  const result = cleanupLegacyStackRows();
+  assert.ok(result);
+  assert.deepEqual(result.removed.map((r) => r.id), [LEGACY_AGG_ID]);
+  assert.equal(result.skippedCurrent.length, 0);
+  // row deleted, gateway untouched
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE id = '${LEGACY_AGG_ID}'`).trim(), "0");
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE id = 'm-gw2'`).trim(), "1");
+  // history migrated to the virtual id, pin slot followed
+  const hist = JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
+  assert.equal(hist.entries[0].providerId, VIRTUAL_STACK_PROVIDER_ID);
+  assert.equal(hist.entries[0].count, 11);
+  assert.equal(hist.entries[1].providerId, "m-gw2", "unrelated entry untouched");
+  assert.deepEqual(hist.order, [`claude|${VIRTUAL_STACK_PROVIDER_ID}`, null, null, null, null]);
+  // colors migrated
+  const prefs = JSON.parse(readFileSync(PREFS_FILE, "utf8"));
+  assert.equal(prefs.colors.claude[VIRTUAL_STACK_PROVIDER_ID], "32");
+  assert.equal(prefs.colors.claude[LEGACY_AGG_ID], undefined);
+  // idempotent: no signature rows left → null
+  assert.equal(cleanupLegacyStackRows(), null);
+  sql(`DELETE FROM providers WHERE id = 'm-gw2'`);
+  rmSync(HISTORY_FILE, { force: true });
+  rmSync(PREFS_FILE, { force: true });
+});
+
+test("cleanupLegacyStackRows: is_current rows are skipped, duplicate history merges keep the stronger", () => {
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  setupStackDB([]);
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`);
+  const CUR_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const OLD_ID = "99999999-8888-7777-6666-555555555555";
+  const OLD2_ID = "77777777-6666-5555-4444-333333333333";
+  const sig = (base) => JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: base } });
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta, is_current)
+    VALUES ('${CUR_ID}', 'claude', 'Stack', '${sig("http://127.0.0.1:15721").replace(/'/g, "''")}', '{}', 1)`);
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${OLD_ID}', 'claude', 'Stack 2', '${sig("http://127.0.0.1:15720").replace(/'/g, "''")}', '{}')`);
+  sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+    VALUES ('${OLD2_ID}', 'claude', 'Stack 3', '${sig("http://127.0.0.1:15719").replace(/'/g, "''")}', '{}')`);
+  // two legacy rows sharing a hotkey — both entries rewrite onto the virtual
+  // id and must merge, keeping the stronger (count 7)
+  const HISTORY_FILE = join(CC, "launch_history.json");
+  writeFileSync(HISTORY_FILE, JSON.stringify({
+    version: 2,
+    entries: [
+      { cli: "claude", providerId: CUR_ID, provider: "Stack", hotkey: null, extraArgs: [], count: 20, lastUsed: 200 },
+      { cli: "claude", providerId: OLD_ID, provider: "Stack 2", hotkey: null, extraArgs: [], count: 5, lastUsed: 300 },
+      { cli: "claude", providerId: OLD2_ID, provider: "Stack 3", hotkey: null, extraArgs: [], count: 7, lastUsed: 100 },
+    ],
+    order: [null, null, null, null, null],
+  }));
+  const result = cleanupLegacyStackRows();
+  assert.ok(result);
+  assert.equal(result.removed.length, 2, "both non-current rows go");
+  assert.deepEqual(result.skippedCurrent, ["Stack"]);
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE id = '${CUR_ID}'`).trim(), "1", "current row survives");
+  const hist = JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
+  assert.equal(hist.entries.length, 2, "rewritten duplicates merged");
+  assert.equal(hist.entries[0].providerId, CUR_ID, "the skipped row's entry is NOT migrated (row still lives)");
+  assert.equal(hist.entries[0].count, 20);
+  assert.equal(hist.entries[1].providerId, VIRTUAL_STACK_PROVIDER_ID);
+  assert.equal(hist.entries[1].count, 7, "stronger count wins the merge");
+  // cleanup the skipped row for later tests
+  sql(`DELETE FROM providers WHERE id IN ('${CUR_ID}', '${OLD_ID}', '${OLD2_ID}')`);
+  rmSync(HISTORY_FILE, { force: true });
+});
+
+test("aggregation: virtual entry re-derives the live contract on every query (no mirror step)", () => {
+  cleanVirtualStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  // desktop re-points the port, swaps alias tiers, clears the picker — stack
+  // live. The old launch-time mirror (syncStackManagedRow) wrote this into a
+  // DB row; the virtual entry simply recomputes it, so every query sees the
+  // fresh contract and nothing ever lands in the DB.
   writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
     env: {
       ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
       ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-deepseek--new",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "ccs-claude-deepseek--old-flash",
     },
+    modelPicker: { replaceBuiltInOptions: true, options: [{ model: "old" }] },
   }));
   writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
-
-  const managed = mkRow("agg-sync", '{"stackManaged":true}');
-  const updated = syncStackManagedRow(managed);
-  const env = JSON.parse(updated.settings_config).env;
-  assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721", "port re-pointed");
-  assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-deepseek--new", "alias mirrored");
-  assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined, "tier the desktop stopped publishing goes away");
-  assert.equal(JSON.parse(updated.settings_config).modelPicker, undefined, "cleared picker drops from the row");
-  // persisted to the DB, not just the returned copy
-  const onDisk = JSON.parse(sql(`SELECT settings_config FROM providers WHERE id = 'agg-sync'`));
-  assert.equal(onDisk.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
-  // no drift → no write (same object identity back)
-  assert.equal(syncStackManagedRow(updated), updated, "no drift returns the row untouched");
-
-  // stack off → untouched: the passed row returns as-is and the DB keeps
-  // the mirrored contract from the first sync (no write, no rollback)
+  let v = queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "claude");
+  let sc = JSON.parse(v.settings_config);
+  assert.equal(sc.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721", "fresh base URL");
+  assert.equal(sc.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-deepseek--new", "fresh alias");
+  assert.deepEqual(sc.modelPicker.options, [{ model: "old" }], "picker snaps in");
+  // desktop drops the haiku tier, re-points the port and clears the picker
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15720",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-deepseek--new",
+    },
+  }));
+  v = queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "claude");
+  sc = JSON.parse(v.settings_config);
+  assert.equal(sc.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15720", "re-pointed");
+  assert.equal(sc.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined, "dropped tier is gone");
+  assert.equal(sc.modelPicker, undefined, "cleared picker drops");
+  // nothing was ever written to the DB
+  assert.equal(sql(`SELECT COUNT(*) AS n FROM providers WHERE settings_config LIKE '%PROXY_MANAGED%'`).trim(), "0",
+    "virtual entry never lands in the DB");
   removeLiveState();
-  const stale = syncStackManagedRow(mkRow("agg-sync", '{"stackManaged":true}'));
-  assert.equal(stale.settings_config, oldSc, "stack off is a no-op on the passed row");
-  assert.equal(JSON.parse(sql(`SELECT settings_config FROM providers WHERE id = 'agg-sync'`)).env.ANTHROPIC_BASE_URL,
-    "http://127.0.0.1:15721", "mirrored value stays on disk");
-  // hand-made row (no marker) → untouched even with the stack live
-  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
-  const hand = syncStackManagedRow(mkRow("agg-hand", "{}"));
-  assert.equal(JSON.parse(hand.settings_config).env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15720",
-    "hand-made row is never written");
-  // signature lost (user re-pointed the managed row at a real gateway) → untouched
-  const repurposed = mkRow("agg-sync", '{"stackManaged":true}',
-    JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gw" } }));
-  const untouched = syncStackManagedRow(repurposed);
-  assert.equal(JSON.parse(untouched.settings_config).env.ANTHROPIC_AUTH_TOKEN, "sk-gw",
-    "re-purposed row is not rewritten");
-  removeLiveState();
-  sql(`DELETE FROM providers WHERE id IN ('agg-sync', 'agg-hand')`);
+  writeGlobalSettings(undefined);
+  cleanVirtualStackInstance();
 });
 
 test("aggregation TUI label: member rows missing from the DB surface in the label", () => {
-  cleanStackInstance();
+  cleanVirtualStackInstance();
   removeLiveState();
-  // loopback global env so ensureStackProviderRow can create the Stack row
+  writeGlobalSettings(undefined);
+  // loopback global env so the virtual entry derives with the live contract
   writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" } }));
   setupStackDB([
     ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
@@ -1250,9 +1495,17 @@ test("aggregation TUI label: member rows missing from the DB surface in the labe
   writeLiveState({ enabled: true, members: ["m-ds", "m-gone"], keys: { deepseek: "m-ds", zhipu: "m-gone" } }, "m-ds");
   const group = buildClaudeAggregationGroup();
   assert.ok(group);
-  const labels = [...group.labels.values()];
-  assert.ok(labels[0].includes("DeepSeek"), labels[0]);
-  assert.ok(labels[0].includes("1 个成员缺失"), labels[0]);
+  assert.ok(group.ids.has(VIRTUAL_STACK_PROVIDER_ID), "virtual entry joins the group");
+  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("DeepSeek"));
+  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("1 个成员缺失"));
+  // dormant path: stack off, instance dir present → group survives as （未激活）
+  removeLiveState();
+  mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
+  const dormant = buildClaudeAggregationGroup();
+  assert.ok(dormant);
+  assert.ok(dormant.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("未激活"));
+  writeGlobalSettings(undefined);
+  cleanVirtualStackInstance();
   removeLiveState();
   sql(`DELETE FROM providers WHERE app_type = 'claude'`);
 });
