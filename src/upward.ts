@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { withFileLockSync } from "./file-lock.js";
 import { patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
 import { atomicWrite } from "./fs-utils.js";
 import { deepEqualJson, isPlainObject, isSafeObjectKey } from "./json-utils.js";
@@ -374,19 +375,28 @@ function normalizeInstalledPluginPaths() {
     const globalPluginsDir = join(HOME, ".claude", "plugins");
     const file = join(globalPluginsDir, "installed_plugins.json");
     if (!existsSync(file)) return;
-    const data = JSON.parse(readFileSync(file, "utf8"));
-    let changed = false;
-    for (const recs of Object.values(data.plugins || {})) {
-      if (!Array.isArray(recs)) continue;
-      for (const rec of recs) {
-        const ip = rec.installPath;
-        if (typeof ip === "string" && INSTANCE_PLUGIN_PATH_RE.test(ip)) {
-          rec.installPath = ip.replace(INSTANCE_PLUGIN_PATH_RE, `${globalPluginsDir}/`);
-          changed = true;
+    withFileLockSync(file, () => {
+      try {
+        // Re-read inside the lock: another switch instance may have rewritten
+        // install paths between the caller's check and this write.
+        if (!existsSync(file)) return;
+        const data = JSON.parse(readFileSync(file, "utf8"));
+        let changed = false;
+        for (const recs of Object.values(data.plugins || {})) {
+          if (!Array.isArray(recs)) continue;
+          for (const rec of recs) {
+            const ip = rec.installPath;
+            if (typeof ip === "string" && INSTANCE_PLUGIN_PATH_RE.test(ip)) {
+              rec.installPath = ip.replace(INSTANCE_PLUGIN_PATH_RE, `${globalPluginsDir}/`);
+              changed = true;
+            }
+          }
         }
+        if (changed) atomicWrite(file, JSON.stringify(data, null, 2));
+      } catch {
+        // corrupt file — leave it alone
       }
-    }
-    if (changed) atomicWrite(file, JSON.stringify(data, null, 2));
+    });
   } catch {
     // best-effort: missing/corrupt file — silently skip.
   }
