@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { APP_ADAPTERS } from "../adapters.js";
-import { queryProvider, queryProvidersByApp } from "../db.js";
+import { queryProviderById, queryProviderMatches, queryProvidersByApp } from "../db.js";
+import { formatAmbiguousProvider } from "../provider-ref.js";
 import { confirmSync } from "../drift.js";
 import { atomicWrite, lstatSyncSafe } from "../fs-utils.js";
 import { INSTANCES_DIR } from "../paths.js";
@@ -17,40 +18,80 @@ import { buildEditorInvocation, editorExitCode } from "../terminal-utils.js";
 const CODEX_INSTRUCTIONS_INSTANCE_MARK =
   "<!-- ── instance-only instructions (below this line) ── -->";
 
-// Pure arg parsing, shared by customize/uncustomize: an explicit app name is
-// consumed only when it names an adapter AND a provider name follows;
-// otherwise the command defaults to claude (backward compatible with the
-// claude-only syntax). A bare "claude"/"codex" is ambiguous — an app name
-// without a provider — so the caller must ask for
-// `switch customize claude claude` explicitly in that corner case.
+// Pure arg parsing, shared by customize/uncustomize. An explicit app name is
+// consumed only when it names an adapter AND a provider follows; otherwise the
+// command defaults to claude. `--id <id>` selects the provider by id and is
+// mutually exclusive with the positional provider name.
 function parseCustomizeArgs(args) {
   const rest = args.filter((a) => a !== "--yes");
-  if (rest.length === 0) return null;
-  if (APP_ADAPTERS[rest[0]]) {
-    if (rest.length < 2) return null; // app named but no provider
-    return { cmd: rest[0], providerName: rest[1] };
+  let providerId: string | null = null;
+  const positional: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--id") {
+      const value = rest[i + 1];
+      if (!value) return null; // missing value
+      providerId = value;
+      i++;
+      continue;
+    }
+    if (a.startsWith("--id=")) {
+      const value = a.slice("--id=".length);
+      if (!value) return null;
+      providerId = value;
+      continue;
+    }
+    positional.push(a);
   }
-  return { cmd: "claude", providerName: rest[0] };
+  if (providerId !== null) {
+    // With --id the only allowed positional token is an optional app name.
+    if (positional.length === 0) return { cmd: "claude", providerId, providerName: null };
+    if (positional.length === 1 && APP_ADAPTERS[positional[0]]) {
+      return { cmd: positional[0], providerId, providerName: null };
+    }
+    return null; // id + provider name are mutually exclusive
+  }
+  if (positional.length === 0) return null;
+  if (APP_ADAPTERS[positional[0]]) {
+    if (positional.length < 2) return null; // app named but no provider
+    return { cmd: positional[0], providerId: null, providerName: positional[1] };
+  }
+  return { cmd: "claude", providerId: null, providerName: positional[0] };
 }
 
 function instanceInstructionsPath(appType, providerId) {
   return join(INSTANCES_DIR, appType, providerId, APP_ADAPTERS[appType].instructions.fileName);
 }
 
-function findCustomizeProviderOrExit(cmd, providerName, usage) {
+function findCustomizeProviderOrExit(cmd, providerId, providerName, usage) {
+  const adapter = APP_ADAPTERS[cmd];
+  if (providerId) {
+    const row = queryProviderById(providerId, adapter.appType);
+    if (!row) {
+      console.error(`✗ Provider id "${providerId}" not found (${adapter.appType})`);
+      console.error(`  Available providers:`);
+      queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
+      process.exit(1);
+    }
+    return row;
+  }
   if (!providerName) {
     console.error(usage);
     process.exit(1);
   }
-  const adapter = APP_ADAPTERS[cmd];
-  const row = queryProvider(providerName, adapter.appType);
-  if (!row) {
+  const matches = queryProviderMatches(providerName, adapter.appType);
+  if (matches.length === 1) return matches[0];
+  if (matches.length === 0) {
     console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
     console.error(`  Available providers:`);
     queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
     process.exit(1);
   }
-  return row;
+  console.error(formatAmbiguousProvider(
+    providerName, adapter.appType, matches, cmd,
+    `switch customize ${cmd} --id <providerId>`,
+  ));
+  process.exit(1);
 }
 
 // Codex has no @import mechanism, so an instance AGENTS.md must EMBED the
@@ -93,14 +134,14 @@ function refreshCodexInstructionsSnapshot(existingText, newGlobalText, globalPat
 // re-linking the shared global one.
 function runCustomize(args) {
   const parsed = parseCustomizeArgs(args);
-  const usage = "Usage: switch customize [claude|codex] <provider>";
+  const usage = "Usage: switch customize [claude|codex] <provider>\n       switch customize [claude|codex] --id <providerId>";
   if (!parsed) {
     console.error(usage);
     process.exit(1);
   }
   const adapter = APP_ADAPTERS[parsed.cmd];
   const inst = adapter.instructions;
-  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerName, usage);
+  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerId, parsed.providerName, usage);
   mkdirSync(join(INSTANCES_DIR, adapter.appType, row.id), { recursive: true });
   const file = instanceInstructionsPath(adapter.appType, row.id);
   const stats = lstatSyncSafe(file);
@@ -155,14 +196,14 @@ function runCustomize(args) {
 async function runUncustomize(args) {
   const yes = args.includes("--yes");
   const parsed = parseCustomizeArgs(args);
-  const usage = "Usage: switch uncustomize [claude|codex] <provider> [--yes]";
+  const usage = "Usage: switch uncustomize [claude|codex] <provider> [--yes]\n       switch uncustomize [claude|codex] --id <providerId> [--yes]";
   if (!parsed) {
     console.error(usage);
     process.exit(1);
   }
   const adapter = APP_ADAPTERS[parsed.cmd];
   const inst = adapter.instructions;
-  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerName, usage);
+  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerId, parsed.providerName, usage);
   const file = instanceInstructionsPath(adapter.appType, row.id);
   const stats = lstatSyncSafe(file);
   if (!stats) {
@@ -209,6 +250,7 @@ function printHelp() {
 Usage:
   switch                                 Interactive TUI (select CLI, then provider)
   switch <provider> <cmd> [args...]     Launch a provider directly
+  switch --id <providerId> <cmd> [...]  Launch by provider id (disambiguates duplicate names)
   switch --sync <provider> <cmd> [...]  Same, but confirm config drift first
   switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
   switch sync                           Detect & sync config drift (plugins, settings fields, common config)
@@ -216,7 +258,9 @@ Usage:
   switch clean [--all] [--force]        Remove instance directories (refuses live sessions; --force overrides)
   switch ps                             List running switch-launched sessions
   switch customize [claude|codex] <provider>   Instance-only instructions file (CLAUDE.md / AGENTS.md; opens editor)
+  switch customize [claude|codex] --id <providerId>   Same, selecting the provider by id
   switch uncustomize [claude|codex] <provider> [--yes]  Back to the shared global instructions file
+  switch uncustomize [claude|codex] --id <providerId> [--yes]  Same, selecting the provider by id
   switch update                         Self-update to the latest npm version
   switch -v | --version                 Show version
 
@@ -224,8 +268,7 @@ Commands: ${Object.keys(APP_ADAPTERS).join(", ")}
 
 Examples:
   switch "Claude Official" claude
-  switch "Zhipu GLM en" claude --continue
-  switch "P&G Nezha" codex`);
+  switch "Zhipu GLM en" claude --continue`);
 }
 
 

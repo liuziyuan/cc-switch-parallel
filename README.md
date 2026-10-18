@@ -58,7 +58,7 @@ Examples:
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
 switch --sync "Claude Official" claude   # confirm config drift interactively before launching
-switch --no-sync "P&G Nezha" codex       # launch silently, suppress the drift warning
+switch --no-sync "Example Provider" codex       # launch silently, suppress the drift warning
 ```
 
 ### Other commands
@@ -77,8 +77,8 @@ switch --help     # List all commands
 `switch ps` prints one row per session — concurrent terminals on the same provider each get their own row, never overwriting each other:
 
 ```
-  claude  P&G Nezha      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
-  claude  P&G Nezha      RFP2                ~/workspace/company/daneng/RFP2         up 2d
+  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
+  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d
 ```
 
 The third column is the tmux session name (falls back to the terminal tty when not inside tmux); the fourth is the project directory where the session was started (`~`-abbreviated).

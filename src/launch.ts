@@ -2,11 +2,12 @@
 
 import { join } from "node:path";
 import { APP_ADAPTERS } from "./adapters.js";
-import { loadSettings, queryCommonConfig, queryProvider, queryProvidersByApp } from "./db.js";
+import { loadSettings, queryCommonConfig, queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
 import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { recordLaunch } from "./history.js";
 import { parseJsonObject } from "./json-utils.js";
+import { formatAmbiguousProvider, resolveProviderRef, type ProviderRef } from "./provider-ref.js";
 import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.js";
 
 // ─── Launch logic ──────────────────────────────────────────────────────
@@ -17,7 +18,7 @@ import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, repor
 // record: optional {hotkey} from the TUI quick/permission selection — the
 //         mode the user actually picked, preferred over inferring it back
 //         out of extraArgs (which quick-launch replays without flags).
-async function launchProvider(cmd: string, providerName: string, extraArgs: string[], syncFlag: string | null = null, record: { hotkey?: string } | null = null) {
+async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[], syncFlag: string | null = null, record: { hotkey?: string } | null = null) {
   const adapter = APP_ADAPTERS[cmd];
   if (!adapter) {
     console.error(`✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`);
@@ -43,13 +44,19 @@ async function launchProvider(cmd: string, providerName: string, extraArgs: stri
     reportLegacyStackCleanup(cleanupLegacyStackRows());
   }
 
-  const row = queryProvider(providerName, adapter.appType);
-  if (!row) {
-    console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
+  const resolved = resolveProviderRef(ref, adapter.appType);
+  if (!resolved.ok) {
+    if (resolved.error === "ambiguous") {
+      console.error(formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd));
+      process.exit(1);
+    }
+    const label = ref?.id ? `id "${ref.id}"` : `"${ref?.name || ""}"`;
+    console.error(`✗ Provider ${label} not found (${adapter.appType})`);
     console.error(`  Available providers:`);
     queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
     process.exit(1);
   }
+  const row = resolved.row;
 
   const parsedSettingsConfig = parseJsonObject(row.settings_config);
   const parsedMeta = parseJsonObject(row.meta);

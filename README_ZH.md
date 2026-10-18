@@ -50,6 +50,7 @@ Full-auto（`⚠`）的快捷启动行会先确认再以 `--dangerously-skip-per
 
 ```bash
 switch [--sync|--no-sync] <provider> <cmd> [args...]
+switch [--sync|--no-sync] --id <providerId> <cmd> [args...]
 ```
 
 示例：
@@ -58,8 +59,11 @@ switch [--sync|--no-sync] <provider> <cmd> [args...]
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
 switch --sync "Claude Official" claude   # 启动前就地交互确认配置漂移
-switch --no-sync "P&G Nezha" codex       # 静默启动，抑制漂移警告
+switch --no-sync "Example Provider" codex       # 静默启动，抑制漂移警告
+switch --id <providerId> claude          # 按 id 启动（同名 provider 时消歧）
 ```
+
+provider 名在 cc-switch 中不要求唯一：命令模式遇到同名 provider 会**报错并列出所有匹配的 id**，不会静默选择第一个。此时用 `--id` 指定，或在 cc-switch 中改名；TUI 始终按 id 启动，不受重名影响。
 
 ### 其他命令
 
@@ -69,7 +73,9 @@ switch sync       # 检测并同步配置漂移（插件、配置字段、通用
 switch doctor     # 诊断环境（sqlite3、数据库、二进制、instructions 文件等）
 switch clean      # 删除实例目录（交互式，或 --all；有运行中会话时拒绝，--force 强制）
 switch customize [claude|codex] <provider>           # 实例级 CLAUDE.md / AGENTS.md（打开编辑器）
+switch customize [claude|codex] --id <providerId>    # 同名时按 id 选择
 switch uncustomize [claude|codex] <provider> [--yes] # 恢复共享的全局 instructions 文件
+switch uncustomize [claude|codex] --id <providerId> [--yes]
 switch update     # 自更新到最新 npm 版本
 switch --help     # 列出所有命令
 ```
@@ -77,8 +83,8 @@ switch --help     # 列出所有命令
 `switch ps` 每个会话一行 —— 同一 provider 并发跑多个终端时各占一行，互不覆盖：
 
 ```
-  claude  P&G Nezha      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
-  claude  P&G Nezha      RFP2                ~/workspace/company/daneng/RFP2         up 2d
+  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
+  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d
 ```
 
 第三列是 tmux 会话名（不在 tmux 里运行时回退显示终端 tty），第四列是启动时所在的项目目录（`~` 缩写）。

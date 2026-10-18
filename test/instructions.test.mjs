@@ -14,16 +14,26 @@ const {
 // ─── parseCustomizeArgs ───────────────────────────────────────────────
 
 test("parseCustomizeArgs: explicit app is consumed when a provider follows", () => {
-  assert.deepEqual(parseCustomizeArgs(["codex", "P1"]), { cmd: "codex", providerName: "P1" });
-  assert.deepEqual(parseCustomizeArgs(["claude", "P1"]), { cmd: "claude", providerName: "P1" });
+  assert.deepEqual(parseCustomizeArgs(["codex", "P1"]), { cmd: "codex", providerId: null, providerName: "P1" });
+  assert.deepEqual(parseCustomizeArgs(["claude", "P1"]), { cmd: "claude", providerId: null, providerName: "P1" });
 });
 
 test("parseCustomizeArgs: bare provider defaults to claude (backward compat)", () => {
-  assert.deepEqual(parseCustomizeArgs(["Zhipu GLM"]), { cmd: "claude", providerName: "Zhipu GLM" });
+  assert.deepEqual(parseCustomizeArgs(["Zhipu GLM"]), { cmd: "claude", providerId: null, providerName: "Zhipu GLM" });
 });
 
 test("parseCustomizeArgs: --yes is filtered before parsing", () => {
-  assert.deepEqual(parseCustomizeArgs(["codex", "P1", "--yes"]), { cmd: "codex", providerName: "P1" });
+  assert.deepEqual(parseCustomizeArgs(["codex", "P1", "--yes"]), { cmd: "codex", providerId: null, providerName: "P1" });
+});
+
+test("parseCustomizeArgs: --id selects by id and is exclusive with a provider name", () => {
+  assert.deepEqual(parseCustomizeArgs(["--id", "abc"]), { cmd: "claude", providerId: "abc", providerName: null });
+  assert.deepEqual(parseCustomizeArgs(["--id=abc", "codex"]), { cmd: "codex", providerId: "abc", providerName: null });
+  assert.deepEqual(parseCustomizeArgs(["codex", "--id", "abc"]), { cmd: "codex", providerId: "abc", providerName: null });
+  assert.deepEqual(parseCustomizeArgs(["--yes", "--id", "abc"]), { cmd: "claude", providerId: "abc", providerName: null });
+  assert.equal(parseCustomizeArgs(["--id"]), null);
+  assert.equal(parseCustomizeArgs(["--id", "abc", "P1"]), null);
+  assert.equal(parseCustomizeArgs(["--id", "abc", "codex", "P1"]), null);
 });
 
 test("parseCustomizeArgs: missing pieces are null, never guessed", () => {

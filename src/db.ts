@@ -47,20 +47,32 @@ function sqlQuote(str: string): string {
   return "'" + String(str).replace(/'/g, "''") + "'";
 }
 
-function queryProvider(name: string, appType: string): ProviderRow | null {
+// All DB providers matching a name, ordered by id. Names are NOT unique in
+// the cc-switch DB, so launch/customize must use this instead of taking the
+// first row blindly. The virtual aggregation entry answers only when the DB
+// has no match, preserving the DB-first rule of queryProvider.
+function queryProviderMatches(name: string, appType: string): ProviderRow[] {
   const rows = queryDB(
-    `SELECT id, name, settings_config, category, meta FROM providers WHERE name = ${sqlQuote(name)} AND app_type = ${sqlQuote(appType)} ORDER BY id LIMIT 1`,
+    `SELECT id, name, settings_config, category, meta FROM providers WHERE name = ${sqlQuote(name)} AND app_type = ${sqlQuote(appType)} ORDER BY id`,
   );
-  if (rows[0]) return rows[0];
+  if (rows.length) return rows;
   // Virtual aggregation entry: DB-first by name, the derived row answers only
   // under its own (collision-dodged) display name. Fail-open on derive trouble.
   try {
     if (VIRTUAL_STACK_APPS.has(appType)) {
       const v = virtualStackProviderFor(appType);
-      if (v && v.name === name) return v;
+      if (v && v.name === name) return [v];
     }
-  } catch { /* fall through to null */ }
-  return null;
+  } catch { /* fall through to [] */ }
+  return [];
+}
+
+// Legacy first-wins lookup. Kept for callers that cannot distinguish same-name
+// rows (v1 history migration); the launch/customize paths use
+// queryProviderMatches so ambiguity is surfaced instead of silently picking
+// the lowest id.
+function queryProvider(name: string, appType: string): ProviderRow | null {
+  return queryProviderMatches(name, appType)[0] ?? null;
 }
 
 function queryProviderById(id: string, appType: string): ProviderRow | null {
@@ -140,4 +152,4 @@ function loadSettings() {
 }
 
 
-export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict, sqlQuote };
+export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, sqlQuote };
