@@ -65,7 +65,7 @@ switch --no-sync "P&G Nezha" codex       # 静默启动，抑制漂移警告
 switch ps         # 列出正在运行的、由 switch 启动的会话
 switch sync       # 检测并同步配置漂移（插件、配置字段、通用配置）
 switch doctor     # 诊断环境（sqlite3、数据库、二进制、instructions 文件等）
-switch clean      # 删除实例目录（交互式，或 --all）
+switch clean      # 删除实例目录（交互式，或 --all；有运行中会话时拒绝，--force 强制）
 switch customize [claude|codex] <provider>           # 实例级 CLAUDE.md / AGENTS.md（打开编辑器）
 switch uncustomize [claude|codex] <provider> [--yes] # 恢复共享的全局 instructions 文件
 switch update     # 自更新到最新 npm 版本

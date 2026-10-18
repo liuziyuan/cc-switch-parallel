@@ -8,7 +8,8 @@ import { atomicWrite } from "../fs-utils.js";
 import { _historyFrozen, loadHistory, saveHistory } from "../history.js";
 import { isPlainObject } from "../json-utils.js";
 import type { ProviderRow } from "../types.js";
-import { HOME, INSTANCES_DIR, LIVE_STATE_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "../paths.js";
+import { withFileLockSync } from "../file-lock.js";
+import { HOME, HISTORY_PATH, INSTANCES_DIR, LIVE_STATE_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "../paths.js";
 import { CC_SWITCH_CATALOG_FILENAME, codexAggregationRoute, isCustomCodexModelProviderId } from "./catalog.js";
 import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.js";
 import { loadStatuslinePreferences } from "../statusline-colors.js";
@@ -518,56 +519,72 @@ function cleanupLegacyStackRows() {
   // collide after the rewrite (same cli|id|hotkey) merge keeping the stronger
   // count/lastUsed. Frozen history (failed migration at load) is left alone —
   // the rows are already deleted, so those entries read dead until cleanup.
+  let migratedHistory = false;
   if (!_historyFrozen) {
     try {
-      const removedIds = new Set(removed.map((r) => r.id));
-      const { entries, order } = loadHistory();
-      let touched = false;
-      for (const e of entries) {
-        if (e.providerId && removedIds.has(e.providerId)) {
-          e.providerId = VIRTUAL_STACK_PROVIDER_ID;
+      const locked = withFileLockSync(HISTORY_PATH, () => {
+        const removedIds = new Set(removed.map((r) => r.id));
+        const { entries, order } = loadHistory();
+        let touched = false;
+        for (const e of entries) {
+          if (e.providerId && removedIds.has(e.providerId)) {
+            e.providerId = VIRTUAL_STACK_PROVIDER_ID;
+            touched = true;
+          }
+        }
+        // merge duplicates born from the rewrite: prefer count, then lastUsed
+        const byKey = new Map();
+        const merged: any[] = [];
+        for (const e of entries) {
+          const k = `${e.cli}|${e.providerId ?? e.provider}|${e.hotkey ?? ""}`;
+          const prev = byKey.get(k);
+          if (!prev) { byKey.set(k, e); merged.push(e); continue; }
+          if ((e.count || 0) > (prev.count || 0) || ((e.count || 0) === (prev.count || 0) && (e.lastUsed || 0) > (prev.lastUsed || 0))) {
+            byKey.set(k, e);
+            merged[merged.indexOf(prev)] = e;
+          }
           touched = true;
         }
-      }
-      // merge duplicates born from the rewrite: prefer count, then lastUsed
-      const byKey = new Map();
-      const merged: any[] = [];
-      for (const e of entries) {
-        const k = `${e.cli}|${e.providerId ?? e.provider}|${e.hotkey ?? ""}`;
-        const prev = byKey.get(k);
-        if (!prev) { byKey.set(k, e); merged.push(e); continue; }
-        if ((e.count || 0) > (prev.count || 0) || ((e.count || 0) === (prev.count || 0) && (e.lastUsed || 0) > (prev.lastUsed || 0))) {
-          byKey.set(k, e);
-          merged[merged.indexOf(prev)] = e;
-        }
-        touched = true;
-      }
-      const slotMap = new Map(removed.map((r) => [`claude|${r.id}`, `claude|${VIRTUAL_STACK_PROVIDER_ID}`]));
-      const nextOrder = order.map((slot) => (slot && slotMap.has(slot) ? slotMap.get(slot) : slot));
-      if (touched) saveHistory(merged, nextOrder);
+        // Several legacy ids map to the same virtual id: dedupe the slots,
+        // otherwise the same Recent row renders twice.
+        const slotMap = new Map(removed.map((r) => [ `claude|${r.id}`, `claude|${VIRTUAL_STACK_PROVIDER_ID}` ]));
+        const seenOrder = new Set();
+        let orderChanged = false;
+        const nextOrder = order.map((slot) => {
+          const mapped = slot && slotMap.has(slot) ? slotMap.get(slot) : slot;
+          if (mapped !== slot) orderChanged = true;
+          if (mapped && seenOrder.has(mapped)) { orderChanged = true; return null; }
+          if (mapped) seenOrder.add(mapped);
+          return mapped;
+        });
+        if (touched || orderChanged) saveHistory(merged, nextOrder);
+        return touched || orderChanged;
+      });
+      migratedHistory = locked.acquired ? locked.value : false;
     } catch { /* history is best-effort — never block on it */ }
   }
 
   // statusline colors: same id-keyed move, existing value for the virtual id wins
   let migratedColors = false;
   try {
-    const prefs = loadStatuslinePreferences();
-    if (prefs && isPlainObject(prefs.colors?.claude)) {
+    const locked = withFileLockSync(STATUSLINE_PREFS_PATH, () => {
+      const prefs = loadStatuslinePreferences();
+      if (!prefs || !isPlainObject(prefs.colors?.claude)) return false;
       const bucket = prefs.colors.claude;
-      const removedIds = removed.map((r) => r.id);
-      for (const oldId of removedIds) {
+      let changed = false;
+      for (const oldId of removed.map((r) => r.id)) {
         if (bucket[oldId] === undefined) continue;
         if (bucket[VIRTUAL_STACK_PROVIDER_ID] === undefined) bucket[VIRTUAL_STACK_PROVIDER_ID] = bucket[oldId];
         delete bucket[oldId];
-        migratedColors = true;
+        changed = true;
       }
-      if (migratedColors) {
-        atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
-      }
-    }
+      if (changed) atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
+      return changed;
+    });
+    migratedColors = locked.acquired ? locked.value : false;
   } catch { /* best-effort */ }
 
-  return { removed, skippedCurrent, migratedHistory: true, migratedColors };
+  return { removed, skippedCurrent, migratedHistory, migratedColors };
 }
 
 function reportLegacyStackCleanup(result) {

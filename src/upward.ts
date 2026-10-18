@@ -3,7 +3,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
+import { withFileLockSync } from "./file-lock.js";
+import { DB_PROC_TIMEOUT_MS, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
 import { atomicWrite } from "./fs-utils.js";
 import { deepEqualJson, isPlainObject, isSafeObjectKey } from "./json-utils.js";
 import { DB_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
@@ -170,41 +171,64 @@ function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
 // lost updates; two failed retries surface as a reported error (same
 // report-don't-swallow contract as applyClaudeSettingsFieldPatches above).
 
-function execDBWithChanges(sql) {
+function dbError(code, message) {
+  const err: any = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function execDBWithChanges(sql, timeoutMs = DB_PROC_TIMEOUT_MS) {
   try {
     // Trailing semicolon is REQUIRED: without it the appended SELECT would
-    // parse as one (invalid) statement and the whole batch would error out
-    // into the catch below — a silent always-0 that fails every CAS.
+    // parse as one (invalid) statement and the whole batch would error out.
     const out = execFileSync("sqlite3", [DB_PATH, ".timeout 3000", `${sql};\nSELECT changes();`], {
       encoding: "utf8",
       maxBuffer: 50 * 1024 * 1024,
-      timeout: 2000,
+      timeout: timeoutMs,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const n = parseInt(String(out).trim(), 10);
     return Number.isFinite(n) ? n : 0;
-  } catch {
-    return 0;
+  } catch (e: any) {
+    const stderr = String(e?.stderr || "");
+    // Classify instead of collapsing every failure to "0 rows": a timeout or
+    // a syntax error is NOT "another writer won the CAS".
+    if (e?.code === "ETIMEDOUT" || e?.signal) {
+      throw dbError("DB_TIMEOUT", "sqlite3 timed out (database busy?)");
+    }
+    if (/database is locked|database is busy|SQLITE_BUSY/i.test(stderr)) {
+      throw dbError("DB_BUSY", stderr.trim() || "database is busy");
+    }
+    throw dbError("DB_ERROR", stderr.trim() || e?.message || "sqlite3 failed");
   }
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function patchCodexCommonConfig(patchObj) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const cur = queryCommonConfig("codex");
     if (cur === null || cur === undefined) {
       throw new Error("common_config_codex row does not exist in the settings table");
     }
     const next = applyTomlPatchText(cur, patchObj);
-    const n = execDBWithChanges(
-      `UPDATE settings SET value = ${sqlQuote(next)} WHERE key = 'common_config_codex' AND value = ${sqlQuote(cur)}`,
-    );
-    if (n === 1) return;
+    try {
+      const n = execDBWithChanges(
+        `UPDATE settings SET value = ${sqlQuote(next)} WHERE key = 'common_config_codex' AND value = ${sqlQuote(cur)}`,
+      );
+      if (n === 1) return;
+    } catch (e: any) {
+      if (e?.code !== "DB_BUSY") throw e; // timeout/SQL errors are not CAS races
+    }
+    if (attempt < 2) sleepSync(50);
   }
   throw new Error("common_config_codex kept changing under us (desktop app writing concurrently?) — run switch sync again");
 }
 
 function patchCodexProviderConfig(providerId, patchObj) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const row = queryProviderById(providerId, "codex");
     if (!row) return; // provider gone — nothing to write (mirrors the generic drift drop)
     const original = row.settings_config;
@@ -218,10 +242,15 @@ function patchCodexProviderConfig(providerId, patchObj) {
     // untouched — the field channel never owns them.
     sc.config = applyTomlPatchText(sc.config || "", patchObj);
     const casClause = original == null ? "settings_config IS NULL" : `settings_config = ${sqlQuote(original)}`;
-    const n = execDBWithChanges(
-      `UPDATE providers SET settings_config = ${sqlQuote(JSON.stringify(sc))} WHERE id = ${sqlQuote(providerId)} AND app_type = 'codex' AND ${casClause}`,
-    );
-    if (n === 1) return;
+    try {
+      const n = execDBWithChanges(
+        `UPDATE providers SET settings_config = ${sqlQuote(JSON.stringify(sc))} WHERE id = ${sqlQuote(providerId)} AND app_type = 'codex' AND ${casClause}`,
+      );
+      if (n === 1) return;
+    } catch (e: any) {
+      if (e?.code !== "DB_BUSY") throw e;
+    }
+    if (attempt < 2) sleepSync(50);
   }
   throw new Error(`provider "${providerId}" config kept changing under us — run switch sync again`);
 }
@@ -374,19 +403,28 @@ function normalizeInstalledPluginPaths() {
     const globalPluginsDir = join(HOME, ".claude", "plugins");
     const file = join(globalPluginsDir, "installed_plugins.json");
     if (!existsSync(file)) return;
-    const data = JSON.parse(readFileSync(file, "utf8"));
-    let changed = false;
-    for (const recs of Object.values(data.plugins || {})) {
-      if (!Array.isArray(recs)) continue;
-      for (const rec of recs) {
-        const ip = rec.installPath;
-        if (typeof ip === "string" && INSTANCE_PLUGIN_PATH_RE.test(ip)) {
-          rec.installPath = ip.replace(INSTANCE_PLUGIN_PATH_RE, `${globalPluginsDir}/`);
-          changed = true;
+    withFileLockSync(file, () => {
+      try {
+        // Re-read inside the lock: another switch instance may have rewritten
+        // install paths between the caller's check and this write.
+        if (!existsSync(file)) return;
+        const data = JSON.parse(readFileSync(file, "utf8"));
+        let changed = false;
+        for (const recs of Object.values(data.plugins || {})) {
+          if (!Array.isArray(recs)) continue;
+          for (const rec of recs) {
+            const ip = rec.installPath;
+            if (typeof ip === "string" && INSTANCE_PLUGIN_PATH_RE.test(ip)) {
+              rec.installPath = ip.replace(INSTANCE_PLUGIN_PATH_RE, `${globalPluginsDir}/`);
+              changed = true;
+            }
+          }
         }
+        if (changed) atomicWrite(file, JSON.stringify(data, null, 2));
+      } catch {
+        // corrupt file — leave it alone
       }
-    }
-    if (changed) atomicWrite(file, JSON.stringify(data, null, 2));
+    });
   } catch {
     // best-effort: missing/corrupt file — silently skip.
   }

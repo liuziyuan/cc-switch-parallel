@@ -1,6 +1,7 @@
 // ─── statusline-colors (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { readFileSync } from "node:fs";
+import { withFileLockSync } from "./file-lock.js";
 import { atomicWrite } from "./fs-utils.js";
 import { isPlainObject } from "./json-utils.js";
 import { STATUSLINE_PREFS_PATH, STATUSLINE_PREFS_VERSION } from "./paths.js";
@@ -60,17 +61,22 @@ function statuslineColorFor(cli, providerId) {
 function saveStatuslineColor(cli, providerId, value) {
   if (!isValidStatuslineColor(value)) return null;
   try {
-    const prefs = loadStatuslinePreferences() || { version: STATUSLINE_PREFS_VERSION, colors: {} };
-    prefs.version = STATUSLINE_PREFS_VERSION;
-    prefs.colors = isPlainObject(prefs.colors) ? prefs.colors : {};
-    prefs.colors[cli] = isPlainObject(prefs.colors[cli]) ? prefs.colors[cli] : {};
-    if (value === "auto") {
-      delete prefs.colors[cli][providerId]; // auto is the default — store nothing
-    } else {
-      prefs.colors[cli][providerId] = value;
-    }
-    atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
-    return value;
+    const result = withFileLockSync(STATUSLINE_PREFS_PATH, () => {
+      // Re-read inside the lock: another TUI may have saved a different
+      // provider's color since this process's last load.
+      const prefs = loadStatuslinePreferences() || { version: STATUSLINE_PREFS_VERSION, colors: {} };
+      prefs.version = STATUSLINE_PREFS_VERSION;
+      prefs.colors = isPlainObject(prefs.colors) ? prefs.colors : {};
+      prefs.colors[cli] = isPlainObject(prefs.colors[cli]) ? prefs.colors[cli] : {};
+      if (value === "auto") {
+        delete prefs.colors[cli][providerId]; // auto is the default — store nothing
+      } else {
+        prefs.colors[cli][providerId] = value;
+      }
+      atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
+      return value;
+    });
+    return result.acquired ? result.value : null;
   } catch {
     return null;
   }
