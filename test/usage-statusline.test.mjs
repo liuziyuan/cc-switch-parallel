@@ -34,6 +34,8 @@ const {
   probeTcpReachable,
   aggregationDoctorChecks,
   stackBillingMemberName,
+  buildClaudeAggregationGroup,
+  syncStackManagedRow,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -741,13 +743,18 @@ test("aggregation unit: readStackState is fail-open", () => {
   removeLiveState();
 });
 
-test("aggregation unit: readGlobalModelPicker needs a non-empty options array", () => {
+test("aggregation unit: readGlobalModelPicker — empty options is a legal cleared state", () => {
   writeGlobalSettings(undefined);
-  assert.equal(readGlobalModelPicker(), null);
+  assert.equal(readGlobalModelPicker(), null, "no key at all → absence");
   writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: { replaceBuiltInOptions: true, options: [] } }));
-  assert.equal(readGlobalModelPicker(), null);
+  const empty = readGlobalModelPicker();
+  assert.notEqual(empty, null, "cleared list is a legal state, not absence");
+  assert.deepEqual(empty.options, []);
   writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: PICKER_FIXTURE }));
   assert.deepEqual(readGlobalModelPicker(), PICKER_FIXTURE);
+  // non-array options → not a picker shape we recognize
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: { options: "garbage" } }));
+  assert.equal(readGlobalModelPicker(), null);
 });
 
 test("aggregation: probeTcpReachable — live port passes, dead/garbage fail fast", async () => {
@@ -832,6 +839,7 @@ test("aggregation: modelPicker syncs into effective settings only while stack is
   removeLiveState();
   writeGlobalSettings(undefined);
   // stack off → the provider row's own snapshot survives untouched
+  // (hand-made row: meta carries no stackManaged marker)
   const snap = buildClaudeEffectiveSettings({ ...STACK_SETTINGS, modelPicker: "snapshot" }, {}, "{}", "Stack", STACK_PROVIDER_ID);
   assert.equal(snap.modelPicker, "snapshot");
   // stack on + global picker → synced (fresh contract from the desktop app)
@@ -839,6 +847,18 @@ test("aggregation: modelPicker syncs into effective settings only while stack is
   writeLiveState({ enabled: true, members: ["m1"], keys: { zhipu: "m1" } }, "m1");
   const live = buildClaudeEffectiveSettings({ ...STACK_SETTINGS, modelPicker: "snapshot" }, {}, "{}", "Stack", STACK_PROVIDER_ID);
   assert.deepEqual(live.modelPicker, PICKER_FIXTURE);
+  // stack on + CLEARED global list (empty options) → the picker drops
+  // entirely instead of keeping a stale row snapshot
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: { replaceBuiltInOptions: true, options: [] } }));
+  const cleared = buildClaudeEffectiveSettings({ ...STACK_SETTINGS, modelPicker: "snapshot" }, {}, "{}", "Stack", STACK_PROVIDER_ID);
+  assert.equal(cleared.modelPicker, undefined, "cleared desktop list drops the picker");
+  removeLiveState();
+  // stack off + MANAGED row → the stale ccs snapshot drops (dead-proxy ids
+  // must not linger in /model); a hand-made row's snapshot survives
+  const managed = buildClaudeEffectiveSettings(
+    { ...STACK_SETTINGS, modelPicker: "snapshot" }, { stackManaged: true }, "{}", "Stack", STACK_PROVIDER_ID,
+  );
+  assert.equal(managed.modelPicker, undefined, "managed row's snapshot drops when the stack is off");
   removeLiveState();
   cleanStackInstance();
 });
@@ -1120,13 +1140,14 @@ test("aggregation: ensureStackProviderRow creates alongside a gateway row, is id
   assert.equal(created.name, "Stack");
   // the created row carries the live contract from the global settings
   const rows = JSON.parse(execFileSync("sqlite3", ["-json", join(CC, "cc-switch.db"),
-    "SELECT id, name, settings_config FROM providers WHERE app_type = 'claude' AND id = '" + created.id + "'"],
+    "SELECT id, name, settings_config, meta FROM providers WHERE app_type = 'claude' AND id = '" + created.id + "'"],
   { encoding: "utf8" }) || "[]");
   const sc = JSON.parse(rows[0].settings_config);
   assert.equal(sc.env.ANTHROPIC_AUTH_TOKEN, "PROXY_MANAGED");
   assert.equal(sc.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
   assert.equal(sc.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-zhipu--glm-5.3[1M]");
   assert.deepEqual(sc.modelPicker, PICKER_FIXTURE);
+  assert.equal(JSON.parse(rows[0].meta).stackManaged, true, "auto-created rows are stackManaged");
   // the gateway row is untouched
   const gw = JSON.parse(execFileSync("sqlite3", ["-json", join(CC, "cc-switch.db"),
     "SELECT settings_config FROM providers WHERE id = 'm-gw'"],
@@ -1138,6 +1159,102 @@ test("aggregation: ensureStackProviderRow creates alongside a gateway row, is id
   removeLiveState();
   sql(`DELETE FROM providers WHERE id IN ('${created.id}', 'm-gw')`);
   assert.equal(ensureStackProviderRow(), null);
+  // a CLEARED desktop picker (empty options) is not snapshotted into the row
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" },
+    modelPicker: { replaceBuiltInOptions: true, options: [] },
+  }));
+  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+  const created2 = ensureStackProviderRow();
+  assert.ok(created2);
+  const sc2 = JSON.parse(sql(`SELECT settings_config FROM providers WHERE id = '${created2.id}'`));
+  assert.equal(sc2.modelPicker, undefined, "empty desktop list must not snapshot");
+  removeLiveState();
+  sql(`DELETE FROM providers WHERE id = '${created2.id}'`);
+});
+
+test("aggregation: syncStackManagedRow mirrors the live routing contract; leaves everything else alone", () => {
+  cleanStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  const oldSc = JSON.stringify({
+    env: {
+      ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15720",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-zhipu--old",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "ccs-claude-zhipu--old-flash",
+    },
+    modelPicker: { replaceBuiltInOptions: true, options: [{ model: "old" }] },
+  });
+  const mkRow = (id, meta, sc = oldSc) => ({ id, name: "Stack", settings_config: sc, category: null, meta });
+  const insertRow = (id, name, meta, sc) =>
+    sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+      VALUES ('${id}', 'claude', '${name}', '${sc.replace(/'/g, "''")}', '${meta}')`);
+  insertRow("agg-sync", "Stack", '{"stackManaged":true}', oldSc);
+  insertRow("agg-hand", "Stack2", "{}", oldSc); // hand-made: same shape, no marker
+  // desktop re-points the port, swaps aliases (sonnet new tier, haiku tier
+  // GONE), clears the picker — stack live
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "ccs-claude-deepseek--new",
+    },
+  }));
+  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+
+  const managed = mkRow("agg-sync", '{"stackManaged":true}');
+  const updated = syncStackManagedRow(managed);
+  const env = JSON.parse(updated.settings_config).env;
+  assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721", "port re-pointed");
+  assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, "ccs-claude-deepseek--new", "alias mirrored");
+  assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined, "tier the desktop stopped publishing goes away");
+  assert.equal(JSON.parse(updated.settings_config).modelPicker, undefined, "cleared picker drops from the row");
+  // persisted to the DB, not just the returned copy
+  const onDisk = JSON.parse(sql(`SELECT settings_config FROM providers WHERE id = 'agg-sync'`));
+  assert.equal(onDisk.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15721");
+  // no drift → no write (same object identity back)
+  assert.equal(syncStackManagedRow(updated), updated, "no drift returns the row untouched");
+
+  // stack off → untouched: the passed row returns as-is and the DB keeps
+  // the mirrored contract from the first sync (no write, no rollback)
+  removeLiveState();
+  const stale = syncStackManagedRow(mkRow("agg-sync", '{"stackManaged":true}'));
+  assert.equal(stale.settings_config, oldSc, "stack off is a no-op on the passed row");
+  assert.equal(JSON.parse(sql(`SELECT settings_config FROM providers WHERE id = 'agg-sync'`)).env.ANTHROPIC_BASE_URL,
+    "http://127.0.0.1:15721", "mirrored value stays on disk");
+  // hand-made row (no marker) → untouched even with the stack live
+  writeLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
+  const hand = syncStackManagedRow(mkRow("agg-hand", "{}"));
+  assert.equal(JSON.parse(hand.settings_config).env.ANTHROPIC_BASE_URL, "http://127.0.0.1:15720",
+    "hand-made row is never written");
+  // signature lost (user re-pointed the managed row at a real gateway) → untouched
+  const repurposed = mkRow("agg-sync", '{"stackManaged":true}',
+    JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-gw" } }));
+  const untouched = syncStackManagedRow(repurposed);
+  assert.equal(JSON.parse(untouched.settings_config).env.ANTHROPIC_AUTH_TOKEN, "sk-gw",
+    "re-purposed row is not rewritten");
+  removeLiveState();
+  sql(`DELETE FROM providers WHERE id IN ('agg-sync', 'agg-hand')`);
+});
+
+test("aggregation TUI label: member rows missing from the DB surface in the label", () => {
+  cleanStackInstance();
+  removeLiveState();
+  // loopback global env so ensureStackProviderRow can create the Stack row
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721" } }));
+  setupStackDB([
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+  ]);
+  // "m-gone" is in the stack but has no provider row (an id no other test
+  // inserts — the DB is shared across the file)
+  writeLiveState({ enabled: true, members: ["m-ds", "m-gone"], keys: { deepseek: "m-ds", zhipu: "m-gone" } }, "m-ds");
+  const group = buildClaudeAggregationGroup();
+  assert.ok(group);
+  const labels = [...group.labels.values()];
+  assert.ok(labels[0].includes("DeepSeek"), labels[0]);
+  assert.ok(labels[0].includes("1 个成员缺失"), labels[0]);
+  removeLiveState();
+  sql(`DELETE FROM providers WHERE app_type = 'claude'`);
 });
 
 test("aggregation: wrapper source — stack tail inlines map, decode and makeTag; no stack keeps legacy bytes", () => {
