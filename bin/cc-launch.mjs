@@ -5011,6 +5011,20 @@ function collectInstances() {
 
 // ─── switch ps ────────────────────────────────────────────────────────
 
+// Billable member name for an aggregation instance, decoded from the
+// instance settings.json's /model pick ("ccs-claude-<key>--…" — same rule
+// as the statusline wrapper). null when the pick is not attributable (no
+// ccs prefix, stack off, or the key no longer live) — the plain provider
+// name is shown then. Pure given (model, stack); DB lookup inside.
+function stackBillingMemberName(model, stack) {
+  if (typeof model !== "string" || !model) return null;
+  const ccs = model.match(/^ccs-claude-([a-z0-9-]+?)--/i);
+  if (!ccs) return null;
+  const pid = stack?.keys?.[ccs[1].toLowerCase()];
+  if (!pid) return null;
+  try { return queryProviderById(pid, "claude")?.name || null; } catch { return null; }
+}
+
 function formatDuration(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -5070,14 +5084,32 @@ function runPs() {
     return;
   }
   const tmuxByTty = tmuxSessionByTty();
+  let stackForBilling; // lazy: readStackState once, only when a claude row asks
   const home = process.env.HOME;
   const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
   const rows = running.map(({ inst, session }) => {
     let name = session.providerId || inst.name;
+    let row = null;
     try {
-      const p = queryProviderById(inst.name, inst.appType);
-      if (p?.name) name = p.name;
+      row = queryProviderById(inst.name, inst.appType);
+      if (row?.name) name = row.name;
     } catch {} // dead DB row → fall back to the id
+    // Aggregation instance: surface the billable member next to the row name
+    // ("Stack → DeepSeek") — the /model pick is instance-local, so this is
+    // the only place a parallel-instance panel can show who is paying.
+    // Aggregation-row gated: a plain row's instance can carry a stale ccs
+    // pick (historically synced in), which would mis-bill the suffix.
+    // Stack state is read lazily, once, shared across rows.
+    if (inst.appType === "claude" && row) {
+      try {
+        if (isAggregationProviderSettings(JSON.parse(row.settings_config))) {
+          stackForBilling ??= readStackState("claude");
+          const s = JSON.parse(readFileSync(join(inst.path, "settings.json"), "utf8"));
+          const member = stackBillingMemberName(s?.model, stackForBilling);
+          if (member) name = `${name} → ${member}`;
+        }
+      } catch {} // unreadable row/settings → plain name stands
+    }
     return {
       cli: inst.appType,
       name,
@@ -5791,6 +5823,7 @@ export const __test = Object.freeze({
   ensureStackProviderRow,
   probeTcpReachable,
   aggregationDoctorChecks,
+  stackBillingMemberName,
   USAGE_CACHE_FILENAME,
   APP_ADAPTERS,
 });
