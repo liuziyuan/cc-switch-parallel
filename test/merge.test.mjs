@@ -105,7 +105,7 @@ test("diffSettingsLeaves: deleting one key of a subtree stays a leaf remove", ()
   const baseline = { env: { TOKEN: "t", KEEP_ME: "v" } };
   const current = { env: { KEEP_ME: "v" } };
   assert.deepEqual(diffSettingsLeaves(baseline, current), [
-    { path: "env.TOKEN", op: "remove", from: "t", to: undefined },
+    { path: "env.TOKEN", op: "remove", from: "t", to: undefined, segments: ["env", "TOKEN"] },
   ]);
 });
 
@@ -113,8 +113,8 @@ test("diffSettingsLeaves: mixed add/remove inside one subtree stays per-leaf", (
   const baseline = { env: { A: 1 } };
   const current = { env: { B: 2 } };
   assert.deepEqual(diffSettingsLeaves(baseline, current), [
-    { path: "env.A", op: "remove", from: 1, to: undefined },
-    { path: "env.B", op: "add", from: undefined, to: 2 },
+    { path: "env.A", op: "remove", from: 1, to: undefined, segments: ["env", "A"] },
+    { path: "env.B", op: "add", from: undefined, to: 2, segments: ["env", "B"] },
   ]);
 });
 

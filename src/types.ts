@@ -8,6 +8,13 @@ export interface SettingsChange {
   op: "add" | "remove" | "change";
   from: unknown;
   to: unknown;
+  /**
+   * The REAL key sequence of `path` in the source tree. `path` joins keys with
+   * dots for display, so a key that itself contains dots (Codex
+   * `[profiles."my.profile"]`, `[hooks.state."/abs/path:..."]`) is ambiguous
+   * when re-parsed. Consumers that WRITE a patch must use these segments.
+   */
+  segments?: string[];
 }
 
 /** A provider row as it comes out of the cc-switch DB. */

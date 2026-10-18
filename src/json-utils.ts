@@ -182,7 +182,7 @@ function deepEqualJson(a, b) {
 // build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
-function diffSettingsLeaves(baseline: any, current: any, prefix = ""): SettingsChange[] {
+function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: string[] = []): SettingsChange[] {
   const changes: SettingsChange[] = [];
   const b = isPlainObject(baseline) ? baseline : {};
   const c = isPlainObject(current) ? current : {};
@@ -190,22 +190,25 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = ""): SettingsC
   const keys = new Set([...Object.keys(b), ...Object.keys(c)]);
   for (const k of keys) {
     const path = prefix ? `${prefix}.${k}` : k;
+    // Real key sequence (k may itself contain dots). Carried through add,
+    // remove and change so write-back never has to re-split the display path.
+    const childSegments = [...segments, k];
     const inB = Object.prototype.hasOwnProperty.call(b, k);
     const inC = Object.prototype.hasOwnProperty.call(c, k);
     if (inB && inC) {
       const bv = b[k];
       const cv = c[k];
       if (isPlainObject(bv) && isPlainObject(cv)) {
-        changes.push(...diffSettingsLeaves(bv, cv, path));
+        changes.push(...diffSettingsLeaves(bv, cv, path, childSegments));
       } else if (!deepEqualJson(bv, cv)) {
         // Arrays & scalars are leaves; deepEqualJson's non-object branch is
         // strict ===, which is the right comparison for both.
-        changes.push({ path, op: "change", from: bv, to: cv });
+        changes.push({ path, op: "change", from: bv, to: cv, segments: childSegments });
       }
     } else if (inC) {
-      changes.push({ path, op: "add", from: undefined, to: c[k] });
+      changes.push({ path, op: "add", from: undefined, to: c[k], segments: childSegments });
     } else {
-      changes.push({ path, op: "remove", from: b[k], to: undefined });
+      changes.push({ path, op: "remove", from: b[k], to: undefined, segments: childSegments });
     }
   }
   return changes;
