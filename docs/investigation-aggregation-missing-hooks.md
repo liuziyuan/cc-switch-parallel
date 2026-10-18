@@ -53,11 +53,11 @@ tmux 状态栏无 claude 状态
 ### 1. DB 数据（`~/.cc-switch/cc-switch.db` providers 表，app_type='claude'）
 
 ```
-40f04279…|DeepSeek      |meta: {"commonConfigEnabled":true, …}
-e48e4e5c…|Z.AI GLM     |meta: {"commonConfigEnabled":true, …}   ← is_current
-76e05921…|P&G Nezha    |meta: {"commonConfigEnabled":true, …}
-c05b2d36…|P&G Nezha zuning|meta: {"commonConfigEnabled":true, …}
-d4d19431…|Stack        |meta: {}                                 ← 聚合行，唯一例外
+id-c…|DeepSeek      |meta: {"commonConfigEnabled":true, …}
+id-d…|Z.AI GLM     |meta: {"commonConfigEnabled":true, …}   ← is_current
+id-a…|Example Provider    |meta: {"commonConfigEnabled":true, …}
+id-b…|Example Provider B|meta: {"commonConfigEnabled":true, …}
+id-e…|Stack        |meta: {}                                 ← 聚合行，唯一例外
 ```
 
 Stack 行 created_at = 2026-10-18 09:36:48（桌面 GUI 写入，早于本仓库 v0.17.0 提交 10:58）。

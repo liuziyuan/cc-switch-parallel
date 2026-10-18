@@ -83,7 +83,7 @@
    - 终端 B:`switch "Claude Official" claude`
    - 两者各自正常工作,互不影响。
 5. **独立性验证**:把 cc-switch 桌面本地路由开关切换(开→关、关→开),重跑步骤 4,确认两个终端均不受影响。
-6. **既有功能回归**:`switch "Zhipu GLM en" claude`、`switch "P&G Nezha" codex` 等非 Copilot 路径仍正常(未走代理)。
+6. **既有功能回归**:`switch "Zhipu GLM en" claude`、`switch "Example Provider" codex` 等非 Copilot 路径仍正常(未走代理)。
 
 ## 复用的现有逻辑
 
