@@ -138,6 +138,13 @@ export function exitCodeForSignal(signal: any): number {
   return typeof n === "number" ? 128 + n : 1;
 }
 
+/** Exit status for a spawnSync editor result (error/signal/non-zero). */
+export function editorExitCode(result: any): number {
+  if (result?.error) return 1;
+  if (result?.signal) return exitCodeForSignal(result.signal);
+  return typeof result?.status === "number" ? result.status : 1;
+}
+
 /** Parse `tmux list-panes -F '#{pane_tty}\t#{session_name}'` output. */
 export function parseTmuxPanes(stdout: any): Map<string, string> {
   const map = new Map<string, string>();

@@ -12,6 +12,7 @@ const {
   buildEditorInvocation,
   shQuote,
   exitCodeForSignal,
+  editorExitCode,
   parseTmuxPanes,
   installTerminalGuard,
 } = await import("../src/terminal-utils.ts");
@@ -94,6 +95,14 @@ test("exitCodeForSignal: 128 + signum", () => {
   assert.equal(exitCodeForSignal("SIGHUP"), 129);
   assert.equal(exitCodeForSignal("NOPE"), 1);
   assert.equal(exitCodeForSignal(null), 1);
+});
+
+test("editorExitCode: success 0, non-zero preserved, signal mapped, spawn error 1", () => {
+  assert.equal(editorExitCode({ status: 0 }), 0);
+  assert.equal(editorExitCode({ status: 2 }), 2);
+  assert.equal(editorExitCode({ status: null, signal: "SIGTERM" }), 143);
+  assert.equal(editorExitCode({ error: new Error("ENOENT") }), 1);
+  assert.equal(editorExitCode({}), 1);
 });
 
 test("parseTmuxPanes: /dev prefix, CRLF and dirty lines", () => {
