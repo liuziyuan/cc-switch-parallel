@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-import { SCRIPT_DIR } from "./paths.mjs";
+import { SCRIPT_DIR } from "./paths.js";
 
 // ─── smol-toml loader ─────────────────────────────────────────────────
 

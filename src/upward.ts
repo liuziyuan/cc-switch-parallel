@@ -3,11 +3,11 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.mjs";
-import { atomicWrite } from "./fs-utils.mjs";
-import { deepEqualJson, isPlainObject } from "./json-utils.mjs";
-import { DB_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.mjs";
-import { applyTomlPatchText } from "./toml-utils.mjs";
+import { patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
+import { atomicWrite } from "./fs-utils.js";
+import { deepEqualJson, isPlainObject } from "./json-utils.js";
+import { DB_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
+import { applyTomlPatchText } from "./toml-utils.js";
 
 // ─── Settings-field upward channel (detect → arbitrate → split → write) ─
 
@@ -117,7 +117,7 @@ function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
   if (commonPatch && Object.keys(commonPatch).length) {
     try {
       patchCommonConfigClaude(commonPatch);
-    } catch (e) {
+    } catch (e: any) {
       process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
     }
   }
@@ -129,7 +129,7 @@ function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
     if (providerId === VIRTUAL_STACK_PROVIDER_ID) continue;
     try {
       patchProviderSettingsConfig(providerId, "claude", patchObj);
-    } catch (e) {
+    } catch (e: any) {
       process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} settings: ${e.message}\x1b[0m\n`);
     }
   }
@@ -209,7 +209,7 @@ function applyCodexSettingsFieldPatches(drift) {
   if (drift.commonPatch && Object.keys(drift.commonPatch).length) {
     try {
       patchCodexCommonConfig(drift.commonPatch);
-    } catch (e) {
+    } catch (e: any) {
       process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
     }
   }
@@ -217,7 +217,7 @@ function applyCodexSettingsFieldPatches(drift) {
     if (!patchObj || !Object.keys(patchObj).length) continue;
     try {
       patchCodexProviderConfig(providerId, patchObj);
-    } catch (e) {
+    } catch (e: any) {
       process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} config: ${e.message}\x1b[0m\n`);
     }
   }
@@ -271,10 +271,10 @@ function foldRemovalPatch(patch, target) {
 // virtualProvider — the winning provider row is the runtime-virtual Stack
 // entry (no DB row to write back to): provider-target changes land in
 // rejected too (surfaced as "blocked"), common-target changes still flow.
-function splitChangesByTarget(changes, providerId, commonObj, providerSettings, opts = {}) {
+function splitChangesByTarget(changes: any[], providerId: string, commonObj: any, providerSettings: any, opts: any = {}) {
   const commonPatch = {};
   const providerPatch = {};
-  const rejected = [];
+  const rejected: any[] = [];
   for (const ch of changes) {
     if (pathExistsInSnippet(commonObj, ch.path)) {
       if (ch.op !== "remove" && isSensitiveConfigPath(ch.path)) {
@@ -324,8 +324,8 @@ function buildNestedAssign(patch, path, value, refObj) {
 // as a nested object in the patch — listing only leaves would yield
 // statusLine.type and never match the change's statusLine. Nulls are leaves
 // (RFC 7396 removals). Used to tag sync-prompt lines with their write target.
-function collectPatchPaths(patch, prefix = "") {
-  const out = [];
+function collectPatchPaths(patch: any, prefix = ""): string[] {
+  const out: string[] = [];
   if (!isPlainObject(patch)) return out;
   for (const [k, v] of Object.entries(patch)) {
     const path = prefix ? `${prefix}.${k}` : k;

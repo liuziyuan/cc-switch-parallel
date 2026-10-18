@@ -1,7 +1,7 @@
 // ─── toml-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { applyMergePatch, isPlainObject, jsonDeepClone } from "./json-utils.mjs";
-import { parseToml, stringifyToml } from "./toml.mjs";
+import { applyMergePatch, isPlainObject, jsonDeepClone } from "./json-utils.js";
+import { parseToml, stringifyToml } from "./toml.js";
 
 // ─── TOML utils (port of Rust merge_toml_table_like) ───────────────────
 

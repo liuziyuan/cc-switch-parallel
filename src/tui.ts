@@ -1,15 +1,15 @@
 // ─── tui (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS } from "./adapters.mjs";
-import { buildRunningSet } from "./commands/ps.mjs";
-import { queryProvidersByApp } from "./db.mjs";
-import { detectAndPromptSync } from "./drift.mjs";
-import { QUICK_KEYS, entryKey, insertManualOrder, isDeadEntry, loadHistory, permLabel, relTime, removeAllDeadPairs, removeHistoryPair, setEntryHotkey, snapshotAliveByCli, top5, unpinPair } from "./history.mjs";
-import { launchProvider } from "./launch.mjs";
-import { VIRTUAL_STACK_APPS } from "./paths.mjs";
-import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.mjs";
-import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.mjs";
+import { APP_ADAPTERS } from "./adapters.js";
+import { buildRunningSet } from "./commands/ps.js";
+import { queryProvidersByApp } from "./db.js";
+import { detectAndPromptSync } from "./drift.js";
+import { QUICK_KEYS, entryKey, insertManualOrder, isDeadEntry, loadHistory, permLabel, relTime, removeAllDeadPairs, removeHistoryPair, setEntryHotkey, snapshotAliveByCli, top5, unpinPair } from "./history.js";
+import { launchProvider } from "./launch.js";
+import { VIRTUAL_STACK_APPS } from "./paths.js";
+import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.js";
+import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } fro
 //               shown order/dead/pinned state matches disk. Newly surfaced
 //               natural-filler rows need their dead flag from the caller's
 //               alive snapshot — tuiSelect itself has no DB access.
-function tuiSelect(prompt, options, optsArg) {
+function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
   const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
   const hotkeys = opts.hotkeys || [];
@@ -68,10 +68,10 @@ function tuiSelect(prompt, options, optsArg) {
     let selected = 0;
     let mode = "select"; // "select" | "param" | "pin" | "confirm" | "color"
     let lastDrawnLines = 0;
-    let pinTarget = null; // {cli, providerId, provider, label} captured entering pin mode
-    let confirmAction = null; // {kind:"remove"|"cleanup"|"launch", target} in confirm mode
-    let paramEdit = null; // {q} Recent row being mode-edited — param mode, edit context
-    let colorTarget = null; // {cli, providerId, provider, label} captured entering color mode
+    let pinTarget: any = null; // {cli, providerId, provider, label} captured entering pin mode
+    let confirmAction: any = null; // {kind:"remove"|"cleanup"|"launch", target} in confirm mode
+    let paramEdit: any = null; // {q} Recent row being mode-edited — param mode, edit context
+    let colorTarget: any = null; // {cli, providerId, provider, label} captured entering color mode
     let colorIndex = 0; // STATUSLINE_COLOR_CHOICES cursor
     let colorCurrentValue = "auto"; // stored preference when color mode was entered — renders the ● mark
 
@@ -110,7 +110,7 @@ function tuiSelect(prompt, options, optsArg) {
     // extra dim row below the hints — passed per-render, so it disappears on
     // the next state change without any cleanup bookkeeping.
     function buildLines(m, notice) {
-      const lines = [];
+      const lines: string[] = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${fit(prompt, 4)}\x1b[0m`);
       lines.push("");
       const locked = m === "param" || m === "pin" || m === "confirm" || m === "color";
@@ -236,7 +236,7 @@ function tuiSelect(prompt, options, optsArg) {
       return lines;
     }
 
-    function render(m, notice) {
+    function render(m: any, notice: any = null) {
       if (lastDrawnLines > 0) {
         process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
       }
@@ -700,12 +700,12 @@ async function runTUI() {
           getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
         },
       );
-    } catch (e) {
+    } catch (e: any) {
       if (e.message === "BACK_TO_CLI") continue; // esc on provider → back to CLI
       throw e; // Ctrl+C → propagate to main()
     }
     const provider = providers.find((p) => p.id === selected.value);
-    await launchProvider(cli.value, provider.name, adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
+    await launchProvider(cli.value, provider!.name, adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
     return;
   }
 }

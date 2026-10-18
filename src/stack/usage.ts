@@ -1,6 +1,6 @@
 // ─── stack/usage (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { isPlainObject } from "../json-utils.mjs";
+import { isPlainObject } from "../json-utils.js";
 
 // ─── Provider usage snapshot (app-agnostic, statusline) ───────────────
 // Optional usage segment for the instance statusline wrapper: zhipu/zai

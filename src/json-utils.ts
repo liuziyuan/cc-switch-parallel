@@ -3,7 +3,9 @@
 
 // ─── JSON utils (port of Rust json_deep_merge / json_is_subset) ────────
 
-function isPlainObject(v) {
+import type { SettingsChange } from "./types.js";
+
+function isPlainObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
@@ -162,8 +164,8 @@ function deepEqualJson(a, b) {
 // build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
-function diffSettingsLeaves(baseline, current, prefix = "") {
-  const changes = [];
+function diffSettingsLeaves(baseline: any, current: any, prefix = ""): SettingsChange[] {
+  const changes: SettingsChange[] = [];
   const b = isPlainObject(baseline) ? baseline : {};
   const c = isPlainObject(current) ? current : {};
 

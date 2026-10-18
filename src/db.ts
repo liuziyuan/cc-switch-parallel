@@ -2,12 +2,13 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { DB_PATH, SETTINGS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "./paths.mjs";
-import { appendVirtualStackRow, virtualStackProviderFor } from "./stack/state.mjs";
+import { DB_PATH, SETTINGS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
+import { appendVirtualStackRow, virtualStackProviderFor } from "./stack/state.js";
+import type { ProviderRow } from "./types.js";
 
 // ─── DB queries ───────────────────────────────────────────────────────
 
-function queryDB(sql) {
+function queryDB(sql: string): any[] {
   try {
     const json = execFileSync("sqlite3", ["-json", DB_PATH, sql], {
       encoding: "utf8",
@@ -15,7 +16,7 @@ function queryDB(sql) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     return JSON.parse(json || "[]");
-  } catch (e) {
+  } catch (e: any) {
     if (e.status === 1 && (!e.stdout || !e.stderr)) return [];
     throw e;
   }
@@ -26,7 +27,7 @@ function queryDB(sql) {
 // ".timeout 3000" is a sqlite3 dot-command setting the busy timeout — the
 // 2s `timeout` option below only bounds the PROCESS, and can't make sqlite
 // wait out a lock held by the cc-switch desktop app mid-write.
-function execDB(sql) {
+function execDB(sql: string): void {
   execFileSync("sqlite3", [DB_PATH, ".timeout 3000", sql], {
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
@@ -35,11 +36,11 @@ function execDB(sql) {
   });
 }
 
-function sqlQuote(str) {
+function sqlQuote(str: string): string {
   return "'" + String(str).replace(/'/g, "''") + "'";
 }
 
-function queryProvider(name, appType) {
+function queryProvider(name: string, appType: string): ProviderRow | null {
   const rows = queryDB(
     `SELECT id, name, settings_config, category, meta FROM providers WHERE name = ${sqlQuote(name)} AND app_type = ${sqlQuote(appType)} ORDER BY id LIMIT 1`,
   );
@@ -55,7 +56,7 @@ function queryProvider(name, appType) {
   return null;
 }
 
-function queryProviderById(id, appType) {
+function queryProviderById(id: string, appType: string): ProviderRow | null {
   const rows = queryDB(
     `SELECT id, name, settings_config, category, meta FROM providers WHERE id = ${sqlQuote(id)} AND app_type = ${sqlQuote(appType)} LIMIT 1`,
   );
@@ -68,7 +69,7 @@ function queryProviderById(id, appType) {
   return null;
 }
 
-function queryProvidersByApp(appType) {
+function queryProvidersByApp(appType: string): ProviderRow[] {
   const rows = queryDB(
     `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
   );
@@ -80,7 +81,7 @@ function queryProvidersByApp(appType) {
 // would corrupt callers that must fail open: the v1→v2 history migration
 // (every live entry would be marked dead) and the TUI's alive snapshot
 // (every Recent row would be flagged ✗ missing).
-function queryProvidersStrict(appType) {
+function queryProvidersStrict(appType: string): ProviderRow[] {
   const json = execFileSync("sqlite3", ["-json", DB_PATH,
     `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
   ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

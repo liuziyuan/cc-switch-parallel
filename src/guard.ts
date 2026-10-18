@@ -2,11 +2,11 @@
 
 import { readFileSync, mkdirSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWrite, readdirSyncSafe } from "./fs-utils.mjs";
-import { deepEqualJson, diffSettingsLeaves, isPlainObject } from "./json-utils.mjs";
-import { CC_SWITCH_DIR } from "./paths.mjs";
-import { loadSyncState } from "./sessions.mjs";
-import { isCodexAggModelPath } from "./stack/state.mjs";
+import { atomicWrite, readdirSyncSafe } from "./fs-utils.js";
+import { deepEqualJson, diffSettingsLeaves, isPlainObject } from "./json-utils.js";
+import { CC_SWITCH_DIR } from "./paths.js";
+import { loadSyncState } from "./sessions.js";
+import { isCodexAggModelPath } from "./stack/state.js";
 
 // ─── Instance settings backups (overwrite guard) ──────────────────────
 

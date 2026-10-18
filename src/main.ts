@@ -3,27 +3,27 @@
 import { execSync, spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { APP_ADAPTERS } from "./adapters.mjs";
-import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath } from "./claude-config.mjs";
-import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.mjs";
-import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.mjs";
-import { runPs, stackBillingMemberName } from "./commands/ps.mjs";
-import { queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict } from "./db.mjs";
-import { detectAndPromptSync } from "./drift.mjs";
-import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.mjs";
-import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.mjs";
-import { applyMergePatch, deepEqualJson, diffSettingsLeaves, jsonDeepMerge, jsonNormalize, mergeCommonOverProvider } from "./json-utils.mjs";
-import { launchProvider } from "./launch.mjs";
-import { HOME, NPM_PACKAGE_NAME, VERSION, VIRTUAL_STACK_PROVIDER_ID } from "./paths.mjs";
-import { buildLaunchExtraEnv } from "./sessions.mjs";
-import { applyCodexStatusLineInjection, codexAggregationRoute, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexRuntimeStatePath, isCodexStatusLineChannelPath, mergeCodexRuntimeState, protectCodexAggregationIdentity, readGlobalCodexCatalogText } from "./stack/catalog.mjs";
-import { aggregationBaseUrlFor, appendVirtualStackRow, buildAggregationGroup, buildCodexStackSettingsFromGlobal, buildStackSettingsFromGlobal, buildStackUsageConfig, cleanupLegacyStackRows, codexStackDormantSettings, isAggregationProviderSettings, isCodexAggModelPath, isCodexAggregationProviderSettings, isLoopbackBaseUrl, probeTcpReachable, protectAggregationIdentityEnv, providerIsAggregation, readGlobalModelPicker, readStackState, virtualStackProviderFor } from "./stack/state.mjs";
-import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor } from "./stack/usage.mjs";
-import { applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineWrapperScript, buildUsageWrapperLines, claudeProviderName, isStatusLineChannelPath } from "./statusline.mjs";
-import { STATUSLINE_COLOR_CHOICES, loadStatuslinePreferences, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.mjs";
-import { applyTomlPatchText } from "./toml-utils.mjs";
-import { runTUI } from "./tui.mjs";
-import { buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.mjs";
+import { APP_ADAPTERS } from "./adapters.js";
+import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath } from "./claude-config.js";
+import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.js";
+import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
+import { runPs, stackBillingMemberName } from "./commands/ps.js";
+import { queryProvider, queryProviderById, queryProvidersByApp, queryProvidersStrict } from "./db.js";
+import { detectAndPromptSync } from "./drift.js";
+import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
+import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.js";
+import { applyMergePatch, deepEqualJson, diffSettingsLeaves, jsonDeepMerge, jsonNormalize, mergeCommonOverProvider } from "./json-utils.js";
+import { launchProvider } from "./launch.js";
+import { HOME, NPM_PACKAGE_NAME, VERSION, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
+import { buildLaunchExtraEnv } from "./sessions.js";
+import { applyCodexStatusLineInjection, codexAggregationRoute, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexRuntimeStatePath, isCodexStatusLineChannelPath, mergeCodexRuntimeState, protectCodexAggregationIdentity, readGlobalCodexCatalogText } from "./stack/catalog.js";
+import { aggregationBaseUrlFor, appendVirtualStackRow, buildAggregationGroup, buildCodexStackSettingsFromGlobal, buildStackSettingsFromGlobal, buildStackUsageConfig, cleanupLegacyStackRows, codexStackDormantSettings, isAggregationProviderSettings, isCodexAggModelPath, isCodexAggregationProviderSettings, isLoopbackBaseUrl, probeTcpReachable, protectAggregationIdentityEnv, providerIsAggregation, readGlobalModelPicker, readStackState, virtualStackProviderFor } from "./stack/state.js";
+import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor } from "./stack/usage.js";
+import { applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineWrapperScript, buildUsageWrapperLines, claudeProviderName, isStatusLineChannelPath } from "./statusline.js";
+import { STATUSLINE_COLOR_CHOICES, loadStatuslinePreferences, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
+import { applyTomlPatchText } from "./toml-utils.js";
+import { runTUI } from "./tui.js";
+import { buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.js";
 
 // ─── Main entry ────────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ function isVoltaManagedInstall() {
 // The update confirmation reads this — not what npm claimed — so a silent
 // partial install can't pass as a success.
 function readInstalledVersion() {
-  let pkgJsonPath = null;
+  let pkgJsonPath: string | null = null;
   if (isVoltaManagedInstall()) {
     pkgJsonPath = join(HOME, ".volta", "tools", "image", "packages", NPM_PACKAGE_NAME,
       "lib", "node_modules", NPM_PACKAGE_NAME, "package.json");
@@ -57,7 +57,7 @@ function readInstalledVersion() {
     } catch {}
   }
   try {
-    const v = JSON.parse(readFileSync(pkgJsonPath, "utf8")).version;
+    const v = JSON.parse(readFileSync(pkgJsonPath!, "utf8")).version;
     if (typeof v === "string" && v) return v;
   } catch {}
   return null;
@@ -108,7 +108,7 @@ async function runUpdate() {
 
   try {
     execSync(`npm install -g ${NPM_PACKAGE_NAME}@latest`, { stdio: "inherit" });
-  } catch (e) {
+  } catch (e: any) {
     const msg = String(e?.stderr || e?.message || "");
     if (/EACCES|EPERM|EISDIR/.test(msg)) {
       console.error(`✗ Permission denied. Try: sudo npm install -g ${NPM_PACKAGE_NAME}@latest`);
@@ -129,7 +129,7 @@ async function main() {
   // before any other parsing since the remainder of argv is forwarded
   // verbatim to the launched CLI (e.g. `claude --continue`) — a flag parsed
   // anywhere but the front could be mistaken for a CLI argument.
-  let syncFlag = null;
+  let syncFlag: string | null = null;
   while (args.length && (args[0] === "--sync" || args[0] === "--no-sync")) {
     syncFlag = args.shift() === "--sync" ? "on" : "off";
   }
@@ -137,7 +137,7 @@ async function main() {
   if (args.length === 0) {
     try {
       await runTUI();
-    } catch (e) {
+    } catch (e: any) {
       if (e.message !== "Cancelled") console.error(`✗ ${e.message}`);
       process.exit(1);
     }
