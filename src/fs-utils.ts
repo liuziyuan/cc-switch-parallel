@@ -1,8 +1,9 @@
 // ─── fs-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { mkdirSync, existsSync, symlinkSync, readlinkSync, lstatSync, readdirSync, unlinkSync, renameSync, rmSync, openSync, writeSync, fsyncSync, closeSync, chmodSync } from "node:fs";
+import { mkdirSync, existsSync, symlinkSync, readlinkSync, lstatSync, readdirSync, unlinkSync, renameSync, rmSync, openSync, writeSync, fsyncSync, closeSync, chmodSync, readFileSync, linkSync, copyFileSync, cpSync, rmdirSync, utimesSync, constants as fsConstants } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, extname } from "node:path";
+import { withFileLockSync } from "./file-lock.js";
 import { HOME, INSTANCES_DIR } from "./paths.js";
 
 // ─── Instance dir initialization ──────────────────────────────────────
@@ -60,6 +61,11 @@ function readdirSyncSafe(path) {
 const CLAUDE_SHARED_PATHS = [
   ".credentials.json",
   "projects",
+  // plans are device-level, like native Claude Code (~/.claude/plans): the
+  // provider used to launch a session must not decide which plans are visible.
+  // Unlike the others this one needs a one-time merge before it can be linked
+  // — see setupClaudePlans.
+  "plans",
   "plugins",
   "skills",
   "commands",
@@ -79,6 +85,173 @@ function ensurePrivateDir(dir) {
   try { chmodSync(dir, 0o700); } catch {}
 }
 
+// ─── plans: one-time merge into the global directory ──────────────────
+// Claude Code writes plans to $CLAUDE_CONFIG_DIR/plans. Before this path was
+// shared, each provider instance accumulated its own copy, splitting one
+// project's plans by the provider used to launch it. On setup we merge the
+// instance's plans into the global dir and replace it with a symlink. Only the
+// instance being set up is migrated (no full scan); other instances converge
+// the next time they are launched or refreshed.
+
+function isCrossDeviceError(code: string | undefined): boolean {
+  return code === "EXDEV" || code === "EPERM" || code === "ENOTSUP"
+    || code === "EOPNOTSUPP" || code === "ENOSYS" || code === "EMLINK";
+}
+
+function filesAreIdentical(a: string, b: string): boolean {
+  try {
+    const sa = lstatSync(a);
+    const sb = lstatSync(b);
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
+    return readFileSync(a).equals(readFileSync(b));
+  } catch {
+    return false;
+  }
+}
+
+// link+unlink moves without copying and never clobbers: linkSync is atomic and
+// fails with EEXIST when the target exists. Filesystems without hard links (or
+// across devices) fall back to COPYFILE_EXCL, which is equally no-clobber.
+function moveFileNoClobber(src: string, dst: string): "moved" | "exists" {
+  try {
+    linkSync(src, dst);
+  } catch (e: any) {
+    if (e?.code === "EEXIST") return "exists";
+    if (!isCrossDeviceError(e?.code)) throw e;
+    try {
+      copyFileSync(src, dst, fsConstants.COPYFILE_EXCL);
+      try {
+        const st = lstatSync(src);
+        utimesSync(dst, st.atime, st.mtime);
+      } catch {}
+    } catch (e2: any) {
+      if (e2?.code === "EEXIST") return "exists";
+      try { unlinkSync(dst); } catch {} // never leave a half-written plan
+      throw e2;
+    }
+  }
+  unlinkSync(src);
+  return "moved";
+}
+
+function plansConflictName(name: string, providerId: string, n: number): string {
+  const safeId = providerId.replace(/[^A-Za-z0-9._-]/g, "_");
+  const ext = extname(name);
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  return `${stem}.${safeId}${n > 1 ? `-${n}` : ""}${ext}`;
+}
+
+function moveFileWithConflicts(src: string, dst: string, providerId: string): void {
+  if (moveFileNoClobber(src, dst) === "moved") return;
+  if (filesAreIdentical(src, dst)) {
+    unlinkSync(src); // same plan already global — drop the duplicate
+    return;
+  }
+  for (let n = 1; n <= 100; n++) {
+    const alt = join(dirname(dst), plansConflictName(basename(dst), providerId, n));
+    if (moveFileNoClobber(src, alt) === "moved") return;
+    if (filesAreIdentical(src, alt)) {
+      unlinkSync(src);
+      return;
+    }
+  }
+  throw new Error("too many plan name conflicts");
+}
+
+function moveDirNoClobber(src: string, dst: string): void {
+  if (existsSync(dst)) {
+    const e: any = new Error(`${dst} already exists`);
+    e.code = "EEXIST";
+    throw e;
+  }
+  try {
+    renameSync(src, dst);
+  } catch (e: any) {
+    if (!isCrossDeviceError(e?.code)) throw e;
+    cpSync(src, dst, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true });
+    rmSync(src, { recursive: true, force: true });
+  }
+}
+
+function movePlanEntry(src: string, dst: string, providerId: string): void {
+  const st = lstatSyncSafe(src);
+  if (!st) return; // vanished underneath us
+  if (st.isSymbolicLink()) {
+    // Never follow or move a link: it may point anywhere. Report failure so the
+    // instance keeps its real plans dir instead of losing the link.
+    throw new Error("symbolic link inside plans is not migrated");
+  }
+  if (st.isDirectory()) {
+    if (!existsSync(dst)) {
+      moveDirNoClobber(src, dst);
+      return;
+    }
+    // Same-named directory already global: move this one aside rather than
+    // merging its contents, so nothing is overwritten.
+    for (let n = 1; n <= 100; n++) {
+      const alt = join(dirname(dst), plansConflictName(basename(dst), providerId, n));
+      if (!existsSync(alt)) {
+        moveDirNoClobber(src, alt);
+        return;
+      }
+    }
+    throw new Error("too many plan name conflicts");
+  }
+  moveFileWithConflicts(src, dst, providerId);
+}
+
+function migratePlans(instancePlansDir: string, globalPlansDir: string, providerId: string): { ok: boolean; failed: number } {
+  const st = lstatSyncSafe(instancePlansDir);
+  if (!st || st.isSymbolicLink() || !st.isDirectory()) return { ok: true, failed: 0 };
+
+  let entries: string[];
+  try {
+    entries = readdirSync(instancePlansDir);
+  } catch (e: any) {
+    console.error(`⚠ Cannot read ${instancePlansDir}: ${e.message} — plans stay local for this launch.`);
+    return { ok: false, failed: 1 };
+  }
+  if (entries.length === 0) return { ok: true, failed: 0 }; // ensureSymlink removes the empty dir
+
+  let failed = 0;
+  for (const name of entries) {
+    try {
+      movePlanEntry(join(instancePlansDir, name), join(globalPlansDir, name), providerId);
+    } catch (e: any) {
+      failed++;
+      console.error(`⚠ Failed to merge plan "${name}": ${e.message} — it stays in ${instancePlansDir}.`);
+    }
+  }
+  if (failed === 0) {
+    try { rmdirSync(instancePlansDir); } catch {}
+  }
+  return { ok: failed === 0, failed };
+}
+
+function setupClaudePlans(instanceDir: string, globalPlansDir: string, providerId: string): void {
+  // The lock covers migration AND ensureSymlink: without it, two concurrent
+  // launches of the same instance could have one process readdir() through the
+  // other's fresh symlink, treat global files as sources, and unlink them.
+  withFileLockSync(join(dirname(globalPlansDir), ".plans-migration"), () => {
+    try {
+      // Default mode (native ~/.claude/plans is 0755 / umask); an existing dir
+      // keeps its permissions.
+      mkdirSync(globalPlansDir, { recursive: true });
+    } catch (e: any) {
+      console.error(`⚠ Failed to create ${globalPlansDir}: ${e.message} — plans stay local for this launch.`);
+      return;
+    }
+    const migrated = migratePlans(join(instanceDir, "plans"), globalPlansDir, providerId);
+    if (!migrated.ok) {
+      // Do NOT call ensureSymlink on a partially migrated dir: readdirSyncSafe
+      // returning null would make ensureSymlink treat it as empty and delete it.
+      console.error(`⚠ Plans migration incomplete (${migrated.failed} left) — plans stay local for this launch.`);
+      return;
+    }
+    ensureSymlink(globalPlansDir, join(instanceDir, "plans"));
+  });
+}
+
 function setupClaudeInstance(providerId) {
   const instanceDir = join(INSTANCES_DIR, "claude", providerId);
   ensurePrivateDir(instanceDir);
@@ -96,6 +269,13 @@ function setupClaudeInstance(providerId) {
 
   for (const name of CLAUDE_SHARED_PATHS) {
     const globalPath = join(globalClaudeDir, name);
+    if (name === "plans") {
+      // Must run even when the global dir does not exist yet: it creates the
+      // dir and migrates, otherwise the existsSync guard below would skip the
+      // link and plans would land in the instance dir again.
+      setupClaudePlans(instanceDir, globalPath, providerId);
+      continue;
+    }
     if (existsSync(globalPath)) {
       ensureSymlink(globalPath, join(instanceDir, name));
     }
