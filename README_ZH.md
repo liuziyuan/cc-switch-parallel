@@ -114,6 +114,24 @@ Codex CLI 的状态栏是**原生内置字段选择式**（`config.toml` 的 `[t
 
 **TUI 内没有，tmux 状态栏上有**：若你在 tmux 里使用 [tmuxclihook](https://github.com/liuziyuan/tmux-claude-hooks-status)（≥ 0.4.0），`switch` 启动每个 CLI 会话时都会注入 `CC_SWITCH_PROVIDER` / `CC_SWITCH_PROVIDER_ID` 环境变量，CLI 的 hooks 进程会继承它们；tmuxclihook 捕获后在状态栏聚合行里渲染彩色 `[provider]` 段——claude 与 codex 都显示，同一 pane 换非 switch 启动的 CLI 时自动清除。标签颜色与 claude wrapper 同源（`statusline-preferences.json`，provider 界面按 `o` 设置），改色后状态栏下一次刷新即生效，无需重启会话。
 
+## 聚合模式（cc-switch 4.0）
+
+cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代理（默认 `127.0.0.1:15721`），把多家供应商的模型以 `ccs-claude-<key>--<model>` id 发布进 Claude Code 的 `/model` 列表，客户端内即可无感切换。`switch` 不进入/退出该模式（那是桌面端的动作），而是把它**当作并行中的一员来消费**——tmux 里 `[Z.AI GLM] [DeepSeek] [聚合]` 三类实例并存互不影响。
+
+**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组——首次会**自动创建**一个 env 指向本地代理的 provider（名 `Stack`，纯新增行，不动其他数据）；没有现成行且聚合未激活时则不显示。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致。
+
+聚合实例的 statusline 有两点跟随模型切换：
+
+- **计费段**：wrapper 在运行时从模型 id 解出 `ccs-claude-<key>--` 前缀，按 key 用**该成员自己的凭据直连其真实 origin** 查询计费（zhipu 5h/周窗口、DeepSeek 余额）——计费流量不经聚合代理，代理也不参与。无前缀的模型 id 走默认供应商；key 未登记时并列显示所有可识别成员的用量段。
+- **provider 标签**：TUI 内标签动态跟随当前计费供应商（`[DeepSeek]` / `[Z.AI GLM]`）；tmux 状态栏标签仍显示启动时的 provider 名（`Stack`）——两者语义不同：tmux 标识「此 pane 是聚合实例」，TUI 标签标识「当前计费供应商」。
+
+**限制与注意**：
+
+- 聚合代理随 cc-switch 桌面进程生灭——桌面端退出后聚合实例会指向已死的代理地址（上游退出时只恢复全局配置，不会碰 `switch` 的实例文件），重开桌面端即恢复。
+- `/model` 的聚合列表来自桌面端写进全局 `~/.claude/settings.json` 的 `modelPicker` 键；`switch` 在每次启动聚合实例时从全局同步它，所以桌面端改聚合名单后**重进实例**即可见（运行中的会话不自动跟）。
+- 桌面端关闭聚合后，Stack provider 行仍在（TUI 显示「未激活」），实例照常启动但代理不在——请回到普通 provider 实例。
+- Codex 侧暂不支持（其模型目录机制需彻底重启，玩法受限）。
+
 ## 工作原理
 
 1. 从 `~/.cc-switch/cc-switch.db`（SQLite，由 cc-switch 管理）读取 provider 配置

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 
 // Fixture home MUST be set before the dynamic import: HOME-derived constants
@@ -22,6 +22,11 @@ const {
   resolveUsageIdentity,
   usageEndpointFor,
   buildUsageQueryConfig,
+  isLoopbackBaseUrl,
+  isAggregationProviderSettings,
+  readStackState,
+  readGlobalModelPicker,
+  buildStackUsageConfig,
   USAGE_CACHE_FILENAME,
 } = __test;
 
@@ -621,3 +626,244 @@ test("e2e: separator detection — | relay mirrors |, standalone falls back to �
   const first2 = stripAnsi(r2.stdout.split("\n")[0]);
   assert.ok(first2.includes("40% · W"), first2);
 });
+
+// ─── aggregation (cc-switch 4.0 Stack) ────────────────────────────────
+
+const STACK_PROVIDER_ID = "stack-provider-id";
+const STACK_SETTINGS = {
+  env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" },
+};
+const LIVE_STATE_PATH_T = join(CC, "live-state.json");
+const PICKER_FIXTURE = {
+  replaceBuiltInOptions: true,
+  options: [{ model: "ccs-claude-zhipu--glm-5.3[1M]", label: "glm-5.3（Z.AI GLM）", description: "glm-5.3 · 1M" }],
+};
+
+function writeLiveState(stack, proxyRoute) {
+  mkdirSync(CC, { recursive: true });
+  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({
+    version: 1,
+    apps: { claude: { mode: "proxy", ...(proxyRoute ? { proxy_route: proxyRoute } : {}), stack } },
+  }));
+}
+function removeLiveState() {
+  rmSync(LIVE_STATE_PATH_T, { force: true });
+}
+function stackInstanceFile(name) {
+  return join(INSTANCES, STACK_PROVIDER_ID, name);
+}
+function cleanStackInstance() {
+  rmSync(join(INSTANCES, STACK_PROVIDER_ID), { recursive: true, force: true });
+}
+
+test("aggregation unit: loopback detection", () => {
+  assert.equal(isLoopbackBaseUrl("http://127.0.0.1:15721"), true);
+  assert.equal(isLoopbackBaseUrl("http://localhost:15721"), true);
+  assert.equal(isLoopbackBaseUrl("http://[::1]:15721"), true);
+  assert.equal(isLoopbackBaseUrl("https://api.z.ai/api/anthropic"), false);
+  assert.equal(isLoopbackBaseUrl(""), false);
+  assert.equal(isLoopbackBaseUrl("not a url"), false);
+  assert.equal(isAggregationProviderSettings(STACK_SETTINGS), true);
+  assert.equal(isAggregationProviderSettings(ZHIPU_SETTINGS), false);
+});
+
+test("aggregation unit: readStackState is fail-open", () => {
+  removeLiveState();
+  assert.equal(readStackState("claude"), null); // missing file
+  writeFileSync(LIVE_STATE_PATH_T, "{corrupt");
+  assert.equal(readStackState("claude"), null); // corrupt JSON
+  writeLiveState({ enabled: false, members: ["x"], keys: { k: "x" } });
+  assert.equal(readStackState("claude"), null); // disabled
+  writeLiveState({ enabled: true, members: [], keys: {} });
+  assert.equal(readStackState("claude"), null); // empty roster
+  writeLiveState({ enabled: true, members: ["m1", "m2", "orphan"], keys: { zhipu: "m1", deepseek: "m2" } }, "m1");
+  const st = readStackState("claude");
+  assert.deepEqual(st.keys, { zhipu: "m1", deepseek: "m2" });
+  assert.deepEqual(st.members, ["m1", "m2"]); // orphan (not in keys) filtered
+  assert.equal(st.proxyRoute, "m1");
+  removeLiveState();
+});
+
+test("aggregation unit: readGlobalModelPicker needs a non-empty options array", () => {
+  writeGlobalSettings(undefined);
+  assert.equal(readGlobalModelPicker(), null);
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: { replaceBuiltInOptions: true, options: [] } }));
+  assert.equal(readGlobalModelPicker(), null);
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: PICKER_FIXTURE }));
+  assert.deepEqual(readGlobalModelPicker(), PICKER_FIXTURE);
+});
+
+test("aggregation: modelPicker syncs into effective settings only while stack is live", () => {
+  cleanStackInstance();
+  removeLiveState();
+  writeGlobalSettings(undefined);
+  // stack off → the provider row's own snapshot survives untouched
+  const snap = buildClaudeEffectiveSettings({ ...STACK_SETTINGS, modelPicker: "snapshot" }, {}, "{}", "Stack", STACK_PROVIDER_ID);
+  assert.equal(snap.modelPicker, "snapshot");
+  // stack on + global picker → synced (fresh contract from the desktop app)
+  writeFileSync(GLOBAL_SETTINGS, JSON.stringify({ modelPicker: PICKER_FIXTURE }));
+  writeLiveState({ enabled: true, members: ["m1"], keys: { zhipu: "m1" } }, "m1");
+  const live = buildClaudeEffectiveSettings({ ...STACK_SETTINGS, modelPicker: "snapshot" }, {}, "{}", "Stack", STACK_PROVIDER_ID);
+  assert.deepEqual(live.modelPicker, PICKER_FIXTURE);
+  removeLiveState();
+  cleanStackInstance();
+});
+
+// Real sqlite DB (same CLI the tool uses — sync-codex.test.mjs pattern) with
+// the live member rows, so buildStackUsageConfig resolves each member with
+// its OWN credentials the same way a direct provider would.
+function sql(statement) {
+  return execFileSync("sqlite3", [join(CC, "cc-switch.db"), ".timeout 3000", statement], { encoding: "utf8" });
+}
+
+function setupStackDB(members) {
+  mkdirSync(CC, { recursive: true });
+  sql(`CREATE TABLE IF NOT EXISTS providers (
+    id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL,
+    settings_config TEXT NOT NULL, website_url TEXT, category TEXT,
+    created_at INTEGER, sort_index INTEGER, notes TEXT, icon TEXT, icon_color TEXT,
+    meta TEXT NOT NULL DEFAULT '{}', is_current BOOLEAN NOT NULL DEFAULT 0,
+    in_failover_queue BOOLEAN NOT NULL DEFAULT 0, provider_type TEXT,
+    PRIMARY KEY (id, app_type));`);
+  for (const [id, name, env, meta] of members) {
+    sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, meta)
+      VALUES ('${id}', 'claude', '${name}',
+      '${JSON.stringify({ env }).replace(/'/g, "''")}',
+      '${JSON.stringify(meta).replace(/'/g, "''")}');`);
+  }
+}
+
+test("aggregation: buildStackUsageConfig resolves members with own creds; unresolvable members drop out", () => {
+  cleanStackInstance();
+  setupStackDB([
+    ["m-zai", "Z.AI GLM", { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "zai-tok" }, ZHIPU_META],
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+    ["m-nz", "P&G Nezha", { ANTHROPIC_BASE_URL: "https://agent-gateway.example.com/x", ANTHROPIC_AUTH_TOKEN: "nz" }, {}],
+  ]);
+  writeLiveState(
+    { enabled: true, members: ["m-ds", "m-zai", "m-nz"], keys: { deepseek: "m-ds", zhipu: "m-zai", nezha: "m-nz" } },
+    "m-zai",
+  );
+  const stack = readStackState("claude");
+  const cfg = buildStackUsageConfig(stack, join(INSTANCES, STACK_PROVIDER_ID), stackInstanceFile("statusline-wrapper.mjs"));
+  assert.deepEqual(Object.keys(cfg.map).sort(), ["deepseek", "zhipu"]); // nezha unresolvable → absent
+  assert.equal(cfg.map.zhipu.url, "https://api.z.ai/api/monitor/usage/quota/limit");
+  assert.equal(cfg.map.zhipu.token, "zai-tok");
+  assert.equal(cfg.map.deepseek.url, "https://api.deepseek.com/user/balance");
+  assert.equal(cfg.map.deepseek.token, "ds-tok");
+  assert.equal(cfg.map.zhipu.cachePath.endsWith("usage-stack-zhipu.json"), true); // per-key cache buckets
+  assert.equal(cfg.defaultKey, "zhipu"); // proxy_route member
+  assert.deepEqual(cfg.names, { zhipu: "Z.AI GLM", deepseek: "DeepSeek" });
+  removeLiveState();
+});
+
+test("aggregation: wrapper source — stack tail inlines map, decode and makeTag; no stack keeps legacy bytes", () => {
+  const usageConfig = buildUsageQueryConfig(resolveUsageIdentity(ZHIPU_SETTINGS, ZHIPU_META), instanceFile(), instanceFile("statusline-wrapper.mjs"));
+  const legacy = buildStatusLineWrapperScript("P", "/g/settings.json", null, "auto", usageConfig);
+  assert.equal(legacy.includes("makeTag"), false);
+  assert.equal(legacy.includes("ccs-claude-"), false);
+  const stackCfg = { defaultKey: "zhipu", names: { zhipu: "Z.AI GLM" }, map: { zhipu: usageConfig }, selfPath: "/w.mjs" };
+  const src = buildStatusLineWrapperScript("Stack", "/g/settings.json", null, "auto", null, stackCfg);
+  assert.ok(src.includes("makeTag"));
+  assert.ok(src.includes("ccs-claude-"));
+  assert.ok(src.includes("Z.AI GLM"));
+});
+
+const DEEPSEEK_BALANCE_BODY = {
+  is_available: true,
+  balance_infos: [{ total_balance: "12.34", currency: "USD" }],
+};
+
+async function withStackWrapper(t, { modelId, displayName, proxyRoute, liveMembers }) {
+  cleanStackInstance();
+  const { server, port } = await startFixtureServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url.includes("/api/monitor")) res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
+    else if (req.url.includes("/user/balance")) res.end(JSON.stringify(DEEPSEEK_BALANCE_BODY));
+    else res.end("{}");
+  });
+  t.after(() => closeServer(server));
+  setupStackDB([
+    ["m-zai", "Z.AI GLM", { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/api/anthropic`, ANTHROPIC_AUTH_TOKEN: "zai-tok" }, ZHIPU_META],
+    ["m-ds", "DeepSeek", { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/anthropic`, ANTHROPIC_AUTH_TOKEN: "ds-tok" }, DEEPSEEK_META],
+  ]);
+  writeLiveState(
+    { enabled: true, members: liveMembers || ["m-zai", "m-ds"], keys: { zhipu: "m-zai", deepseek: "m-ds" } },
+    proxyRoute,
+  );
+  const stack = readStackState("claude");
+  const stackConfig = buildStackUsageConfig(stack, join(INSTANCES, STACK_PROVIDER_ID), stackInstanceFile("statusline-wrapper.mjs"));
+  const relayDir = join(testHome, "relay-bin");
+  mkdirSync(relayDir, { recursive: true });
+  const relayScript = writeRelayScript(relayDir, "[Opus] │ Context █░░░░░ 12% │ $0.12");
+  writeGlobalSettings({ type: "command", command: `${process.execPath} ${relayScript}` });
+  const wrapperPath = stackInstanceFile("statusline-wrapper.mjs");
+  mkdirSync(join(INSTANCES, STACK_PROVIDER_ID), { recursive: true });
+  writeFileSync(wrapperPath, buildStatusLineWrapperScript("Stack", GLOBAL_SETTINGS, null, "auto", null, stackConfig));
+  const input = JSON.stringify({ model: { id: modelId, display_name: displayName ?? modelId }, workspace: { current_dir: "/tmp" } });
+  return { wrapperPath, input, port };
+}
+
+test("aggregation e2e: deepseek ccs id → balance cell + tag follows member name; cache per key", async (t) => {
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-deepseek--deepseek-flash[1m]",
+    proxyRoute: "m-zai",
+  });
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsiPublic(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("[DeepSeek]"), first); // tag follows the billable member
+  assert.ok(first.includes("[$12.34]"), first); // deepseek balance cell after context
+  assert.ok(first.indexOf("Context") < first.indexOf("[$12.34]"), first);
+  const cache = JSON.parse(readFileSync(stackInstanceFile("usage-stack-deepseek.json"), "utf8"));
+  assert.deepEqual(cache.data, { kind: "deepseek", balance: "12.34", currency: "USD", sym: "$" });
+});
+
+test("aggregation e2e: zhipu ccs id → quota bars + tag follows; [1m] lowercase id decodes", async (t) => {
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-zhipu--glm-5.3-flash[1m]",
+    proxyRoute: "m-zai",
+  });
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsiPublic(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("[Z.AI GLM]"), first);
+  assert.ok(first.includes("5h ██░░░░ 40%"), first);
+  assert.ok(first.includes("W ███░░░ 52%"), first);
+  assert.ok(JSON.parse(readFileSync(stackInstanceFile("usage-stack-zhipu.json"), "utf8")).data.fiveH === 40);
+});
+
+test("aggregation e2e: unregistered ccs key falls to the side-by-side form (all members, cache-only)", async (t) => {
+  // Pre-seed both per-key caches so the side-by-side render has last-known
+  // data without any sync fetch.
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-unknown--whatever",
+    proxyRoute: null, // no default → and the key is unknown anyway
+  });
+  mkdirSync(join(INSTANCES, STACK_PROVIDER_ID), { recursive: true });
+  const now = Date.now();
+  writeFileSync(stackInstanceFile("usage-stack-zhipu.json"), JSON.stringify({ v: 1, ts: now, refreshTs: now, errTs: 0, data: { kind: "zhipu", fiveH: 40, weekly: 52 } }));
+  writeFileSync(stackInstanceFile("usage-stack-deepseek.json"), JSON.stringify({ v: 1, ts: now, refreshTs: now, errTs: 0, data: { kind: "deepseek", balance: "12.34", currency: "USD", sym: "$" } }));
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsiPublic(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("[Stack]"), first); // tag stays on the launch provider
+  assert.ok(first.includes("5h"), first);
+  assert.ok(first.includes("[$12.34]"), first); // both members side by side
+});
+
+test("aggregation e2e: prefix-less model id routes to the default member", async (t) => {
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "glm-5.3-flash", // direct-style id, no ccs prefix
+    proxyRoute: "m-zai",
+  });
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsiPublic(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("[Z.AI GLM]"), first);
+  assert.ok(first.includes("5h ██░░░░ 40%"), first);
+});
+
+function stripAnsiPublic(s) {
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
