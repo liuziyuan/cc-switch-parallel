@@ -129,6 +129,7 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 
 - 聚合代理随 cc-switch 桌面进程生灭——桌面端退出后聚合实例会指向已死的代理地址（上游退出时只恢复全局配置，不会碰 `switch` 的实例文件），重开桌面端即恢复。
 - `/model` 的聚合列表来自桌面端写进全局 `~/.claude/settings.json` 的 `modelPicker` 键；`switch` 在每次启动聚合实例时从全局同步它，所以桌面端改聚合名单后**重进实例**即可见（运行中的会话不自动跟）。
+- 聚合 provider 行只承载路由（loopback 地址、代理凭据、`ccs` 模型别名），不含通用配置内容——`switch` 启动聚合实例时**始终合并通用配置**（hooks、permissions 等，与普通 provider 一致）；路由身份 env（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`）与 `ccs` 模型别名以聚合行为准，通用配置覆盖不了它们。桌面端在该行显式关闭「使用通用配置」仍然生效。
 - 桌面端关闭聚合后，Stack provider 行仍在（TUI 显示「未激活」），实例照常启动但代理不在——请回到普通 provider 实例。
 - Codex 侧暂不支持（其模型目录机制需彻底重启，玩法受限）。
 

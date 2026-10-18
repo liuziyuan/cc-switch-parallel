@@ -992,10 +992,35 @@ function applyKimiForCodingContextDefaults(effective, providerSettings) {
 // between the two derivations makes the overwrite guard misfire.
 function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, providerName, providerId) {
   let effective = jsonDeepClone(settingsConfig);
-  if (providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)) {
+  // Aggregation rows (loopback base URL) always merge the common config: the
+  // row carries only routing env + modelPicker, so the subset fallback in
+  // providerUsesCommonConfig can never see the common content (hooks!) and
+  // the row would launch without every shared setting. Forced merge applies
+  // ONLY where meta carries no explicit choice — an explicit
+  // commonConfigEnabled:false still wins, because the loopback test cannot
+  // tell a desktop-created Stack row from a user's own local gateway row,
+  // and the gateway user's explicit off must keep working. Not gated on
+  // readStackState: the row launches with the stack off too, and a merge
+  // decision that flips with desktop state would break prepare determinism.
+  const isAgg = isAggregationProviderSettings(settingsConfig);
+  const snippetTrimmed = (commonSnippet || "").trim();
+  const useCommon = snippetTrimmed && (
+    (isAgg && meta?.commonConfigEnabled !== false) ||
+    providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)
+  );
+  if (useCommon) {
     try {
-      const source = JSON.parse(commonSnippet.trim());
-      effective = mergeCommonOverProvider(effective, source);
+      const source = JSON.parse(snippetTrimmed);
+      // Object guard: mergeCommonOverProvider full-overwrites on shape
+      // mismatch, so a non-object snippet ("[1]") would replace the whole
+      // effective settings — skip it instead.
+      if (isPlainObject(source)) {
+        effective = mergeCommonOverProvider(effective, source);
+        // The aggregation row IS the routing identity (loopback address +
+        // proxy placeholder token + ccs model aliases); the common config
+        // must never re-point or re-auth it. See protectAggregationIdentityEnv.
+        if (isAgg) protectAggregationIdentityEnv(effective, settingsConfig);
+      }
     } catch (e) {
       console.error(`⚠ Common config merge failed: ${e.message}`);
     }
@@ -1720,6 +1745,47 @@ function isLoopbackBaseUrl(baseUrl) {
 function isAggregationProviderSettings(settingsConfig) {
   const env = isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
   return !!env && isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL);
+}
+
+// Identity keys the aggregation merge must never let the common config win
+// or plant: the row's env IS the routing identity. A common BASE_URL would
+// bypass the proxy; a common AUTH_TOKEN/API_KEY would re-auth it (the Claude
+// CLI ranks AUTH_TOKEN/Bearer above API_KEY/x-api-key, so an unrequested
+// common Bearer hijacks auth even when the row carries API_KEY) — keys the
+// row lacks are deleted outright, not just overwritten.
+const AGGREGATION_IDENTITY_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+];
+
+// The ccs model aliases ensureStackProviderRow copies from the global env
+// (ANTHROPIC_DEFAULT_*_MODEL/_NAME) route default models through the proxy's
+// key map — a common scalar would silently swap them and mis-attribute
+// billing. Row value wins when present; when the row lacks a key the common
+// value is harmless (no delete), unlike the identity keys above.
+const AGGREGATION_MODEL_ALIAS_KEYS = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+];
+
+// Post-merge guard for aggregation rows (called from
+// buildClaudeEffectiveSettings only after mergeCommonOverProvider ran).
+// effective.env can be non-object when a scalar/mismatched common `env`
+// full-overwrote the row's env through the merge fallthrough — rebuild it
+// from the row's env in that case rather than crash on the restore below.
+function protectAggregationIdentityEnv(effective, settingsConfig) {
+  const rowEnv = isPlainObject(settingsConfig?.env) ? settingsConfig.env : {};
+  if (!isPlainObject(effective.env)) effective.env = {};
+  for (const key of AGGREGATION_IDENTITY_ENV_KEYS) {
+    if (rowEnv[key] !== undefined) effective.env[key] = rowEnv[key];
+    else delete effective.env[key];
+  }
+  for (const key of AGGREGATION_MODEL_ALIAS_KEYS) {
+    if (rowEnv[key] !== undefined) effective.env[key] = rowEnv[key];
+  }
 }
 
 // {keys: key→providerId, members: [providerId], proxyRoute} when aggregation
@@ -5475,6 +5541,7 @@ if (!process.env.CC_LAUNCH_SKIP_MAIN) {
 // the bag stays frozen so callers can't reach into the module's internals.
 export const __test = Object.freeze({
   mergeCommonOverProvider,
+  protectAggregationIdentityEnv,
   jsonDeepMerge,
   applyMergePatch,
   jsonNormalize,
