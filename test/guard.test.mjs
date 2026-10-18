@@ -103,6 +103,21 @@ test("guard claude: enabledPlugins edits yield to the plugin channel — silent"
   assert.deepEqual(backupsFor("claude", id), []);
 });
 
+test("guard claude: in-session /model switch yields to the runtime-state filter — silent", () => {
+  const id = "p-model";
+  const dir = join(CC, "instances", "claude", id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({
+    model: "sonnet",
+    env: { A: "1" },
+  }));
+  writeState("claude", id, baselineOf({ model: "opus", env: { A: "1" } }));
+  const row = { id, name: "Model", settings_config: "{}", meta: "{}", category: "custom" };
+  captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
+  assert.equal(stderrBuf.includes("⚠"), false);
+  assert.deepEqual(backupsFor("claude", id), []);
+});
+
 test("guard claude: no baseline + recompute equal — silent (self-healing backfill)", () => {
   const id = "p-backfill";
   const dir = join(CC, "instances", "claude", id);
