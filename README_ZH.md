@@ -178,7 +178,7 @@ Codex 聚合入口与 claude 同架构（同一个虚拟行 `__stack__`、同一
 
 ## 添加新的 CLI
 
-每个 CLI 都是一个小适配器（`bin/cc-launch.mjs` 里的 `APP_ADAPTERS`）。例如要添加 Gemini，只需加一个对象 —— `runTUI`、`launchProvider`、`main` 保持通用：
+每个 CLI 都是一个小适配器（`src/adapters.mjs` 里的 `APP_ADAPTERS`）。例如要添加 Gemini，只需加一个对象 —— `runTUI`、`launchProvider`、`main` 保持通用：
 
 ```js
 const APP_ADAPTERS = {
