@@ -1,9 +1,10 @@
 // ─── history (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
 import { APP_ADAPTERS } from "./adapters.js";
 import { queryProvidersStrict } from "./db.js";
 import { atomicWrite } from "./fs-utils.js";
+import { isPlainObject } from "./json-utils.js";
 import { HISTORY_PATH } from "./paths.js";
 
 // ─── Launch history (top 5 quick-launch + manual pin ordering) ─────────
@@ -22,10 +23,19 @@ const HISTORY_VERSION = 2;
 // identifier). order slots hold these key strings.
 const entryKey = (e) => (e.providerId ? `${e.cli}|${e.providerId}` : `${e.cli}|${e.provider}`);
 
-// Set when a migration attempt fails; frozen for the process lifetime. Every
-// write path checks it — saving the empty in-memory history over the file
-// would silently destroy all counts and pins.
+// Set when the file must not be written back in this process: unreadable /
+// corrupt content, an unknown (future) schema version, or a failed migration.
+// Every write path checks it — saving the empty in-memory history over the
+// file would silently destroy all counts and pins.
 let _historyFrozen = false;
+// Read-only view for frozen loads (future versions may still render).
+let _historyFrozenSnapshot: { entries: HistoryEntry[]; order: (string | null)[] } | null = null;
+
+function frozenView() {
+  const v = _historyFrozenSnapshot ?? { entries: [], order: normalizeOrder(undefined) };
+  // Copy: callers must never mutate the frozen snapshot (top5 re-reads it).
+  return { entries: v.entries.slice(), order: v.order.slice() };
+}
 
 // `order` is a sparse 5-slot array — a pinned entry key keeps its slot, null
 // slots are filled by natural count/lastUsed ranking. Normalized from any
@@ -37,14 +47,42 @@ function normalizeOrder(raw: any): (string | null)[] {
 }
 
 function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
-  if (_historyFrozen) return { entries: [], order: normalizeOrder(undefined) };
-  let data;
+  if (_historyFrozen) return frozenView();
+  let raw: string;
   try {
-    data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
+    raw = readFileSync(HISTORY_PATH, "utf8");
   } catch {
     return { entries: [], order: normalizeOrder(undefined) }; // no file yet — fresh history
   }
-  if (data?.version === HISTORY_VERSION) {
+  let data: any;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = undefined;
+  }
+  if (!isPlainObject(data)) {
+    // Corrupt (or not a history document): preserve the bytes for recovery
+    // and freeze every write. The next recordLaunch would otherwise save the
+    // empty in-memory history over the file and destroy counts/pins forever.
+    _historyFrozen = true;
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
+    try { renameSync(HISTORY_PATH, `${HISTORY_PATH}.corrupt-${stamp}`); } catch {}
+    _historyFrozenSnapshot = { entries: [], order: normalizeOrder(undefined) };
+    return _historyFrozenSnapshot;
+  }
+  const version = data.version;
+  const knownVersion = version === undefined || version === null || version === 1 || version === HISTORY_VERSION;
+  if (!knownVersion) {
+    // A newer/unknown writer owns this file. Never migrate it down or
+    // overwrite it; render the readable part in read-only mode.
+    _historyFrozen = true;
+    _historyFrozenSnapshot = {
+      entries: Array.isArray(data.entries) ? data.entries : [],
+      order: normalizeOrder(data.order),
+    };
+    return _historyFrozenSnapshot;
+  }
+  if (version === HISTORY_VERSION) {
     const entries: HistoryEntry[] = Array.isArray(data?.entries) ? data.entries : [];
     const order = normalizeOrder(data?.order);
     // Heal files written before one-shot flags were stripped at record time:
@@ -70,7 +108,8 @@ function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
     migrated = migrateHistory(data);
   } catch {
     _historyFrozen = true; // DB unavailable — never risk overwriting v1 data
-    return { entries: [], order: normalizeOrder(undefined) };
+    _historyFrozenSnapshot = { entries: [], order: normalizeOrder(undefined) };
+    return _historyFrozenSnapshot;
   }
   try {
     // Narrow the concurrent-migration window: another switch process may have
@@ -81,6 +120,14 @@ function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
     // unreadable now — keep the migrated view in memory only
   }
   return migrated;
+}
+
+// Load for a WRITE path: a frozen history (corrupt / unknown version /
+// failed migration) is read-only, so the caller must not mutate the returned
+// view either (a first call can freeze mid-flight, e.g. corrupt JSON).
+function loadHistoryForWrite() {
+  const view = loadHistory();
+  return _historyFrozen ? null : view;
 }
 
 // One-time v1→v2: resolve entry names to provider ids via the cc-switch DB.
@@ -114,6 +161,11 @@ function migrateHistory(data) {
 // Single write path so the manual order survives entry updates — recordLaunch
 // used to rewrite the file from scratch, which would silently drop pins.
 function saveHistory(entries, order) {
+  // Single choke point for every write path: a frozen file (corrupt /
+  // unknown version / failed migration) must never be replaced by whatever
+  // the current process happened to parse. Some callers load and save in the
+  // same call, so checking only at entry is not enough.
+  if (_historyFrozen) return;
   atomicWrite(HISTORY_PATH, JSON.stringify({ version: HISTORY_VERSION, entries, order }, null, 2));
 }
 
@@ -216,7 +268,9 @@ function healRecordedArgs(entries) {
 function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
   if (_historyFrozen) return;
   try {
-    const { entries, order } = loadHistory();
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return;
+    const { entries, order } = loaded;
     const now = Date.now();
     const stored = stripOneShotFlags(extraArgs);
     const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
@@ -286,7 +340,9 @@ function stripPermissionArgs(args: string[]): string[] {
 function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const { entries, order } = loadHistory();
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return null;
+    const { entries, order } = loaded;
     const target = entries
       .filter((e) => entryKey(e) === pairKey)
       .sort((a, b) => byStrength(a, b, aliveByCli))[0];
@@ -309,7 +365,9 @@ function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
 function unpinPair(key, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const { entries, order } = loadHistory();
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return null;
+    const { entries, order } = loaded;
     const slot = order.indexOf(key);
     if (slot >= 0) {
       order[slot] = null;
@@ -327,7 +385,9 @@ function unpinPair(key, aliveByCli) {
 function removeHistoryPair(key, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const { entries, order } = loadHistory();
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return null;
+    const { entries, order } = loaded;
     const kept = entries.filter((e) => entryKey(e) !== key);
     const slot = order.indexOf(key);
     if (slot >= 0) order[slot] = null;
@@ -346,7 +406,9 @@ function removeHistoryPair(key, aliveByCli) {
 function removeAllDeadPairs(aliveByCli) {
   if (_historyFrozen) return -1;
   try {
-    const { entries, order } = loadHistory();
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return -1;
+    const { entries, order } = loaded;
     const kept = entries.filter((e) => !isDeadEntry(e, aliveByCli));
     if (kept.length === entries.length) return 0;
     saveHistory(kept, order);
@@ -364,7 +426,9 @@ function removeAllDeadPairs(aliveByCli) {
 function insertManualOrder(item, pos, aliveByCli) {
   if (_historyFrozen) return null;
   try {
-    const { entries, order } = loadHistory();
+    const loaded = loadHistoryForWrite();
+    if (!loaded) return null;
+    const { entries, order } = loaded;
     const key = entryKey(item);
     if (!entries.some((e) => entryKey(e) === key)) {
       // Placeholder so a never-launched pair can still be pinned. A real

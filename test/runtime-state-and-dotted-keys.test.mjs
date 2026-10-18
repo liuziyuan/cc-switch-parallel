@@ -177,3 +177,48 @@ test("mergeCodexRuntimeState: no state on disk → input unchanged; corrupt file
 test("codexInstanceDirFor: same derivation as setupCodexInstance", () => {
   assert.equal(codexInstanceDirFor("abc"), join(testHome, ".cc-switch", "instances", "codex", "abc"));
 });
+
+// ─── write-back segments: NEW dotted keys must stay flat ────────────────
+// The display path joins keys with dots, so "profiles.my.profile" is
+// ambiguous when the target document has no shape for it yet (a newly added
+// [profiles."my.profile"]). Re-splitting it nested three tables and
+// corrupted the provider row — same class as the 2026-10-17 incident.
+
+test("splitChangesByTarget: a NEW dotted key stays flat (no nested-table corruption)", () => {
+  const change = {
+    path: "profiles.my.profile",
+    op: "add",
+    from: undefined,
+    to: { model: "x" },
+    segments: ["profiles", "my.profile"],
+  };
+  const out = splitChangesByTarget([change], "p1", {}, {}, {});
+  assert.deepEqual(out.providerPatch, { profiles: { "my.profile": { model: "x" } } });
+});
+
+test("splitChangesByTarget: an existing nested target shape is followed", () => {
+  const target = { profiles: { "my.profile": { model: "old" } } };
+  const change = {
+    path: "profiles.my.profile.model",
+    op: "change",
+    from: "old",
+    to: "new",
+    segments: ["profiles", "my.profile", "model"],
+  };
+  const out = splitChangesByTarget([change], "p1", {}, target, {});
+  assert.deepEqual(out.providerPatch, { profiles: { "my.profile": { model: "new" } } });
+});
+
+test("splitChangesByTarget: a dotted key owned by common goes to commonPatch", () => {
+  const common = { profiles: { "my.profile": { model: "old" } } };
+  const change = {
+    path: "profiles.my.profile.model",
+    op: "change",
+    from: "old",
+    to: "new",
+    segments: ["profiles", "my.profile", "model"],
+  };
+  const out = splitChangesByTarget([change], "p1", common, {}, {});
+  assert.deepEqual(out.commonPatch, { profiles: { "my.profile": { model: "new" } } });
+  assert.deepEqual(out.providerPatch, {});
+});

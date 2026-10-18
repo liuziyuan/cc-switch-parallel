@@ -198,6 +198,14 @@ test("endpoint: origin-derived per kind; garbage baseUrl → null", () => {
   assert.equal(usageEndpointFor("deepseek", "https://api.deepseek.com/anthropic"), "https://api.deepseek.com/user/balance");
   assert.equal(usageEndpointFor("zhipu", "not a url"), null);
   assert.equal(usageEndpointFor("kimi", "https://api.kimi.com/coding"), null);
+  // Plain http is allowed only for loopback (local-proxy case); the token is
+  // sent in clear, so remote http and non-http(s) schemes are refused.
+  assert.equal(usageEndpointFor("zhipu", "http://127.0.0.1:15721"), "http://127.0.0.1:15721/api/monitor/usage/quota/limit");
+  assert.equal(usageEndpointFor("zhipu", "http://localhost:15721/anthropic"), "http://localhost:15721/api/monitor/usage/quota/limit");
+  assert.equal(usageEndpointFor("zhipu", "http://[::1]:15721/anthropic"), "http://[::1]:15721/api/monitor/usage/quota/limit");
+  assert.equal(usageEndpointFor("zhipu", "http://example.com/anthropic"), null);
+  assert.equal(usageEndpointFor("zhipu", "file:///tmp/x"), null);
+  assert.equal(usageEndpointFor("zhipu", "ftp://example.com/x"), null);
 });
 
 // ─── wrapper source: byte-stability and inline shape ──────────────────
@@ -364,6 +372,76 @@ test("e2e zhipu: fresh cache renders with zero requests; expired cache serves st
   const updated = JSON.parse(readFileSync(cachePath, "utf8"));
   assert.ok(updated.ts > 0, "refresh mode updates ts");
   assert.deepEqual(updated.data, { kind: "zhipu", fiveH: 40, weekly: 52 });
+});
+
+test("e2e zhipu: error backoff suppresses repeated sync fetches", async (t) => {
+  let hits = 0;
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    settings: ZHIPU_SETTINGS,
+    meta: ZHIPU_META,
+    relayLine: { head: "Opus │ Context █░░░░░ 12%" },
+    respond: (req, res) => {
+      hits++;
+      res.statusCode = 500;
+      res.end("{}");
+    },
+  });
+  // A failure-only cache (data:null + errTs) used to be discarded by the
+  // cache reader, making backedOff permanently false: every render paid a
+  // fresh 1.5s sync fetch.
+  writeFileSync(instanceFile(), JSON.stringify({
+    v: 1, ts: 0, refreshTs: 0, errTs: Date.now(), data: null,
+  }));
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(hits, 0, "backoff must suppress the sync fetch");
+  assert.ok(!stripAnsi(r.stdout).includes("5h"), "no usage segment without data");
+});
+
+test("e2e zhipu: expired backoff retries once and clears errTs", async (t) => {
+  let hits = 0;
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    settings: ZHIPU_SETTINGS,
+    meta: ZHIPU_META,
+    relayLine: { head: "Opus │ Context █░░░░░ 12%" },
+    respond: (req, res) => {
+      hits++;
+      res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
+    },
+  });
+  writeFileSync(instanceFile(), JSON.stringify({
+    v: 1, ts: 0, refreshTs: 0, errTs: Date.now() - 61_000, data: null,
+  }));
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(hits, 1, "expired backoff allows exactly one retry");
+  const cache = JSON.parse(readFileSync(instanceFile(), "utf8"));
+  assert.equal(cache.errTs, 0, "successful fetch clears the error marker");
+  assert.deepEqual(cache.data, { kind: "zhipu", fiveH: 40, weekly: 52 });
+});
+
+test("e2e zhipu: refresh dedup window suppresses a data-less sync fetch", async (t) => {
+  let hits = 0;
+  const { wrapperPath } = await withWrapperServer(t, {
+    kind: "zhipu",
+    settings: ZHIPU_SETTINGS,
+    meta: ZHIPU_META,
+    relayLine: { head: "Opus │ Context █░░░░░ 12%" },
+    respond: (req, res) => {
+      hits++;
+      res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
+    },
+  });
+  // No data yet, but a background refresh was just spawned: don't pay a
+  // second synchronous fetch while it is still in flight.
+  writeFileSync(instanceFile(), JSON.stringify({
+    v: 1, ts: 0, refreshTs: Date.now(), errTs: 0, data: null,
+  }));
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(hits, 0, "dedup window must suppress the sync fetch");
 });
 
 test("e2e zhipu: detached refresh mode never runs the relay command", async (t) => {
@@ -1522,14 +1600,28 @@ test("aggregation: wrapper source — stack tail inlines map, decode and makeTag
   assert.ok(src.includes("Z.AI GLM"));
 });
 
+test("wrapper source: usage cache temp files are unique per writer", () => {
+  const usageConfig = buildUsageQueryConfig(
+    resolveUsageIdentity(ZHIPU_SETTINGS, ZHIPU_META),
+    instanceFile(),
+    instanceFile("statusline-wrapper.mjs"),
+  );
+  const legacy = buildStatusLineWrapperScript("P", "/g/settings.json", null, "auto", usageConfig);
+  assert.ok(legacy.includes('USAGE.cachePath + ".tmp." + process.pid'));
+  const stackCfg = { defaultKey: "zhipu", names: { zhipu: "Z.AI GLM" }, map: { zhipu: usageConfig }, selfPath: "/w.mjs" };
+  const stacked = buildStatusLineWrapperScript("Stack", "/g/settings.json", null, "auto", null, stackCfg);
+  assert.ok(stacked.includes('cfg.cachePath + ".tmp." + process.pid'));
+});
+
 const DEEPSEEK_BALANCE_BODY = {
   is_available: true,
   balance_infos: [{ total_balance: "12.34", currency: "USD" }],
 };
 
-async function withStackWrapper(t, { modelId, displayName, proxyRoute, liveMembers }) {
+async function withStackWrapper(t, { modelId, displayName, proxyRoute, liveMembers, onRequest }) {
   cleanStackInstance();
   const { server, port } = await startFixtureServer((req, res) => {
+    onRequest?.(req);
     res.setHeader("content-type", "application/json");
     if (req.url.includes("/api/monitor")) res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
     else if (req.url.includes("/user/balance")) res.end(JSON.stringify(DEEPSEEK_BALANCE_BODY));
@@ -1621,6 +1713,58 @@ test("aggregation e2e: prefix-less model id routes to the default member", async
   // attributed form renders bare — no member-key prefix when the model
   // routes to exactly one member
   assert.ok(!first.includes("zhipu "), first);
+});
+
+test("aggregation side-by-side: failed members stay in backoff (no spawn storm)", async (t) => {
+  const urls = [];
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-unknown--whatever",
+    proxyRoute: null,
+    onRequest: (req) => urls.push(req.url),
+  });
+  const now = Date.now();
+  // Both members failed within the backoff window. Their ts stays 0 forever,
+  // which used to keep anyMissing true and fork a refresh on every render.
+  for (const key of ["zhipu", "deepseek"]) {
+    writeFileSync(stackInstanceFile(`usage-stack-${key}.json`), JSON.stringify({
+      v: 1, ts: 0, refreshTs: 0, errTs: now, data: null,
+    }));
+  }
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  await new Promise((resolve) => setTimeout(resolve, 300)); // let a stray spawn fire
+  assert.equal(urls.length, 0, "no refresh while both members are backed off");
+});
+
+test("aggregation refresh: REFRESH_KEYS narrows the refresh to listed members", async (t) => {
+  const urls = [];
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-unknown--whatever",
+    proxyRoute: null,
+    onRequest: (req) => urls.push(req.url),
+  });
+  const staleTs = Date.now() - 10 * 60_000; // older than the 5-minute TTL
+  writeFileSync(stackInstanceFile("usage-stack-zhipu.json"), JSON.stringify({
+    v: 1, ts: staleTs, refreshTs: 0, errTs: 0,
+    data: { kind: "zhipu", fiveH: 40, weekly: 52 },
+  }));
+  writeFileSync(stackInstanceFile("usage-stack-deepseek.json"), JSON.stringify({
+    v: 1, ts: staleTs, refreshTs: 0, errTs: 0,
+    data: { kind: "deepseek", balance: "12.34", currency: "USD", sym: "$" },
+  }));
+  const r = await runWrapper(wrapperPath, input, {
+    CC_LAUNCH_USAGE_REFRESH: "1",
+    CC_LAUNCH_USAGE_REFRESH_KEYS: "zhipu",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(urls.length, 1, "only the listed member is refreshed");
+  assert.ok(urls[0].includes("/api/monitor"), urls[0]);
+  assert.ok(JSON.parse(readFileSync(stackInstanceFile("usage-stack-zhipu.json"), "utf8")).ts > staleTs);
+  assert.equal(
+    JSON.parse(readFileSync(stackInstanceFile("usage-stack-deepseek.json"), "utf8")).ts,
+    staleTs,
+    "unlisted member keeps its old timestamp",
+  );
 });
 
 function stripAnsiPublic(s) {

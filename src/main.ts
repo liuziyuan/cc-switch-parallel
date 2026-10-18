@@ -12,7 +12,7 @@ import { queryProvider, queryProviderById, queryProvidersByApp, queryProvidersSt
 import { detectAndPromptSync } from "./drift.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.js";
-import { applyMergePatch, deepEqualJson, diffSettingsLeaves, jsonDeepMerge, jsonNormalize, mergeCommonOverProvider } from "./json-utils.js";
+import { applyMergePatch, deepEqualJson, diffSettingsLeaves, jsonDeepMerge, jsonNormalize, mergeCommonOverProvider, parseJsonObject } from "./json-utils.js";
 import { launchProvider } from "./launch.js";
 import { HOME, NPM_PACKAGE_NAME, VERSION, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { buildLaunchExtraEnv } from "./sessions.js";
@@ -233,6 +233,7 @@ export const __test = Object.freeze({
   jsonDeepMerge,
   applyMergePatch,
   jsonNormalize,
+  parseJsonObject,
   applyTomlPatchText,
   deepEqualJson,
   isSensitiveConfigKey,

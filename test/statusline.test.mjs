@@ -77,8 +77,10 @@ test("injection: empty config gains a generated statusLine + wrapper", () => {
 
   const wrapperPath = instanceFile("p-basic");
   assert.ok(existsSync(wrapperPath), "wrapper script written into the instance dir");
-  const stat = spawnSync("test", ["-x", wrapperPath]);
-  assert.equal(stat.status, 0, "wrapper is executable");
+  // The statusLine command is `node <wrapper>`, so only read access is
+  // required; the file is written 0600 because it inlines usage tokens.
+  const stat = spawnSync("test", ["-r", wrapperPath]);
+  assert.equal(stat.status, 0, "wrapper is readable by the owner");
   const script = readFileSync(wrapperPath, "utf8");
   assert.match(script, /^#!\/usr\/bin\/env node/m);
   assert.ok(script.includes(JSON.stringify("My Provider").slice(1, -1)), "provider name inlined");

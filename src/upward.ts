@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
 import { atomicWrite } from "./fs-utils.js";
-import { deepEqualJson, isPlainObject } from "./json-utils.js";
+import { deepEqualJson, isPlainObject, isSafeObjectKey } from "./json-utils.js";
 import { DB_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { applyTomlPatchText } from "./toml-utils.js";
 
@@ -26,11 +26,11 @@ import { applyTomlPatchText } from "./toml-utils.js";
 // (backtracking — two sibling keys may both be dotted-prefix candidates).
 // Returns the naive split when nothing fits, so dot-free paths (the
 // overwhelming majority) behave byte-identically to before.
-function resolvePathSegments(obj, path) {
+function resolvePathSegmentsDetailed(obj, path): { parts: string[]; resolved: boolean } {
   const parts = String(path).split(".");
-  function walk(node, i) {
+  function walk(node, i): string[] | null {
     if (!isPlainObject(node)) return null;
-    if (i === parts.length - 1) return parts[i] in node ? [parts[i]] : null;
+    if (i === parts.length - 1) return Object.prototype.hasOwnProperty.call(node, parts[i]) ? [parts[i]] : null;
     const exact = Object.prototype.hasOwnProperty.call(node, parts[i])
       ? walk(node[parts[i]], i + 1) : null;
     if (exact) return [parts[i], ...exact];
@@ -51,7 +51,25 @@ function resolvePathSegments(obj, path) {
     }
     return null;
   }
-  return walk(obj, 0) || parts;
+  const found = walk(obj, 0);
+  return found ? { parts: found, resolved: true } : { parts, resolved: false };
+}
+
+function resolvePathSegments(obj, path) {
+  return resolvePathSegmentsDetailed(obj, path).parts;
+}
+
+// Key sequence to use when BUILDING a patch for `refObj` (the document the
+// patch will be applied to). The diff's segments are the source tree's real
+// keys — authoritative for a NEW path, where the target has no shape yet and
+// re-splitting the dotted display path would nest `profiles."my.profile"`
+// into `profiles.my.profile`. When the target DOES have a shape for the path
+// (it parsed via real keys, not the naive fallback), follow the target's
+// shape so the write-back stays consistent with the document it lands in.
+function resolveWriteSegments(refObj, path, segments) {
+  if (!Array.isArray(segments) || segments.length === 0) return resolvePathSegments(refObj, path);
+  const detailed = resolvePathSegmentsDetailed(refObj, path);
+  return detailed.resolved ? detailed.parts : segments;
 }
 
 function pathExistsInSnippet(snippetObj, path) {
@@ -59,10 +77,10 @@ function pathExistsInSnippet(snippetObj, path) {
   const parts = resolvePathSegments(snippetObj, path);
   let cur = snippetObj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!isPlainObject(cur) || !(parts[i] in cur)) return false;
+    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, parts[i])) return false;
     cur = cur[parts[i]];
   }
-  return isPlainObject(cur) && (parts[parts.length - 1] in cur);
+  return isPlainObject(cur) && Object.prototype.hasOwnProperty.call(cur, parts[parts.length - 1]);
 }
 
 // Sensitive-key gate for the smart split's common direction — 1:1 port of
@@ -89,8 +107,13 @@ function isSensitiveConfigKey(name) {
 // Dotted-path variant for the smart split: every segment of a change path is
 // a map key at some nesting level, and Rust strips sensitive keys at EVERY
 // level — so a hit on any segment routes the change out of common's direction.
-function isSensitiveConfigPath(path) {
-  return String(path || "").split(".").some((seg) => isSensitiveConfigKey(seg));
+function isSensitiveConfigPath(path, segments: string[] | null = null) {
+  // Segments are the real key sequence when the caller has them (a key may
+  // contain dots); the string split is the backward-compatible fallback.
+  const parts = Array.isArray(segments) && segments.length
+    ? segments
+    : String(path || "").split(".");
+  return parts.some((seg) => isSensitiveConfigKey(seg));
 }
 
 // Read the value at a dotted path inside a parsed object (undefined if absent).
@@ -99,7 +122,7 @@ function isSensitiveConfigPath(path) {
 function getPathValue(obj, path) {
   let cur = obj;
   for (const part of resolvePathSegments(obj, path)) {
-    if (!isPlainObject(cur) || !(part in cur)) return undefined;
+    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, part)) return undefined;
     cur = cur[part];
   }
   return cur;
@@ -235,6 +258,7 @@ function applyCodexSettingsFieldPatches(drift) {
 function foldRemovalPatch(patch, target) {
   if (!isPlainObject(patch)) return;
   for (const k of Object.keys(patch)) {
+    if (!isSafeObjectKey(k)) continue;
     const pv = patch[k];
     if (!isPlainObject(pv)) continue; // leaves (values and nulls) stay as-is
     const targetChild = isPlainObject(target) ? target[k] : undefined;
@@ -245,7 +269,7 @@ function foldRemovalPatch(patch, target) {
       pvKeys.every((key) => pv[key] === null) &&
       isPlainObject(targetChild) &&
       Object.keys(targetChild).length === pvKeys.length &&
-      pvKeys.every((key) => key in targetChild)
+      pvKeys.every((key) => isSafeObjectKey(key) && Object.prototype.hasOwnProperty.call(targetChild, key))
     ) {
       patch[k] = null;
     }
@@ -277,19 +301,19 @@ function splitChangesByTarget(changes: any[], providerId: string, commonObj: any
   const rejected: any[] = [];
   for (const ch of changes) {
     if (pathExistsInSnippet(commonObj, ch.path)) {
-      if (ch.op !== "remove" && isSensitiveConfigPath(ch.path)) {
+      if (ch.op !== "remove" && isSensitiveConfigPath(ch.path, ch.segments)) {
         rejected.push(ch);
         continue;
       }
       if (!deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)) {
-        buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to, commonObj);
+        buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to, commonObj, ch.segments);
       }
     } else if (opts.virtualProvider) {
       rejected.push(ch);
     } else {
       const cur = getPathValue(providerSettings, ch.path);
       if (!deepEqualJson(cur, ch.op === "remove" ? undefined : ch.to)) {
-        buildNestedAssign(providerPatch, ch.path, ch.op === "remove" ? null : ch.to, providerSettings);
+        buildNestedAssign(providerPatch, ch.path, ch.op === "remove" ? null : ch.to, providerSettings, ch.segments);
       }
     }
   }
@@ -309,8 +333,11 @@ function splitChangesByTarget(changes: any[], providerId: string, commonObj: any
 // diffed against) anchors tree-aware segment resolution: without it a key
 // containing dots would be re-nested into levels that don't exist in the
 // target document, corrupting it on write-back.
-function buildNestedAssign(patch, path, value, refObj) {
-  const parts = resolvePathSegments(refObj, path);
+function buildNestedAssign(patch, path, value, refObj, segments: string[] | null = null) {
+  const parts = resolveWriteSegments(refObj, path, segments);
+  // Never build a patch through prototype keys: assigning them mutates the
+  // prototype instead of creating a config entry.
+  if (!parts.every((p) => isSafeObjectKey(p))) return;
   let cur = patch;
   for (let i = 0; i < parts.length - 1; i++) {
     if (!isPlainObject(cur[parts[i]])) cur[parts[i]] = {};

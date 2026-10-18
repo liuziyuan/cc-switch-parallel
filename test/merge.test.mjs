@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 const { __test } = await import("../bin/cc-launch.mjs");
-const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson, foldRemovalPatch, diffSettingsLeaves } = __test;
+const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson, foldRemovalPatch, diffSettingsLeaves, parseJsonObject, buildClaudeEffectiveSettings } = __test;
 
 // mergeCommonOverProvider must reproduce the upstream Rust json_deep_merge
 // (services/provider/live.rs@69ff69d^): objects recurse per source key;
@@ -105,7 +105,7 @@ test("diffSettingsLeaves: deleting one key of a subtree stays a leaf remove", ()
   const baseline = { env: { TOKEN: "t", KEEP_ME: "v" } };
   const current = { env: { KEEP_ME: "v" } };
   assert.deepEqual(diffSettingsLeaves(baseline, current), [
-    { path: "env.TOKEN", op: "remove", from: "t", to: undefined },
+    { path: "env.TOKEN", op: "remove", from: "t", to: undefined, segments: ["env", "TOKEN"] },
   ]);
 });
 
@@ -113,9 +113,35 @@ test("diffSettingsLeaves: mixed add/remove inside one subtree stays per-leaf", (
   const baseline = { env: { A: 1 } };
   const current = { env: { B: 2 } };
   assert.deepEqual(diffSettingsLeaves(baseline, current), [
-    { path: "env.A", op: "remove", from: 1, to: undefined },
-    { path: "env.B", op: "add", from: undefined, to: 2 },
+    { path: "env.A", op: "remove", from: 1, to: undefined, segments: ["env", "A"] },
+    { path: "env.B", op: "add", from: undefined, to: 2, segments: ["env", "B"] },
   ]);
+});
+
+// ─── malformed DB values: degrade, never write a corrupt instance ──────
+// A settings_config column that parses to null/[]/a scalar used to flow
+// through prepare into settings.json ("null", "[]", a quoted JSON string).
+
+test("parseJsonObject: empty is legitimately {}, malformed/non-object is null", () => {
+  assert.deepEqual(parseJsonObject(undefined), {});
+  assert.deepEqual(parseJsonObject(null), {});
+  assert.deepEqual(parseJsonObject(""), {});
+  assert.deepEqual(parseJsonObject("   "), {});
+  assert.deepEqual(parseJsonObject("{}"), {});
+  assert.deepEqual(parseJsonObject('{"a":1}'), { a: 1 });
+  assert.equal(parseJsonObject("null"), null);
+  assert.equal(parseJsonObject("[]"), null);
+  assert.equal(parseJsonObject("123"), null);
+  assert.equal(parseJsonObject('"{}"'), null); // a JSON string, not an object
+  assert.equal(parseJsonObject("{bad"), null);
+  assert.equal(parseJsonObject([1, 2]), null);
+});
+
+test("buildClaudeEffectiveSettings: non-object settings_config degrades to {}", () => {
+  for (const bad of [null, [], 123, "{}", undefined]) {
+    const eff = buildClaudeEffectiveSettings(bad, {}, "", undefined, undefined);
+    assert.equal(eff !== null && typeof eff === "object" && !Array.isArray(eff), true, String(bad));
+  }
 });
 
 // ─── foldRemovalPatch: husk prevention, target-aware ───────────────────

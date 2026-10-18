@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { providerUsesCommonConfig } from "../claude-config.js";
 import { atomicWrite } from "../fs-utils.js";
-import { isPlainObject, jsonDeepClone, jsonDeepMerge } from "../json-utils.js";
+import { isPlainObject, jsonDeepClone, mergeCommonOverProvider } from "../json-utils.js";
 import { HOME, INSTANCES_DIR, RESOURCES_DIR } from "../paths.js";
 import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
 import { parseToml, stringifyToml } from "../toml.js";
@@ -37,6 +37,7 @@ const CONFIRMED_TEXT_ONLY_TAILS = [
 ];
 
 function normalizeModelId(value) {
+  if (typeof value !== "string") return "";
   let n = value.trim().replace(/^models\//, "").trim().toLowerCase();
   if (n.endsWith(ONE_M_CONTEXT_MARKER)) {
     n = n.slice(0, -ONE_M_CONTEXT_MARKER.length).trim();
@@ -46,13 +47,19 @@ function normalizeModelId(value) {
 
 function isConfirmedTextOnlyModel(model) {
   const normalized = normalizeModelId(model);
-  const tail = normalized.split("/").pop();
+  const tail = normalized.split("/").pop() || "";
   return CONFIRMED_TEXT_ONLY_TAILS.includes(tail);
 }
 
 function imageInputCapabilityFromModalities(model, modalities) {
-  const declared = modalities
-    ? modalities.some((m) => m.trim().toLowerCase() === "image")
+  // The catalog is user/DB data: a non-array or non-string entries used to
+  // throw on .some/.trim and abort prepare. Ignore unusable shapes; an array
+  // with no string entries is "not declared", not "text only".
+  const values = Array.isArray(modalities)
+    ? modalities.filter((m) => typeof m === "string")
+    : [];
+  const declared = values.length
+    ? values.some((m) => m.trim().toLowerCase() === "image")
     : undefined;
   if (declared === true) return "Supported";
   if (declared === false) return "Unsupported";
@@ -80,18 +87,30 @@ function codexCatalogModelSpecs(settingsConfig) {
   if (!Array.isArray(models)) return [];
   const seen = new Set();
   const specs: any[] = [];
+  let skipped = 0;
   for (const mc of models) {
-    const model = mc.model?.trim();
-    if (!model || seen.has(model)) continue;
+    // Catalog entries come from the DB/desktop app and are not trusted:
+    // a non-object entry or a non-string model used to throw on .model/.trim
+    // and abort prepare (i.e. the launch).
+    if (!isPlainObject(mc) || typeof mc.model !== "string") { skipped++; continue; }
+    const model = mc.model.trim();
+    if (!model) { skipped++; continue; }
+    if (seen.has(model)) continue;
     seen.add(model);
+    const str = (v) => (typeof v === "string" ? v.trim() : "");
+    const displayName = [mc.displayName, mc.display_name].map(str).find(Boolean);
+    const baseInstructions = [mc.baseInstructions, mc.base_instructions].map(str).find(Boolean);
     specs.push({
       model,
-      displayName: [mc.displayName, mc.display_name].find((v) => v?.trim())?.trim() || undefined,
+      displayName: displayName || undefined,
       contextWindow: parsePositiveU64([mc.contextWindow, mc.context_window].find((v) => v !== undefined)),
       supportsParallelToolCalls: [mc.supportsParallelToolCalls, mc.supports_parallel_tool_calls].find((v) => v !== undefined),
       inputModalities: [mc.inputModalities, mc.input_modalities].find((v) => v !== undefined),
-      baseInstructions: [mc.baseInstructions, mc.base_instructions].find((v) => v?.trim()),
+      baseInstructions: baseInstructions || undefined,
     });
+  }
+  if (skipped) {
+    console.error(`⚠ Codex model catalog: skipped ${skipped} malformed entr${skipped === 1 ? "y" : "ies"} (model must be a non-empty string).`);
   }
   return specs;
 }
@@ -342,7 +361,16 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
     let changed = false;
     for (const key of ["projects", "hooks"]) {
       if (isPlainObject(current[key])) {
-        generated[key] = jsonDeepMerge(isPlainObject(generated[key]) ? generated[key] : {}, current[key]);
+        // Live values win over the DB echo: the instance file is what the
+        // Codex CLI actually wrote (project trust, hook trust hashes). The
+        // old jsonDeepMerge call was target-wins, so a stale hooks.state /
+        // projects entry echoed in common/DB rolled the live hash back on
+        // every prepare and re-triggered trust prompts. mergeCommonOverProvider
+        // recurses with source(=current) winning and keeps generated-only keys.
+        generated[key] = mergeCommonOverProvider(
+          isPlainObject(generated[key]) ? generated[key] : {},
+          current[key],
+        );
         changed = true;
       }
     }
@@ -354,7 +382,7 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
     }
     if (isPlainObject(curTui.model_availability_nux)) {
       generated.tui = isPlainObject(generated.tui) ? generated.tui : {};
-      generated.tui.model_availability_nux = jsonDeepMerge(
+      generated.tui.model_availability_nux = mergeCommonOverProvider(
         isPlainObject(generated.tui.model_availability_nux) ? generated.tui.model_availability_nux : {},
         curTui.model_availability_nux,
       );
@@ -480,6 +508,10 @@ function protectCodexAggregationIdentity(configObj, settingsConfig) {
 }
 
 function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provider, settings) {
+  // Defensive: a malformed DB row (null/array/scalar) would throw on
+  // settingsConfig.config below and abort prepare.
+  if (!isPlainObject(settingsConfig)) settingsConfig = {};
+  if (!isPlainObject(meta)) meta = {};
   const configText = settingsConfig.config || "";
   // Aggregation rows (codex signature: loopback active table + PROXY_MANAGED)
   // always merge the common config — same reasoning as claude's

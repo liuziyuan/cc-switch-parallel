@@ -9,6 +9,36 @@ function isPlainObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+// Keys that must never be written through a merge: assigning them walks /
+// replaces the prototype instead of creating a config entry. JSON.parse can
+// produce "__proto__" as an OWN key, which is exactly the prototype-pollution
+// vector (`key in target` then recurses into Object.prototype).
+const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+function isSafeObjectKey(key: any): boolean {
+  return !UNSAFE_OBJECT_KEYS.has(String(key));
+}
+function hasOwn(obj: any, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// Parse a DB column that is supposed to hold a JSON object. Missing/empty
+// values are the legitimate "no config" case → {}. Invalid JSON, arrays and
+// scalars → null: callers must warn and degrade to {} instead of handing the
+// value to prepare, which would atomically write a corrupt instance file
+// ("null", "[]", "\"{}\"").
+function parseJsonObject(value: any): Record<string, any> | null {
+  if (value === undefined || value === null) return {};
+  if (isPlainObject(value)) return value;
+  if (typeof value !== "string") return null;
+  if (!value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function jsonDeepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
@@ -16,7 +46,8 @@ function jsonDeepClone(obj) {
 function jsonDeepMerge(target, source) {
   if (isPlainObject(target) && isPlainObject(source)) {
     for (const [key, sourceValue] of Object.entries(source)) {
-      if (key in target) {
+      if (!isSafeObjectKey(key)) continue;
+      if (hasOwn(target, key)) {
         jsonDeepMerge(target[key], sourceValue);
       } else {
         target[key] = sourceValue;
@@ -55,6 +86,7 @@ function applyMergePatch(target, patch) {
   if (!isPlainObject(patch)) return jsonDeepClone(patch ?? null);
   if (!isPlainObject(target)) target = {};
   for (const [key, value] of Object.entries(patch)) {
+    if (!isSafeObjectKey(key)) continue;
     if (value === null) {
       delete target[key];
     } else if (isPlainObject(value)) {
@@ -85,7 +117,8 @@ function mergeCommonOverProvider(target, source) {
     return jsonDeepClone(source);
   }
   for (const [key, sourceValue] of Object.entries(source)) {
-    if (Object.prototype.hasOwnProperty.call(target, key)) {
+    if (!isSafeObjectKey(key)) continue;
+    if (hasOwn(target, key)) {
       target[key] = mergeCommonOverProvider(target[key], sourceValue);
     } else {
       target[key] = jsonDeepClone(sourceValue);
@@ -98,7 +131,8 @@ function jsonIsSubset(target, source) {
   if (isPlainObject(source)) {
     if (!isPlainObject(target)) return false;
     for (const [key, sourceValue] of Object.entries(source)) {
-      if (!(key in target)) return false;
+      if (!isSafeObjectKey(key)) continue;
+      if (!hasOwn(target, key)) return false;
       if (!jsonIsSubset(target[key], sourceValue)) return false;
     }
     return true;
@@ -164,7 +198,7 @@ function deepEqualJson(a, b) {
 // build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
-function diffSettingsLeaves(baseline: any, current: any, prefix = ""): SettingsChange[] {
+function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: string[] = []): SettingsChange[] {
   const changes: SettingsChange[] = [];
   const b = isPlainObject(baseline) ? baseline : {};
   const c = isPlainObject(current) ? current : {};
@@ -172,26 +206,29 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = ""): SettingsC
   const keys = new Set([...Object.keys(b), ...Object.keys(c)]);
   for (const k of keys) {
     const path = prefix ? `${prefix}.${k}` : k;
+    // Real key sequence (k may itself contain dots). Carried through add,
+    // remove and change so write-back never has to re-split the display path.
+    const childSegments = [...segments, k];
     const inB = Object.prototype.hasOwnProperty.call(b, k);
     const inC = Object.prototype.hasOwnProperty.call(c, k);
     if (inB && inC) {
       const bv = b[k];
       const cv = c[k];
       if (isPlainObject(bv) && isPlainObject(cv)) {
-        changes.push(...diffSettingsLeaves(bv, cv, path));
+        changes.push(...diffSettingsLeaves(bv, cv, path, childSegments));
       } else if (!deepEqualJson(bv, cv)) {
         // Arrays & scalars are leaves; deepEqualJson's non-object branch is
         // strict ===, which is the right comparison for both.
-        changes.push({ path, op: "change", from: bv, to: cv });
+        changes.push({ path, op: "change", from: bv, to: cv, segments: childSegments });
       }
     } else if (inC) {
-      changes.push({ path, op: "add", from: undefined, to: c[k] });
+      changes.push({ path, op: "add", from: undefined, to: c[k], segments: childSegments });
     } else {
-      changes.push({ path, op: "remove", from: b[k], to: undefined });
+      changes.push({ path, op: "remove", from: b[k], to: undefined, segments: childSegments });
     }
   }
   return changes;
 }
 
 
-export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider };
+export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, isSafeObjectKey, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider, parseJsonObject };
