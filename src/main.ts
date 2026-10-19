@@ -22,7 +22,7 @@ import { applyCodexStatusLineInjection, codexAggregationRoute, codexInstanceDirF
 import { aggregationBaseUrlFor, appendVirtualStackRow, buildAggregationGroup, buildCodexStackSettingsFromGlobal, buildStackSettingsFromGlobal, buildStackUsageConfig, cleanupLegacyStackRows, codexStackDormantSettings, isAggregationProviderSettings, isCodexAggModelPath, isCodexAggregationProviderSettings, isLoopbackBaseUrl, probeTcpReachable, protectAggregationIdentityEnv, providerIsAggregation, readGlobalModelPicker, readStackState, virtualStackProviderFor } from "./stack/state.js";
 import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor } from "./stack/usage.js";
 import { applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineWrapperScript, buildUsageWrapperLines, claudeProviderName, isStatusLineChannelPath } from "./statusline.js";
-import { STATUSLINE_COLOR_CHOICES, loadStatuslinePreferences, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
+import { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRelay, loadStatuslineDisplay, loadStatuslinePreferences, normalizeDisplayPreferences, saveStatuslineColor, saveStatuslineDisplay, statuslineColorFor } from "./statusline-colors.js";
 import { applyTomlPatchText } from "./toml-utils.js";
 import { launchRefForQuick, launchRefForRow, runTUI } from "./tui.js";
 import { applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.js";
@@ -327,6 +327,11 @@ export const __test = Object.freeze({
   statuslineColorFor,
   saveStatuslineColor,
   loadStatuslinePreferences,
+  STATUSLINE_DISPLAY_ITEMS,
+  loadStatuslineDisplay,
+  saveStatuslineDisplay,
+  normalizeDisplayPreferences,
+  detectStatuslineRelay,
   buildLaunchExtraEnv,
   STATUSLINE_COLOR_CHOICES,
   applyCodexStatusLineInjection,
