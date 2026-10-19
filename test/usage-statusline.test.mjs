@@ -494,7 +494,7 @@ test("e2e zhipu: no context segment falls back to line tail; no relay renders af
   assert.ok(first.endsWith("│ 5h ██░░░░ 40% │ W ███░░░ 52%"), first);
   assert.ok(first.indexOf("$0.12") < first.indexOf("5h"), first);
 
-  // no relay at all: usage follows the bare tag
+  // no relay at all: self-drawn row 1, usage on row 2 (default 10-cell bar)
   cleanInstance();
   hits = 0;
   const { server, port } = await startFixtureServer((req, res) => {
@@ -513,8 +513,11 @@ test("e2e zhipu: no context segment falls back to line tail; no relay renders af
   writeGlobalSettings(undefined);
   const r2 = await runWrapper(wp, STATUSLINE_INPUT);
   assert.equal(r2.status, 0);
-  const first2 = stripAnsi(r2.stdout.split("\n")[0]);
-  assert.ok(first2.startsWith("[GLM] 5h ██░░░░ 40%"), first2);
+  const out2 = stripAnsi(r2.stdout).replace(/\n+$/, "").split("\n");
+  assert.ok(out2[0].startsWith("[GLM][Opus] tmp"), out2[0]);
+  // COLUMNS in the test env is <100, so the self-drawn bar is 6 cells wide
+  assert.ok(out2[1].startsWith("5h ██░░░░ 40%"), out2[1]);
+  assert.ok(out2[1].includes(" · W ███░░░ 52%"), out2[1]);
 });
 
 test("e2e deepseek: bearer auth, balance rendering, currency symbols", async (t) => {
@@ -750,8 +753,9 @@ test("e2e: separator detection — | relay mirrors |, standalone falls back to �
   writeGlobalSettings(undefined);
   const r2 = await runWrapper(wp, STATUSLINE_INPUT);
   assert.equal(r2.status, 0);
-  const first2 = stripAnsi(r2.stdout.split("\n")[0]);
-  assert.ok(first2.includes("40% · W"), first2);
+  const out2 = stripAnsi(r2.stdout).replace(/\n+$/, "").split("\n");
+  assert.ok(out2[0].startsWith("[GLM][Opus] tmp"), out2[0]);
+  assert.ok(out2[1].includes("40% · W"), out2[1]);
 });
 
 // ─── aggregation (cc-switch 4.0 Stack) ────────────────────────────────

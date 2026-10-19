@@ -122,10 +122,11 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 
 ## 实例 statusline（provider 标签）
 
-每个由 `switch` 启动的 Claude 实例都会在状态栏里显示**当前运行的是哪个 provider**：生成的 `settings.json` 自带一个 statusLine，其 wrapper 脚本在模型名前打上 `[provider]` 标签（每个 provider 颜色稳定）——配合 claude-hud 的效果是 `[Zhipu GLM en][Opus] │ myproject`——然后**原样转发你自己的全局 statusLine**：claude-hud、ccstatusline、手写脚本，任何配置在 `~/.claude/settings.json` 里的工具都照常工作。Claude Code 传给 statusline 的 JSON 原样透传，全局工具渲染出的内容与直接启动时完全一致；provider 标签是 `switch` 唯一添加的东西（若 statusline 首字符不是模型名、或根本没配 statusline，标签就放在行首）。
+每个由 `switch` 启动的 Claude 实例都会在状态栏里显示**当前运行的是哪个 provider**：生成的 `settings.json` 自带一个 statusLine，其 wrapper 脚本在模型名前打上 `[provider]` 标签（每个 provider 颜色稳定）——配合 claude-hud 的效果是 `[Zhipu GLM en][Opus] │ myproject`——然后**原样转发你自己的全局 statusLine**：claude-hud、ccstatusline、手写脚本，任何配置在 `~/.claude/settings.json` 里的工具都照常工作。Claude Code 传给 statusline 的 JSON 原样透传，全局工具渲染出的内容与直接启动时完全一致；provider 标签是 `switch` 唯一添加的东西（若 statusline 首字符不是模型名、或根本没配 statusline，标签就放在行首）。**没有配置全局 statusline 时**，wrapper 会自己绘制两行基础信息（模型、项目、git 分支、context 用量），显示项可在 TUI 里开关。
 
 - **你的全局 `~/.claude/settings.json` 永远不会被改动，生成的 statusLine 也不会被同步回 cc-switch 数据库**——`statusLine` 是 channel 专属路径（与插件同机制）：覆盖守卫忽略它，上行同步对它让权。全局换任何 statusline 工具，所有实例下次启动自动跟随。
-- 全局没有配 statusline？实例只显示 provider 标签；如果当前 provider 有可查询的用量（Z.AI GLM 配额 / DeepSeek 余额），用量段会直接跟在标签后面。
+- 全局没有配 statusline？实例会**自绘两行**：第一行 `[provider][模型] 项目 git:(分支*)`，第二行 `Context █████░░░ 45% │ 5h ███░░░ 40% · W ████░░ 52%`（有可查询用量时）。项目名取 cwd 的最后一段，git 在非仓库或命令失败时自动隐藏，context 无数据时省略；模型、项目、git、context、用量五个开关都可单独关闭。
+- **显示设置与 statusline 让位**：provider 选择屏按 `s` 打开全局 statusline 设置面板（五项开关，空格或 ⏎ 切换，esc 返回）。改动**即时生效**——wrapper 每次渲染都会读取 `~/.cc-switch/statusline-preferences.json`，无需重启会话。若全局 `~/.claude/settings.json` 配了 statusline（claude-hud 或任何其他工具），新增的模型/项目/git/context 全部**让位**，只保留 provider 标签与可开关的用量段，避免重复渲染；面板会检测并提示当前是自绘、claude-hud 还是其他 relay。配置字段名与 claude-hud 对齐（`display.showModel`、`display.showProject`、`display.showContext` / `showContextBar`、`display.showUsage`、`gitStatus.enabled` / `showDirty`、`pathLevels` 等），缺字段或文件损坏均按默认全开处理。
 - 在 cc-switch 的 provider 配置里显式写的 `statusLine` 会被**包装而非替换**：生成的条目指向 wrapper，你的显式命令被内联为 wrapper 的首选转发源（全局 `~/.claude/settings.json` 作为回退）。刻意的配置照常渲染——provider 标签照样添加。cc-switch 4.0.2+ 的 live 模式下，数据库里冻结的 `common_config_*` 不参与合并，因此在桌面端删除的 statusLine 不会复活。
 - **标签颜色在 TUI 里设置**：provider 选择屏高亮某行后按 `o`，从 auto（按名字哈希，默认）+ 16 个 ANSI 经典色（30–37 标准、90–97 亮色，带色块预览）中选取，⏎ 保存、esc 取消。存于 `~/.cc-switch/statusline-preferences.json`（本 CLI 独有——cc-switch 桌面端与数据库都不读不写），下次启动该 provider 的实例时生效，运行中的会话保持旧色直至重启。claude 的颜色由 wrapper 消费；codex 的颜色由 tmux 状态栏消费（见下节）。
 - 在实例**内部**自定义 statusline（`/statusline`）没有意义——该条目每次启动都会重新生成。请改全局配置文件。

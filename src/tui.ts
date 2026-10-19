@@ -10,7 +10,7 @@ import { launchProvider } from "./launch.js";
 import { VIRTUAL_STACK_APPS } from "./paths.js";
 import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.js";
 import { clipFrame, fitLine, installTerminalGuard, sanitizeText } from "./terminal-utils.js";
-import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
+import { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRelay, loadStatuslineDisplay, saveStatuslineColor, saveStatuslineDisplay, statuslineColorFor } from "./statusline-colors.js";
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
 
@@ -33,6 +33,13 @@ import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } fro
 //               value) persists the choice (returns non-null on success);
 //               getCurrentColor(item) returns the stored value ("auto" default)
 //               so the cursor and the ● mark land on the current choice.
+// statuslineContext + onStatusline + getStatuslineDisplay + getStatuslineRelay
+//               (provider layer): `s` opens the display-settings panel.
+//               onStatusline(key, value) persists one boolean switch; the
+//               display getter returns the normalized preferences; the relay
+//               getter reports whether a global statusLine already owns the
+//               model/project/git/context rows (then only the usage switch
+//               applies). Settings are global (not per provider).
 // quickPin + onPin/onUnpin/onRemove/onCleanup (CLI layer): `t`/`u`/`x`/`c` on
 //               the Recent region. quickPin is deliberately separate from
 //               pinContext so a CLI-layer `t` can never capture a plain CLI
@@ -45,6 +52,15 @@ import { STATUSLINE_COLOR_CHOICES, saveStatuslineColor, statuslineColorFor } fro
 //               shown order/dead/pinned state matches disk. Newly surfaced
 //               natural-filler rows need their dead flag from the caller's
 //               alive snapshot — tuiSelect itself has no DB access.
+function readDisplayPath(obj, path) {
+  let cur = obj;
+  for (const part of path.split(".")) {
+    if (!cur || typeof cur !== "object" || !(part in cur)) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
 function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
   const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
@@ -58,6 +74,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
   const pinOptions = !!opts.pinContext && typeof opts.onPin === "function"; // provider layer
   const pinQuick = !!opts.quickPin && typeof opts.onPin === "function"; // CLI layer
   const canColor = typeof opts.onColor === "function" && typeof opts.getCurrentColor === "function"; // provider layer `o`
+  const canStatusline = typeof opts.onStatusline === "function" && typeof opts.getStatuslineDisplay === "function"; // provider layer `s`
   const refreshQuick = typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
 
   return new Promise((resolve, reject) => {
@@ -78,6 +95,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     let colorTarget: any = null; // {cli, providerId, provider, label} captured entering color mode
     let colorIndex = 0; // STATUSLINE_COLOR_CHOICES cursor
     let colorCurrentValue = "auto"; // stored preference when color mode was entered — renders the ● mark
+    let statuslineIndex = 0; // STATUSLINE_DISPLAY_ITEMS cursor
+    let statuslineDisplay: any = null; // normalized display preferences while the panel is open
+    let statuslineRelay: any = null; // detectStatuslineRelay() result while the panel is open
 
     const hasHint = hotkeys.length > 0;
 
@@ -111,7 +131,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       const lines: string[] = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${fit(prompt, 4)}\x1b[0m`);
       lines.push("");
-      const locked = m === "param" || m === "pin" || m === "confirm" || m === "color";
+      const locked = m === "param" || m === "pin" || m === "confirm" || m === "color" || m === "statusline";
       // unified navigation space: [0..options.length-1] = options,
       // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
@@ -160,6 +180,38 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
               : `\x1b[90m  ${swatch} ${c.label}${cur}\x1b[0m`,
           );
         }
+      } else if (m === "statusline") {
+        // Five global display switches. When a relay exists (claude-hud or
+        // any custom statusLine) the relay owns model/project/git/context:
+        // only the usage switch stays editable, the rest are dimmed.
+        lines.push("");
+        const relayKind = statuslineRelay?.kind || "none";
+        const relayText = relayKind === "claude-hud"
+          ? "Detected claude-hud (global statusLine) — model/project/git/context come from claude-hud; only the usage switch applies"
+          : relayKind === "other"
+            ? "Detected a custom statusLine — new items are not stacked; only the usage switch applies"
+            : "Self-drawn statusline — all switches apply (effective immediately)";
+        lines.push(`  \x1b[90m${fit(relayText, 4)}\x1b[0m`);
+        if (opts.statuslineContext === "codex") {
+          lines.push(`  \x1b[33m${fit("Codex has no external statusline yet — these switches apply to Claude instances only", 4)}\x1b[0m`);
+        }
+        lines.push("");
+        const relayLocked = relayKind !== "none";
+        for (let i = 0; i < STATUSLINE_DISPLAY_ITEMS.length; i++) {
+          const item = STATUSLINE_DISPLAY_ITEMS[i];
+          const enabled = !!readDisplayPath(statuslineDisplay, item.key);
+          const disabled = relayLocked && item.key !== "display.showUsage";
+          const row = `${i === statuslineIndex ? "❯" : " "} ${enabled ? "●" : "○"} ${item.label}  ${enabled ? "on" : "off"}`;
+          if (i === statuslineIndex) {
+            lines.push(`  \x1b[36m${fit(row, 2)}\x1b[0m`);
+          } else if (disabled) {
+            lines.push(`  \x1b[90m${fit(row, 2)}\x1b[0m`);
+          } else {
+            lines.push(`  ${fit(row, 2)}`);
+          }
+        }
+        lines.push("");
+        lines.push(`  \x1b[90m↑↓ navigate   space/⏎ toggle   esc back\x1b[0m`);
       } else if (m === "confirm") {
         lines.push("");
         const { kind, target } = confirmAction;
@@ -184,7 +236,8 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         lines.push("");
         const pinHint = pinOptions ? `   t pin top5` : "";
         const colorHint = canColor ? `   o tag color` : "";
-        lines.push(`  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}${colorHint}   esc ← back to CLI`, 4)}\x1b[0m`);
+        const statuslineHint = canStatusline ? `   s statusline` : "";
+        lines.push(`  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}${colorHint}${statuslineHint}   esc ← back to CLI`, 4)}\x1b[0m`);
       } else {
         // CLI layer select mode: optionally show top5 quick-launch region
         if (quickItems.length > 0) {
@@ -391,6 +444,43 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         return; // ignore everything else while choosing a color
       }
 
+      if (mode === "statusline") {
+        // Display panel: arrows move, space/⏎ toggles and saves immediately,
+        // esc returns. Rows owned by a relay are locked (dimmed) but still
+        // navigable, so the user can read what is and is not in effect.
+        if (key === "\x1b[A" || key === "k") {
+          statuslineIndex = (statuslineIndex - 1 + STATUSLINE_DISPLAY_ITEMS.length) % STATUSLINE_DISPLAY_ITEMS.length;
+          render(mode);
+          return;
+        }
+        if (key === "\x1b[B" || key === "j") {
+          statuslineIndex = (statuslineIndex + 1) % STATUSLINE_DISPLAY_ITEMS.length;
+          render(mode);
+          return;
+        }
+        if (key === "\x1b") {
+          mode = "select";
+          render(mode);
+          return;
+        }
+        if (key === " " || key === "\r" || key === "\n") {
+          const item = STATUSLINE_DISPLAY_ITEMS[statuslineIndex];
+          const relayLocked = (statuslineRelay?.kind || "none") !== "none";
+          if (relayLocked && item.key !== "display.showUsage") return;
+          const current = !!readDisplayPath(statuslineDisplay, item.key);
+          const ok = opts.onStatusline(item.key, !current) !== null;
+          if (ok) statuslineDisplay = opts.getStatuslineDisplay();
+          render(
+            mode,
+            ok
+              ? `✓ ${item.label} → ${current ? "off" : "on"} — effective now`
+              : "✗ Failed to save statusline preference",
+          );
+          return;
+        }
+        return; // ignore everything else while in the display panel
+      }
+
       if (mode === "confirm") {
         // Confirm region: y executes the pending action, any other key —
         // esc, n, arrows — cancels back to select untouched.
@@ -518,6 +608,19 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           render(mode);
           return;
         }
+      }
+      // `s` opens the global statusline display panel (provider layer only).
+      // Settings are global (one set for every provider); the highlighted row
+      // only supplies the Codex notice.
+      if (interactive && canStatusline && key === "s" && selected < options.length) {
+        statuslineDisplay = opts.getStatuslineDisplay();
+        statuslineRelay = typeof opts.getStatuslineRelay === "function"
+          ? opts.getStatuslineRelay()
+          : { kind: "none", command: null };
+        statuslineIndex = 0;
+        mode = "statusline";
+        render(mode);
+        return;
       }
       // `o` colors the highlighted provider's statusline tag (provider layer
       // only). colorTarget mirrors pinTarget's structured shape; the cursor
@@ -765,6 +868,12 @@ async function runTUI() {
           colorContext: cli.value,
           onColor: (target, value) => saveStatuslineColor(cli.value, target.providerId, value),
           getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
+          // `s` display settings are global; statuslineContext only drives the
+          // Codex notice (Codex has no external statusline command yet).
+          statuslineContext: cli.value,
+          onStatusline: (key, value) => saveStatuslineDisplay(key, value),
+          getStatuslineDisplay: () => loadStatuslineDisplay(),
+          getStatuslineRelay: () => detectStatuslineRelay(),
         },
       );
     } catch (e: any) {
