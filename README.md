@@ -228,7 +228,7 @@ An adapter without an interface is simply "v2-shaped" for that layer and skips i
 - [cc-switch](https://github.com/farion1231/cc-switch) desktop app installed, with at least one provider configured (aggregation mode requires cc-switch 4.0+)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (`claude`) on PATH
 - [Codex](https://github.com/openai/codex) CLI (`codex`) on PATH (optional, for Codex support)
-- Node.js ≥ 18
+- Node.js ≥ 18 (`switch` verifies this at startup and exits with an upgrade hint on older runtimes — the statusline usage segment needs the global `fetch` added in Node 18)
 - `sqlite3` CLI (pre-installed on macOS)
 
 ## License
