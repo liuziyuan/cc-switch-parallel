@@ -71,7 +71,7 @@ function isPluginChannelPath(path) {
 }
 
 // Format one diff entry as a display line for the warning/prompt lists.
-// target: "common" | "provider" | "blocked-sensitive" | "blocked-virtual".
+// target: "common" | "shared-live" | "provider" | "blocked-sensitive" | "blocked-virtual".
 // The two blocked flavors must not share wording: a sensitive field is
 // intentionally not synced (edit it in cc-switch), whereas a virtual-row edit
 // has no DB row to land in and is rebuilt from desktop state next launch.
@@ -80,6 +80,7 @@ function formatSettingsChangeLine(ch, target) {
   const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
   const targetTag =
     target === "common" ? " \x1b[2m(→ common config)\x1b[0m"
+    : target === "shared-live" ? " \x1b[2m(→ 全局 live 配置)\x1b[0m"
     : target === "blocked-virtual" ? " \x1b[33m(⚠ 聚合虚拟行 — 不写回数据库)\x1b[0m"
     : target === "blocked-sensitive" || target === "blocked"
       ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
@@ -93,7 +94,7 @@ function formatSettingsChangeLine(ch, target) {
 // vanishing silently. Channel-owned [C6] and runtime-state paths are
 // filtered out. Capability-probed (C2 + C3), never appType-branched —
 // an adapter without both is v2-shaped and skips the guard entirely.
-function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings) {
+function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, shared, settings) {
   try {
     if (!adapter.readInstanceSettingsSnapshot || !adapter.computeEffectiveSettings) return;
     const current = adapter.readInstanceSettingsSnapshot(instanceDir);
@@ -116,7 +117,7 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSni
     if (!isPlainObject(entry?.preparedSettings)) {
       const effective = adapter.computeEffectiveSettings(
         parseJsonObject(row.settings_config) ?? {}, parseJsonObject(row.meta) ?? {},
-        row.category, commonSnippet, row.id, settings,
+        row.category, shared, row.id, settings,
       );
       const backfilled = effective != null && deepEqualJson(effective, current);
       if (!backfilled) {

@@ -1,7 +1,7 @@
 // ─── db (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { DB_PATH, SETTINGS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { appendVirtualStackRow, virtualStackProviderFor } from "./stack/state.js";
 import type { ProviderRow } from "./types.js";
@@ -109,6 +109,21 @@ function queryProvidersStrict(appType: string): ProviderRow[] {
   return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
 }
 
+// cc-switch schema generation, read from SQLite's user_version. 4.0.2+ is 20;
+// 3.20.4 and 4.0.0/4.0.1 are 19. Missing DB / sqlite3 failure → null (callers
+// fall back to the legacy common-config source). Guarding on existsSync
+// matters: sqlite3 would CREATE an empty DB file for a missing path.
+function readSchemaUserVersion(): number | null {
+  try {
+    if (!existsSync(DB_PATH)) return null;
+    const rows = queryDB("PRAGMA user_version");
+    const version = Number(rows?.[0]?.user_version);
+    return Number.isInteger(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
 function queryCommonConfig(appType) {
   const key = `common_config_${appType}`;
   const rows = queryDB(`SELECT value FROM settings WHERE key = ${sqlQuote(key)}`);
@@ -152,4 +167,4 @@ function loadSettings() {
 }
 
 
-export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, sqlQuote };
+export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };

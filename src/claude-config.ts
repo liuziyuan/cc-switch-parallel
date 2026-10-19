@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isPlainObject, jsonDeepClone, jsonIsSubset, mergeCommonOverProvider } from "./json-utils.js";
 import { INSTANCES_DIR } from "./paths.js";
+import { isLiveSharedSnippet, sharedSnippetText } from "./shared-config.js";
 import { isAggregationProviderSettings, protectAggregationIdentityEnv, readGlobalModelPicker, readStackState } from "./stack/state.js";
 import { applyStatusLineInjection } from "./statusline.js";
 import { parseToml } from "./toml.js";
@@ -90,37 +91,48 @@ function isClaudeRuntimeStatePath(path) {
 // computeEffectiveSettings [C3] MUST pass the same pair — C3 exists to
 // recompute exactly what prepare would write, and a fork between the two
 // derivations makes the overwrite guard misfire.
-function buildClaudeEffectiveSettings(settingsConfig, meta, commonSnippet, providerName, providerId) {
+function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName, providerId) {
   // Defensive: callers pass parsed DB columns. A non-object (null, array,
   // scalar) would be cloned and handed to prepare, which writes it back as
   // the instance settings.json — degrade to {} instead.
   if (!isPlainObject(settingsConfig)) settingsConfig = {};
   if (!isPlainObject(meta)) meta = {};
   let effective = jsonDeepClone(settingsConfig);
+  const sharedText = sharedSnippetText(shared);
+  const sharedTrimmed = sharedText.trim();
+  const liveShared = isLiveSharedSnippet(shared);
   // Aggregation rows (loopback + PROXY_MANAGED signature) always merge the
-  // common config: the row carries only routing env + modelPicker, so the
-  // subset fallback in providerUsesCommonConfig can never see the common
+  // shared config: the row carries only routing env + modelPicker, so the
+  // subset fallback in providerUsesCommonConfig can never see the shared
   // content (hooks!) and the row would launch without every shared setting.
   // An explicit commonConfigEnabled:false still wins — the desktop app can
-  // turn the common config off on the Stack row itself. Not gated on
+  // turn shared settings off on the Stack row itself. Not gated on
   // readStackState: the row launches with the stack off too, and a merge
   // decision that flips with desktop state would break prepare determinism.
+  //
+  // live mode (cc-switch 4.0.2+): the projection already contains only user
+  // keys, so every row merges it (the snippet's `commonConfigEnabled` flag
+  // is only kept upstream for old-version compatibility). legacy mode keeps
+  // the historical subset/forced-aggregation rules byte-identically.
   const isAgg = isAggregationProviderSettings(settingsConfig);
-  const snippetTrimmed = (commonSnippet || "").trim();
-  const useCommon = snippetTrimmed && (
-    (isAgg && meta?.commonConfigEnabled !== false) ||
-    providerUsesCommonConfig("claude", settingsConfig, meta, commonSnippet)
+  const useShared = !!sharedTrimmed && (
+    meta?.commonConfigEnabled === false
+      ? false
+      : liveShared
+        ? true
+        : (isAgg && meta?.commonConfigEnabled !== false) ||
+          providerUsesCommonConfig("claude", settingsConfig, meta, sharedText)
   );
-  if (useCommon) {
+  if (useShared) {
     try {
-      const source = JSON.parse(snippetTrimmed);
+      const source = JSON.parse(sharedText);
       // Object guard: mergeCommonOverProvider full-overwrites on shape
       // mismatch, so a non-object snippet ("[1]") would replace the whole
       // effective settings — skip it instead.
       if (isPlainObject(source)) {
         effective = mergeCommonOverProvider(effective, source);
         // The aggregation row IS the routing identity (loopback address +
-        // proxy placeholder token + ccs model aliases); the common config
+        // proxy placeholder token + ccs model aliases); the shared config
         // must never re-point or re-auth it. See protectAggregationIdentityEnv.
         if (isAgg) protectAggregationIdentityEnv(effective, settingsConfig);
       }

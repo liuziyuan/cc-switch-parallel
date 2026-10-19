@@ -8,7 +8,7 @@ import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRunti
 import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.js";
 import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
 import { runPs, stackBillingMemberName } from "./commands/ps.js";
-import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } from "./db.js";
+import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.js";
@@ -17,6 +17,7 @@ import { launchProvider } from "./launch.js";
 import { formatAmbiguousProvider, resolveProviderRef } from "./provider-ref.js";
 import { HOME, NPM_PACKAGE_NAME, VERSION, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { buildLaunchExtraEnv } from "./sessions.js";
+import { claudeExclusiveEnv, claudeFloorEnv, claudeFloorTop, detectSharedConfigMode, isLiveSharedSnippet, projectClaudeSharedKeys, projectCodexSharedKeys, readSharedConfig, resetSharedConfigWarnings, sharedConfigHash, sharedSnippetText } from "./shared-config.js";
 import { applyCodexStatusLineInjection, codexAggregationRoute, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexRuntimeStatePath, isCodexStatusLineChannelPath, mergeCodexRuntimeState, protectCodexAggregationIdentity, readGlobalCodexCatalogText } from "./stack/catalog.js";
 import { aggregationBaseUrlFor, appendVirtualStackRow, buildAggregationGroup, buildCodexStackSettingsFromGlobal, buildStackSettingsFromGlobal, buildStackUsageConfig, cleanupLegacyStackRows, codexStackDormantSettings, isAggregationProviderSettings, isCodexAggModelPath, isCodexAggregationProviderSettings, isLoopbackBaseUrl, probeTcpReachable, protectAggregationIdentityEnv, providerIsAggregation, readGlobalModelPicker, readStackState, virtualStackProviderFor } from "./stack/state.js";
 import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor } from "./stack/usage.js";
@@ -24,7 +25,7 @@ import { applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineW
 import { STATUSLINE_COLOR_CHOICES, loadStatuslinePreferences, saveStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
 import { applyTomlPatchText } from "./toml-utils.js";
 import { launchRefForQuick, launchRefForRow, runTUI } from "./tui.js";
-import { buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.js";
+import { applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.js";
 
 // ─── Main entry ────────────────────────────────────────────────────────
 
@@ -369,6 +370,21 @@ export const __test = Object.freeze({
   stackBillingMemberName,
   USAGE_CACHE_FILENAME,
   APP_ADAPTERS,
+  readSchemaUserVersion,
+  readSharedConfig,
+  detectSharedConfigMode,
+  projectClaudeSharedKeys,
+  projectCodexSharedKeys,
+  sharedConfigHash,
+  sharedSnippetText,
+  isLiveSharedSnippet,
+  claudeFloorTop,
+  claudeFloorEnv,
+  claudeExclusiveEnv,
+  resetSharedConfigWarnings,
+  applyClaudeLiveSettingsFieldPatches,
+  applyClaudeLivePluginPatch,
+  applyCodexLiveSettingsFieldPatches,
 });
 
 export { isVoltaManagedInstall, main, readInstalledVersion, reportUpdateOutcome, runUpdate };

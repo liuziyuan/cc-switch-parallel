@@ -4,17 +4,18 @@ import { readFileSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildClaudeEffectiveSettings, isClaudeRuntimeStatePath } from "./claude-config.js";
 import { buildCodexInstructionsTemplate, refreshCodexInstructionsSnapshot } from "./commands/customize.js";
-import { patchCommonConfigClaude, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.js";
+import { patchCommonConfigClaude, queryProviderById, queryProvidersByApp } from "./db.js";
 import { atomicWrite, ensureSymlink, readdirSyncSafe, setupClaudeInstance, setupCodexInstance } from "./fs-utils.js";
 import { isPluginChannelPath } from "./guard.js";
 import { deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepMerge, jsonNormalize, parseJsonObject } from "./json-utils.js";
 import { HOME, INSTANCES_DIR } from "./paths.js";
 import { buildLaunchExtraEnv, launchTracked, shallowEqualPlugins } from "./sessions.js";
+import { detectSharedConfigMode, readSharedConfig, sharedSnippetText } from "./shared-config.js";
 import { CC_SWITCH_CATALOG_FILENAME, buildCodexConfig, codexAuthHasLoginMaterial, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexStatusLineChannelPath, mergeCodexRuntimeState } from "./stack/catalog.js";
 import { isCodexAggModelPath } from "./stack/state.js";
 import { claudeProviderName, collectEnabledPluginsPatch, isStatusLineChannelPath } from "./statusline.js";
 import { parseToml } from "./toml.js";
-import { applyClaudeSettingsFieldPatches, applyCodexSettingsFieldPatches, normalizeInstalledPluginPaths, pathExistsInSnippet, splitChangesByTarget } from "./upward.js";
+import { applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyClaudeSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, applyCodexSettingsFieldPatches, normalizeInstalledPluginPaths, pathExistsInSnippet, splitChangesByTarget } from "./upward.js";
 
 // ─── App adapters (per-CLI strategy) ──────────────────────────────────
 // Each CLI implements a small adapter so adding a new CLI (e.g. gemini) means
@@ -96,10 +97,10 @@ const APP_ADAPTERS = {
 
     setupInstance: setupClaudeInstance,
 
-    prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
+    prepare(instanceDir, providerId, settingsConfig, meta, category, shared, settings) {
       normalizeInstalledPluginPaths();
       const effective = buildClaudeEffectiveSettings(
-        settingsConfig, meta, commonSnippet, claudeProviderName(providerId), providerId,
+        settingsConfig, meta, shared, claudeProviderName(providerId), providerId,
       );
       atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
     },
@@ -157,9 +158,9 @@ const APP_ADAPTERS = {
     // source is naturally normalized, so no jsonNormalize needed here. [C3]
     // providerName/providerId must match prepare's pair exactly, or the
     // statusline injection makes the two derivations fork.
-    computeEffectiveSettings(settingsConfig, meta, _category, commonSnippet, providerId, _settings) {
+    computeEffectiveSettings(settingsConfig, meta, _category, shared, providerId, _settings) {
       return jsonNormalize(buildClaudeEffectiveSettings(
-        settingsConfig, meta, commonSnippet, claudeProviderName(providerId), providerId,
+        settingsConfig, meta, shared, claudeProviderName(providerId), providerId,
       ));
     },
 
@@ -213,12 +214,13 @@ const APP_ADAPTERS = {
       }
 
       if (!added.length && !removed.length && !toggled.length) return null;
-      return { added, removed, toggled, patch, installedKeys };
+      return { added, removed, toggled, patch, installedKeys, sharedMode: detectSharedConfigMode() };
     },
 
-    // Write-back: apply the plugin patch into common_config_claude.
+    // Write-back: apply the plugin patch into the shared document — the live
+    // ~/.claude/settings.json in 4.0.2+ mode, common_config_claude in legacy.
     syncPluginsBack(drift) {
-      applyEnabledPluginsPatch(drift.patch);
+      applyEnabledPluginsPatch(drift.patch, drift.sharedMode);
     },
 
     // Upward drift, channel 2: non-plugin settings fields edited inside a
@@ -249,7 +251,11 @@ const APP_ADAPTERS = {
     // refreshStaleInstances — the write-back makes other instances stale,
     // and refresh rebuilds their baselines so this prompt doesn't re-fire.
     syncSettingsBack(drift) {
-      applyClaudeSettingsFieldPatches(drift.commonPatch, drift.providerPatches);
+      if (drift.sharedMode === "live") {
+        applyClaudeLiveSettingsFieldPatches(drift.commonPatch, drift.providerPatches);
+      } else {
+        applyClaudeSettingsFieldPatches(drift.commonPatch, drift.providerPatches);
+      }
     },
   },
 
@@ -414,7 +420,8 @@ const APP_ADAPTERS = {
     // provider's settings_config.config are read-patched-written with a
     // compare-and-swap on the original text.
     syncSettingsBack(drift) {
-      applyCodexSettingsFieldPatches(drift);
+      if (drift.sharedMode === "live") applyCodexLiveSettingsFieldPatches(drift);
+      else applyCodexSettingsFieldPatches(drift);
     },
 
     // [C8] Instance instruction file. Codex has no @import mechanism — the
@@ -447,9 +454,15 @@ function detectConfigDriftGeneric(adapter, state) {
   const baselines = state?.instances?.[adapter.appType] || {};
   if (!existsSync(dir)) return null;
 
-  // Parse the current common snippet once; used both for split decisions
-  // and for "already equal in DB" filtering.
-  const commonObj = adapter.parseCommonSnippet(queryCommonConfig(adapter.appType)) ?? {};
+  // Parse the current shared document once; used both for split decisions
+  // and for "already equal in the target" filtering. In 4.0.2+ live mode an
+  // unreadable global file means we cannot tell which paths the shared
+  // document owns — guessing would write user keys into provider rows, so
+  // skip the field channel for this run (the launch guard still protects the
+  // instance files).
+  const shared = readSharedConfig(adapter.appType);
+  if (shared.mode === "live" && shared.unavailable) return null;
+  const commonObj = adapter.parseCommonSnippet(sharedSnippetText(shared)) ?? {};
 
   const candidates: any[] = [];
   for (const name of readdirSyncSafe(dir) || []) {
@@ -552,6 +565,7 @@ function detectConfigDriftGeneric(adapter, state) {
   return {
     instances, commonPatch, providerPatches, conflicts,
     rejected: rejectedPaths, rejectedReasons, virtualBlocked,
+    sharedMode: shared.mode,
   };
 }
 
@@ -572,16 +586,25 @@ function readUserInstalledPluginSet() {
   }
 }
 
-// Keys currently in common_config_claude.enabledPlugins.
-function readCommonEnabledPluginKeys() {
+// The shared document's enabledPlugins map: the live global file in 4.0.2+
+// mode (projected user keys), common_config_claude otherwise.
+function readSharedEnabledPlugins() {
   try {
-    const snip = queryCommonConfig("claude");
-    if (!snip) return [];
-    return Object.keys(JSON.parse(snip).enabledPlugins || {});
+    const shared = readSharedConfig("claude");
+    if (shared.mode === "live" && shared.unavailable) return {};
+    const ep = shared.parsed?.enabledPlugins;
+    return isPlainObject(ep) ? ep : {};
   } catch {
-    return [];
+    return {};
   }
 }
+
+function readSharedEnabledPluginKeys() {
+  return Object.keys(readSharedEnabledPlugins());
+}
+
+// Backward-compatible alias (legacy naming, same behavior).
+const readCommonEnabledPluginKeys = readSharedEnabledPluginKeys;
 
 // Compute the enabledPlugins patch to write back into common_config_claude,
 // based on all claude instances' runtime settings + the user-scope install
@@ -639,8 +662,9 @@ function computeEnabledPluginsPatch(state) {
         if (installedUser.has(k)) { epPatch[k] = v; has = true; }
       }
     }
-    // Remove from common any plugin no longer installed at user scope.
-    for (const k of readCommonEnabledPluginKeys()) {
+    // Remove from the shared document any plugin no longer installed at user
+    // scope.
+    for (const k of readSharedEnabledPluginKeys()) {
       if (!installedUser.has(k) && !(k in epPatch)) { epPatch[k] = null; has = true; }
     }
     return { patch: has ? epPatch : null, installedKeys: [...installedUser] };
@@ -650,16 +674,18 @@ function computeEnabledPluginsPatch(state) {
   }
 }
 
-// Write an enabledPlugins patch into common_config_claude (used by the sync
-// flow after user confirmation). No-op on an empty patch.
-function applyEnabledPluginsPatch(patch) {
+// Write an enabledPlugins patch into the shared document (used by the sync
+// flow after user confirmation): the live global file in 4.0.2+ mode,
+// common_config_claude in legacy. No-op on an empty patch.
+function applyEnabledPluginsPatch(patch, sharedMode = detectSharedConfigMode()) {
   if (!patch || Object.keys(patch).length === 0) return;
   try {
-    patchCommonConfigClaude({ enabledPlugins: patch });
+    if (sharedMode === "live") applyClaudeLivePluginPatch(patch);
+    else patchCommonConfigClaude({ enabledPlugins: patch });
   } catch {
     // best-effort: DB lock or unreadable — skip write-back silently.
   }
 }
 
 
-export { APP_ADAPTERS, applyEnabledPluginsPatch, computeEnabledPluginsPatch, detectConfigDriftGeneric, readCommonEnabledPluginKeys, readUserInstalledPluginSet };
+export { APP_ADAPTERS, applyEnabledPluginsPatch, computeEnabledPluginsPatch, detectConfigDriftGeneric, readCommonEnabledPluginKeys, readSharedEnabledPluginKeys, readSharedEnabledPlugins, readUserInstalledPluginSet };
