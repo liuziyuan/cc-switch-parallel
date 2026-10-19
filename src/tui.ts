@@ -61,6 +61,60 @@ function readDisplayPath(obj, path) {
   return cur;
 }
 
+// Rows for the `s` statusline panel. Pure (no terminal access) so the layout
+// and the claude-hud annotation are unit-testable; `width` is the usable
+// column count after the panel's 4-column outer padding.
+function buildStatuslinePanelLines({ display, relayKind = "none", context = null, cursor = 0, width = 76 }) {
+  const lines: string[] = [];
+  const text = (s) => fitLine(sanitizeText(s), Math.max(1, width - 2));
+  const row = (s, style) => {
+    const body = `  ${text(s)}`;
+    if (style === "highlight") return `\x1b[1m\x1b[33m${body}\x1b[0m`;
+    if (style === "warning") return `\x1b[33m${body}\x1b[0m`;
+    if (style === "dim") return `\x1b[90m${body}\x1b[0m`;
+    if (style === "cursor") return `\x1b[36m${body}\x1b[0m`;
+    return body;
+  };
+
+  // The relay owns the model/project/git/context rows; say so loudly, then
+  // annotate each locked switch with who actually supplies it.
+  if (relayKind === "claude-hud") {
+    lines.push(row("⚡ claude-hud is active — model / project / git / context are rendered by claude-hud", "highlight"));
+  } else if (relayKind === "other") {
+    lines.push(row("⚡ A custom statusLine is active — new items are not stacked", "highlight"));
+  } else {
+    lines.push(row("Self-drawn statusline — all switches apply (effective immediately)", "dim"));
+  }
+  if (context === "codex") {
+    lines.push(row("Codex has no external statusline yet — these switches apply to Claude instances only", "warning"));
+  }
+  lines.push("");
+  if (relayKind !== "none") {
+    lines.push(row(
+      relayKind === "claude-hud"
+        ? "Locked rows are supplied by claude-hud; turn it off to use the built-in renderer"
+        : "Locked rows are supplied by the custom statusLine; remove it to use the built-in renderer",
+      "dim",
+    ));
+  }
+
+  const sourceLabel = relayKind === "claude-hud" ? "claude-hud" : relayKind === "other" ? "statusLine" : null;
+  const relayLocked = relayKind !== "none";
+  for (let i = 0; i < STATUSLINE_DISPLAY_ITEMS.length; i++) {
+    const item = STATUSLINE_DISPLAY_ITEMS[i];
+    const enabled = !!readDisplayPath(display, item.key);
+    const locked = relayLocked && item.key !== "display.showUsage";
+    const value = enabled ? "on" : "off";
+    const suffix = locked ? ` · via ${sourceLabel}` : "";
+    const label = `${i === cursor ? "❯" : " "} ${enabled ? "●" : "○"} ${item.label}  ${value}${suffix}`;
+    lines.push(row(label, i === cursor ? "cursor" : locked ? "dim" : "normal"));
+  }
+
+  lines.push("");
+  lines.push(row("↑↓ navigate   space/⏎ toggle   esc back", "dim"));
+  return lines;
+}
+
 function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
   const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
@@ -181,37 +235,15 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           );
         }
       } else if (m === "statusline") {
-        // Five global display switches. When a relay exists (claude-hud or
-        // any custom statusLine) the relay owns model/project/git/context:
-        // only the usage switch stays editable, the rest are dimmed.
-        lines.push("");
-        const relayKind = statuslineRelay?.kind || "none";
-        const relayText = relayKind === "claude-hud"
-          ? "Detected claude-hud (global statusLine) — model/project/git/context come from claude-hud; only the usage switch applies"
-          : relayKind === "other"
-            ? "Detected a custom statusLine — new items are not stacked; only the usage switch applies"
-            : "Self-drawn statusline — all switches apply (effective immediately)";
-        lines.push(`  \x1b[90m${fit(relayText, 4)}\x1b[0m`);
-        if (opts.statuslineContext === "codex") {
-          lines.push(`  \x1b[33m${fit("Codex has no external statusline yet — these switches apply to Claude instances only", 4)}\x1b[0m`);
-        }
-        lines.push("");
-        const relayLocked = relayKind !== "none";
-        for (let i = 0; i < STATUSLINE_DISPLAY_ITEMS.length; i++) {
-          const item = STATUSLINE_DISPLAY_ITEMS[i];
-          const enabled = !!readDisplayPath(statuslineDisplay, item.key);
-          const disabled = relayLocked && item.key !== "display.showUsage";
-          const row = `${i === statuslineIndex ? "❯" : " "} ${enabled ? "●" : "○"} ${item.label}  ${enabled ? "on" : "off"}`;
-          if (i === statuslineIndex) {
-            lines.push(`  \x1b[36m${fit(row, 2)}\x1b[0m`);
-          } else if (disabled) {
-            lines.push(`  \x1b[90m${fit(row, 2)}\x1b[0m`);
-          } else {
-            lines.push(`  ${fit(row, 2)}`);
-          }
-        }
-        lines.push("");
-        lines.push(`  \x1b[90m↑↓ navigate   space/⏎ toggle   esc back\x1b[0m`);
+        lines.push(
+          ...buildStatuslinePanelLines({
+            display: statuslineDisplay,
+            relayKind: statuslineRelay?.kind || "none",
+            context: opts.statuslineContext,
+            cursor: statuslineIndex,
+            width: (process.stdout.columns || 80) - 4,
+          }),
+        );
       } else if (m === "confirm") {
         lines.push("");
         const { kind, target } = confirmAction;
@@ -887,4 +919,4 @@ async function runTUI() {
 }
 
 
-export { launchRefForQuick, launchRefForRow, runTUI, tuiSelect };
+export { buildStatuslinePanelLines, launchRefForQuick, launchRefForRow, runTUI, tuiSelect };

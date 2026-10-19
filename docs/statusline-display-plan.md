@@ -150,17 +150,19 @@ provider 选择屏（已有 `o` 设置标签颜色的那一层）高亮任意行
 
 ### 5.2 面板
 
+检测到 claude-hud 时的实际渲染：
+
 ```
 ◆ Statusline display
 
-  检测到 claude-hud（全局 statusLine）：模型/项目/git/context 由 claude-hud 显示
-  ；仅「用量段」可调整
+  ⚡ claude-hud is active — model / project / git / context are rendered by claude-hud
+  Locked rows are supplied by claude-hud; turn it off to use the built-in renderer
 
-  ● 模型名          on
-  ● 项目名          on
-  ● git 分支        on
-  ● context 用量    on
-    Z.AI / DeepSeek 用量段  on
+  ❯ ● Model name  on · via claude-hud
+    ● Project name  on · via claude-hud
+    ● Git branch  on · via claude-hud
+    ● Context usage  on · via claude-hud
+    ● Provider usage (Z.AI / DeepSeek)  on
 
 ↑↓ navigate   space/⏎ toggle   esc back
 ```
@@ -168,11 +170,16 @@ provider 选择屏（已有 `o` 设置标签颜色的那一层）高亮任意行
 - 五项：模型名、项目名、git 分支、context 用量、用量段。
 - `↑↓` / `j k` 移动；空格或 `⏎` 切换并立即写文件；`esc` 返回 provider 屏。
 - 保存失败时在提示行显示 `✗ Failed to save statusline preference`。
-- 检测到 relay（claude-hud 或其他工具）时，前四项置灰、空格无效（光标仍可移动），用量段可切换。
-- 未检测到 relay 时顶部显示：`自绘状态栏：以下项目可自由开关（即时生效）`。
-- 检测到其他 relay 时顶部显示：`检测到自定义 statusLine：新增项不叠加；仅「用量段」可调`。
-- 检测在打开面板时计算一次；检测逻辑与 wrapper 运行时一致。
-- 高亮的是 Codex provider 时按 `s` 仍可打开同一面板，但顶部追加提示：`Codex 暂无外部 statusline，此设置仅对 Claude 实例生效`。
+- **检测到 claude-hud**：
+  - 顶部用黄色加粗 + `⚡` 高亮 `claude-hud is active`；
+  - 前四项锁定（空格无效，光标仍可移动），值保留 on/off 并追加 ` · via claude-hud`；
+  - 增加一行说明：`Locked rows are supplied by claude-hud; turn it off to use the built-in renderer`；
+  - 用量段保持可切换，不加来源标注。
+- **检测到其他 relay**：同样锁定与高亮，来源标注为 ` · via statusLine`，说明行为 `remove it to use the built-in renderer`。
+- **未检测到 relay**：顶部用 dim 显示 `Self-drawn statusline — all switches apply (effective immediately)`，五项均可切换。
+- 检测在打开面板时计算一次（读取全局 `~/.claude/settings.json`）。
+- 高亮的是 Codex provider 时按 `s` 仍可打开同一面板，但追加黄色提示：`Codex has no external statusline yet — these switches apply to Claude instances only`。
+- 面板行由纯函数 `buildStatuslinePanelLines` 生成，便于单元测试（TUI 无伪 TTY 测试）。
 
 ### 5.3 生效
 

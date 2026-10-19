@@ -18,6 +18,7 @@ const {
   loadStatuslineDisplay,
   saveStatuslineDisplay,
   detectStatuslineRelay,
+  buildStatuslinePanelLines,
   STATUSLINE_DISPLAY_ITEMS,
 } = __test;
 
@@ -257,4 +258,62 @@ test("self-draw: aggregation model id drops the ccs key prefix", () => {
     cwd: "/tmp",
   });
   assert.equal(lines[0], "[Prov][glm-5.3[1M]] tmp");
+});
+
+// ─── TUI panel rows ─────────────────────────────────────────────────────
+
+const displayAllOn = {
+  display: { showModel: true, showProject: true, showContext: true, showUsage: true },
+  gitStatus: { enabled: true },
+};
+
+function panel(relayKind, extra = {}) {
+  return buildStatuslinePanelLines({
+    display: displayAllOn,
+    relayKind,
+    context: extra.context ?? null,
+    cursor: extra.cursor ?? 0,
+    width: 100,
+  });
+}
+
+test("panel: claude-hud is highlighted and locked rows say via claude-hud", () => {
+  const rows = panel("claude-hud");
+  assert.match(rows[0], /^\x1b\[1m\x1b\[33m  ⚡ claude-hud is active/);
+
+  const locked = rows.filter((r) => r.includes("via claude-hud"));
+  assert.equal(locked.length, 4);
+  assert.ok(locked.some((r) => r.includes("Model name") && r.includes("on · via claude-hud")));
+  assert.ok(locked.some((r) => r.includes("Project name")));
+  assert.ok(locked.some((r) => r.includes("Git branch")));
+  assert.ok(locked.some((r) => r.includes("Context usage")));
+
+  const usageRow = rows.find((r) => r.includes("Provider usage"));
+  assert.ok(usageRow && !usageRow.includes("via claude-hud"), usageRow);
+  assert.ok(rows.some((r) => r.includes("Locked rows are supplied by claude-hud")));
+  // The cursor row is cyan, even when it points at a locked switch.
+  assert.ok(rows.some((r) => r.startsWith("\x1b[36m") && r.includes("Model name")));
+});
+
+test("panel: other relay labels locked rows via statusLine", () => {
+  const rows = panel("other");
+  assert.ok(rows[0].includes("custom statusLine is active"));
+  assert.equal(rows.filter((r) => r.includes("via statusLine")).length, 4);
+  assert.ok(rows.some((r) => r.includes("remove it to use the built-in renderer")));
+});
+
+test("panel: no relay has no annotations and no lock notice", () => {
+  const rows = panel("none");
+  assert.ok(rows[0].startsWith("\x1b[90m"));
+  assert.ok(!rows.some((r) => r.includes("via ")));
+  assert.ok(!rows.some((r) => r.includes("Locked rows")));
+});
+
+test("panel: a stored off preference is preserved but still attributed to claude-hud", () => {
+  const rows = buildStatuslinePanelLines({
+    display: { ...displayAllOn, display: { ...displayAllOn.display, showModel: false } },
+    relayKind: "claude-hud",
+    width: 100,
+  });
+  assert.ok(rows.some((r) => r.includes("Model name") && r.includes("off · via claude-hud")));
 });
