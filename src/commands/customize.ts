@@ -253,7 +253,7 @@ Usage:
   switch --id <providerId> <cmd> [...]  Launch by provider id (disambiguates duplicate names)
   switch --sync <provider> <cmd> [...]  Same, but confirm config drift first
   switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
-  switch sync                           Detect & sync config drift (plugins, settings fields, common config)
+  switch sync                           Detect & sync config drift (plugins, settings fields, shared config)
   switch doctor                         Diagnose the environment
   switch clean [--all] [--force]        Remove instance directories (refuses live sessions; --force overrides)
   switch ps                             List running switch-launched sessions

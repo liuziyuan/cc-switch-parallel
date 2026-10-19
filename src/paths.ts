@@ -26,6 +26,12 @@ const STATUSLINE_PREFS_VERSION = 1;
 // cc-switch 4.0 aggregation (Stack) device-local state — written only by the
 // desktop app; this CLI reads it fail-open (missing/corrupt = aggregation off).
 const LIVE_STATE_PATH = join(CC_SWITCH_DIR, "live-state.json");
+// cc-switch 4.0 stores shared settings in the clients' live config files
+// (the "common config snippet" feature was removed). These are the
+// user-key sources for shared-config.ts; the instance dirs stay isolated
+// via CLAUDE_CONFIG_DIR / CODEX_HOME.
+const GLOBAL_CLAUDE_SETTINGS_PATH = join(HOME, ".claude", "settings.json");
+const GLOBAL_CODEX_CONFIG_PATH = join(HOME, ".codex", "config.toml");
 // The aggregation entry is a RUNTIME-VIRTUAL provider row: never stored in the
 // cc-switch DB (which the desktop GUI renders — an auto-generated row would
 // show up there as a non-user entry), derived on every query from live-state +
@@ -52,4 +58,4 @@ const NPM_PACKAGE_NAME = "cc-switch-parallel";
 const VERSION = "__VERSION__";
 
 
-export { CC_SWITCH_DIR, DB_PATH, HISTORY_PATH, HOME, INSTANCES_DIR, LIVE_STATE_PATH, NPM_PACKAGE_NAME, RESOURCES_DIR, SCRIPT_DIR, SETTINGS_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, STATUSLINE_PREFS_VERSION, SYNC_STATE_PATH, VERSION, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID, __filename, getHomeDir };
+export { CC_SWITCH_DIR, DB_PATH, GLOBAL_CLAUDE_SETTINGS_PATH, GLOBAL_CODEX_CONFIG_PATH, HISTORY_PATH, HOME, INSTANCES_DIR, LIVE_STATE_PATH, NPM_PACKAGE_NAME, RESOURCES_DIR, SCRIPT_DIR, SETTINGS_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, STATUSLINE_PREFS_VERSION, SYNC_STATE_PATH, VERSION, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID, __filename, getHomeDir };

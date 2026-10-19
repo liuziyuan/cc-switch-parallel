@@ -2,12 +2,13 @@
 
 import { join } from "node:path";
 import { APP_ADAPTERS } from "./adapters.js";
-import { loadSettings, queryCommonConfig, queryProvidersByApp } from "./db.js";
+import { loadSettings, queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
 import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { recordLaunch } from "./history.js";
 import { parseJsonObject } from "./json-utils.js";
 import { formatAmbiguousProvider, resolveProviderRef, type ProviderRef } from "./provider-ref.js";
+import { readSharedConfig } from "./shared-config.js";
 import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.js";
 
 // ─── Launch logic ──────────────────────────────────────────────────────
@@ -72,15 +73,15 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
   const settingsConfig = parsedSettingsConfig ?? {};
   const meta = parsedMeta ?? {};
   const category = row.category;
-  const commonSnippet = queryCommonConfig(adapter.appType);
+  const shared = readSharedConfig(adapter.appType);
   const settings = loadSettings();
 
   const instanceDir = adapter.setupInstance(row.id);
   // Guard BEFORE prepare overwrites the main config file — user edits beyond
   // plugins get a warning + backup instead of vanishing silently.
-  guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings);
-  adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, commonSnippet, settings);
-  recordInstanceBaseline(adapter, row.id, instanceDir, commonSnippet);
+  guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, shared, settings);
+  adapter.prepare(instanceDir, row.id, settingsConfig, meta, category, shared, settings);
+  recordInstanceBaseline(adapter, row.id, instanceDir, shared);
   // Record AFTER prepare succeeded (a failed prep is not a launch) and BEFORE
   // launch (adapter.launch execs and never returns). This is the single
   // recording point — both TUI and command mode pass through here, and the

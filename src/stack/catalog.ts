@@ -6,6 +6,7 @@ import { providerUsesCommonConfig } from "../claude-config.js";
 import { atomicWrite } from "../fs-utils.js";
 import { isPlainObject, jsonDeepClone, mergeCommonOverProvider } from "../json-utils.js";
 import { HOME, INSTANCES_DIR, RESOURCES_DIR } from "../paths.js";
+import { isLiveSharedSnippet, sharedSnippetText } from "../shared-config.js";
 import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
 import { parseToml, stringifyToml } from "../toml.js";
 import { tomlDeepMerge } from "../toml-utils.js";
@@ -507,29 +508,38 @@ function protectCodexAggregationIdentity(configObj, settingsConfig) {
   return configObj;
 }
 
-function buildCodexConfig(settingsConfig, meta, category, commonSnippet, provider, settings) {
+function buildCodexConfig(settingsConfig, meta, category, shared, provider, settings) {
   // Defensive: a malformed DB row (null/array/scalar) would throw on
   // settingsConfig.config below and abort prepare.
   if (!isPlainObject(settingsConfig)) settingsConfig = {};
   if (!isPlainObject(meta)) meta = {};
   const configText = settingsConfig.config || "";
+  const sharedText = sharedSnippetText(shared);
+  const sharedTrimmed = sharedText.trim();
+  const liveShared = isLiveSharedSnippet(shared);
   // Aggregation rows (codex signature: loopback active table + PROXY_MANAGED)
-  // always merge the common config — same reasoning as claude's
+  // always merge the shared config — same reasoning as claude's
   // buildClaudeEffectiveSettings: the row carries only routing identity, so
-  // the subset fallback can never see the common content, and an explicit
+  // the subset fallback can never see the shared content, and an explicit
   // commonConfigEnabled:false still wins. Not gated on readStackState.
+  // live mode (cc-switch 4.0.2+) merges the user-key projection on every row;
+  // legacy keeps the historical forced-aggregation/subset rules.
   const isAgg = isCodexAggregationProviderSettings(settingsConfig);
   let effectiveConfigText = configText;
 
-  // Common config merge (TOML)
-  const snippetTrimmed = (commonSnippet || "").trim();
-  if (snippetTrimmed && (
-    (isAgg && meta?.commonConfigEnabled !== false) ||
-    providerUsesCommonConfig("codex", settingsConfig, meta, commonSnippet)
-  )) {
+  // Shared config merge (TOML)
+  const useShared = !!sharedTrimmed && (
+    meta?.commonConfigEnabled === false
+      ? false
+      : liveShared
+        ? true
+        : (isAgg && meta?.commonConfigEnabled !== false) ||
+          providerUsesCommonConfig("codex", settingsConfig, meta, sharedText)
+  );
+  if (useShared) {
     try {
       const target = parseToml(configText || "");
-      const source = parseToml(commonSnippet.trim());
+      const source = parseToml(sharedTrimmed);
       tomlDeepMerge(target, source);
       effectiveConfigText = stringifyToml(target);
     } catch (e: any) {

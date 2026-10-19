@@ -1,32 +1,61 @@
 // ─── drift (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS, computeEnabledPluginsPatch } from "./adapters.js";
-import { loadSettings, queryCommonConfig, queryProviderById, queryProvidersByApp } from "./db.js";
+import { APP_ADAPTERS, computeEnabledPluginsPatch, readSharedEnabledPlugins } from "./adapters.js";
+import { loadSettings, queryProviderById, queryProvidersByApp } from "./db.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
+import { isPlainObject, parseJsonObject } from "./json-utils.js";
 import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { loadSyncState, saveSyncState, sha256, withSyncStateLock } from "./sessions.js";
+import { detectSharedConfigMode, readSharedConfig, sharedConfigHash, sharedSnippetText } from "./shared-config.js";
 import { classifyConfirmKey, fitLine, sanitizeAnsiLine, sanitizeText } from "./terminal-utils.js";
-import { parseJsonObject } from "./json-utils.js";
 import { collectPatchPaths } from "./upward.js";
+
+// Normalize a shared-config input (SharedConfig object or a legacy snippet
+// string, which old call sites/tests still pass) into the pieces the
+// baseline needs.
+function sharedFingerprint(shared: any) {
+  if (typeof shared === "string" || shared === null || shared === undefined) {
+    const text = shared || "";
+    return { mode: "legacy", text, hash: sha256(text) };
+  }
+  return {
+    mode: shared.mode,
+    text: sharedSnippetText(shared),
+    hash: sharedConfigHash(shared),
+  };
+}
 
 // ─── Config drift detection & sync ────────────────────────────────────
 
-// Downward drift: cc-switch's common config snippet changed since a given
-// instance last had its settings.json generated (state.instances[appType][id]
-// .commonHash, recorded by recordInstanceBaseline() at prepare time — NOT a
-// single global hash, so syncing plugins for one instance can't silently mark
-// every other instance's common-config drift as resolved).
+// Downward drift: the shared settings document changed since a given
+// instance last had its config generated. In 4.0.2+ live mode the document
+// is the global live config's user-key projection; in legacy mode it is the
+// DB's common_config snippet. Baselines are per-instance (NOT a single global
+// hash), so syncing plugins for one instance can't silently mark every other
+// instance's shared-config drift as resolved.
 // Returns { appType: [providerId, ...] } for each app with stale instances.
 function collectStaleInstanceIds(state: any): Record<string, string[]> {
   const stale: Record<string, string[]> = {};
   for (const adapter of Object.values(APP_ADAPTERS)) {
-    const snippet = queryCommonConfig(adapter.appType) || "";
-    const hash = sha256(snippet);
+    const shared = readSharedConfig(adapter.appType);
+    // Unreadable live file: do not guess. Marking every instance stale here
+    // would trigger a mass rewrite from an empty projection.
+    if (shared.mode === "live" && shared.unavailable) continue;
+    const { mode, hash } = sharedFingerprint(shared);
     const instanceStates = state?.instances?.[adapter.appType] || {};
-    const ids = Object.keys(instanceStates).filter(
-      (id) => instanceStates[id]?.commonHash !== undefined && instanceStates[id].commonHash !== hash,
-    );
+    const ids = Object.keys(instanceStates).filter((id) => {
+      const entry = instanceStates[id];
+      if (!entry) return false;
+      if (entry.sharedHash !== undefined) {
+        return entry.sharedMode !== mode || entry.sharedHash !== hash;
+      }
+      // Upgrade window: entries recorded before shared-source tracking only
+      // carry commonHash. Legacy keeps the exact old comparison; live mode
+      // rebuilds once because the source itself changed.
+      if (entry.commonHash === undefined) return false;
+      return mode === "live" || entry.commonHash !== hash;
+    });
     if (ids.length) stale[adapter.appType] = ids;
   }
   return stale;
@@ -63,7 +92,7 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
   for (const [appType, ids] of Object.entries(staleByApp)) {
     const adapter = Object.values(APP_ADAPTERS).find((a) => a.appType === appType);
     if (!adapter) continue;
-    const commonSnippet = queryCommonConfig(appType);
+    const shared = readSharedConfig(appType);
     const settings = loadSettings();
     state.instances[appType] = state.instances[appType] || {};
     for (const id of ids) {
@@ -85,10 +114,10 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
         const instanceDir = adapter.setupInstance(row.id);
         // Guard BEFORE prepare overwrites — this refresh path historically
         // wiped other instances' own unsynced edits with zero warning.
-        guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, commonSnippet, settings);
-        adapter.prepare(instanceDir, row.id, settingsConfig, meta, row.category, commonSnippet, settings);
+        guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, shared, settings);
+        adapter.prepare(instanceDir, row.id, settingsConfig, meta, row.category, shared, settings);
         state.instances[appType][row.id] = buildInstanceBaselineEntry(
-          adapter, instanceDir, commonSnippet,
+          adapter, instanceDir, shared,
         );
         (refreshedIds[appType] ||= []).push(row.id);
         refreshed.push(row.name);
@@ -110,8 +139,18 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
 // overwrite guard and the settings-field sync diff. Adapters without
 // readInstanceSettingsSnapshot record v2-shaped entries and simply don't
 // participate in settings-field sync.
-function buildInstanceBaselineEntry(adapter: any, instanceDir: string, commonSnippet: string): any {
-  const entry: any = { commonHash: sha256(commonSnippet || ""), preparedAt: Date.now() };
+function buildInstanceBaselineEntry(adapter: any, instanceDir: string, shared: any): any {
+  const fingerprint = sharedFingerprint(shared);
+  const entry: any = {
+    sharedMode: fingerprint.mode,
+    sharedHash: fingerprint.hash,
+    preparedAt: Date.now(),
+  };
+  // Keep the legacy key in legacy mode so older CLI versions (and every
+  // existing test/fixture that reads it) keep seeing the same value. Live
+  // deliberately omits it: a downgraded CLI must not treat a live-source
+  // baseline as a stale common-config mirror and rewrite the frozen snippet.
+  if (fingerprint.mode === "legacy") entry.commonHash = fingerprint.hash;
   if (adapter.readInstanceSettingsSnapshot) {
     const snap = adapter.readInstanceSettingsSnapshot(instanceDir);
     if (snap) entry.preparedSettings = snap;
@@ -129,13 +168,13 @@ function buildInstanceBaselineEntry(adapter: any, instanceDir: string, commonSni
 // state was actually edited by the user". Called on every launch, for every
 // app — not just claude/plugins — so codex's commonHash tracking works too.
 // Best-effort: a failure here must never block a launch.
-function recordInstanceBaseline(adapter, providerId, instanceDir, commonSnippet) {
+function recordInstanceBaseline(adapter, providerId, instanceDir, shared) {
   try {
     withSyncStateLock((state) => {
       state.instances = state.instances || {};
       state.instances[adapter.appType] = state.instances[adapter.appType] || {};
       state.instances[adapter.appType][providerId] = buildInstanceBaselineEntry(
-        adapter, instanceDir, commonSnippet,
+        adapter, instanceDir, shared,
       );
       state.version = 3;
       saveSyncState(state);
@@ -157,12 +196,7 @@ function snapshotSyncState(state, pluginSyncedCmds) {
     const { installedKeys } = computeEnabledPluginsPatch(state);
     state.claude = state.claude || {};
     state.claude.installedPluginKeys = installedKeys;
-    let enabled = {};
-    try {
-      const snip = queryCommonConfig("claude");
-      if (snip) enabled = JSON.parse(snip).enabledPlugins || {};
-    } catch {}
-    state.claude.enabledPlugins = enabled;
+    state.claude.enabledPlugins = readSharedEnabledPlugins();
   }
   state.version = 3;
 }
@@ -328,7 +362,8 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   // Build the change summary (dedup added/removed vs toggled).
   const lines: string[] = [];
   for (const [appType, names] of Object.entries(commonDrift)) {
-    lines.push(`\x1b[33mcommon config (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
+    const source = detectSharedConfigMode() === "live" ? "live shared config" : "common config";
+    lines.push(`\x1b[33m${source} (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
   }
   for (const [cmd, d] of Object.entries(settingsDrifts)) {
     // Per-instance settings lines, target-tagged so the user knows where each
@@ -345,7 +380,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
       for (const ch of shown) {
         const target = blockedPaths.has(ch.path)
           ? (d.rejectedReasons?.[ch.path] === "virtual" ? "blocked-virtual" : "blocked-sensitive")
-          : commonPaths.has(ch.path) ? "common"
+          : commonPaths.has(ch.path) ? (d.sharedMode === "live" ? "shared-live" : "common")
           : providerPatchByPath.has(ch.path) ? "provider" : null;
         if (!target) continue; // losing vote / already equal in DB — not written
         lines.push(formatSettingsChangeLine(ch, target));
@@ -357,10 +392,16 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     for (const [path, count] of Object.entries(d.conflicts || {})) {
       lines.push(`\x1b[2m(${count} instances disagree on ${path} — most recent edit wins)\x1b[0m`);
     }
-    // Adapters whose common snippet is a re-serialized document (codex TOML)
-    // lose comments/formatting on write-back — say so BEFORE the confirm.
-    if (APP_ADAPTERS[cmd]?.rewritesCommonOnSync && Object.keys(d.commonPatch || {}).length) {
-      lines.push(`\x1b[2m(note: write-back rewrites common config (${cmd}) — comments and formatting in the TOML will be lost)\x1b[0m`);
+    // Adapters whose shared document is a re-serialized TOML file lose
+    // comments/formatting on write-back — true for codex in both legacy
+    // (common_config_codex) and live (~/.codex/config.toml) modes. Say so
+    // BEFORE the confirm.
+    if (
+      (APP_ADAPTERS[cmd]?.rewritesCommonOnSync || cmd === "codex") &&
+      Object.keys(d.commonPatch || {}).length
+    ) {
+      const where = d.sharedMode === "live" ? "the global live config" : "common config";
+      lines.push(`\x1b[2m(note: write-back rewrites ${where} (${cmd}) — comments and formatting in the TOML will be lost)\x1b[0m`);
     }
     // Virtual Stack entry: provider-target edits have no DB row to land in —
     // shown as blocked above; spell out why so it doesn't read as a bug.

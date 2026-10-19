@@ -1,13 +1,13 @@
 // ─── upward (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync, statSync, unlinkSync } from "node:fs";
+import { join, basename } from "node:path";
 import { withFileLockSync } from "./file-lock.js";
 import { DB_PROC_TIMEOUT_MS, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
-import { atomicWrite } from "./fs-utils.js";
-import { deepEqualJson, isPlainObject, isSafeObjectKey } from "./json-utils.js";
-import { DB_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
+import { atomicWrite, ensurePrivateDir, readdirSyncSafe } from "./fs-utils.js";
+import { applyMergePatch, deepEqualJson, isPlainObject, isSafeObjectKey, jsonDeepClone } from "./json-utils.js";
+import { CC_SWITCH_DIR, DB_PATH, GLOBAL_CLAUDE_SETTINGS_PATH, GLOBAL_CODEX_CONFIG_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { applyTomlPatchText } from "./toml-utils.js";
 
 // ─── Settings-field upward channel (detect → arbitrate → split → write) ─
@@ -137,14 +137,100 @@ function getPathValue(obj, path) {
 // hiccup must not abort the rest, and — unlike the plugin channel's silent
 // best-effort — failures are REPORTED, because the user just explicitly
 // confirmed these writes; losing one silently is worse than an error line.
-function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
-  if (commonPatch && Object.keys(commonPatch).length) {
-    try {
-      patchCommonConfigClaude(commonPatch);
-    } catch (e: any) {
-      process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
-    }
+// ─── Live shared write-back (cc-switch 4.0.2+) ─────────────────────────
+// In live mode the shared settings document IS the client's global config
+// file, not a DB snippet. The write path mirrors the codex DB shell above:
+// hold our lock, read, patch, re-read for a compare-and-swap, then atomically
+// replace with the file's original mode. The desktop app does not honor our
+// .lock file, so the CAS is what actually narrows the race; three failed
+// attempts surface as a reported error (the edit stays in the instance file
+// and the overwrite guard protects it on the next launch).
+
+const LIVE_BACKUP_DIR = join(CC_SWITCH_DIR, "backups", "live");
+const LIVE_BACKUP_KEEP = 10;
+
+function backupLiveFile(appType, filePath) {
+  try {
+    if (!existsSync(filePath)) return null;
+    const dir = join(LIVE_BACKUP_DIR, appType);
+    ensurePrivateDir(dir);
+    const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
+    const dest = join(dir, `${basename(filePath)}.${ts}`);
+    // Backups are private: the live file carries tokens for the active provider.
+    atomicWrite(dest, readFileSync(filePath, "utf8"), 0o600);
+    const keep = (readdirSyncSafe(dir) || [])
+      .filter((n) => n.startsWith(`${basename(filePath)}.`))
+      .sort()
+      .slice(0, -LIVE_BACKUP_KEEP);
+    for (const name of keep) { try { unlinkSync(join(dir, name)); } catch {} }
+    return dest;
+  } catch {
+    return null;
   }
+}
+
+function casWriteLiveFile(filePath, appType, transform) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let raw = "";
+    let existed = true;
+    try {
+      raw = readFileSync(filePath, "utf8");
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") throw e;
+      existed = false;
+    }
+    const next = transform(raw);
+    // Compare-and-swap: a concurrent writer between our read and write must
+    // not lose its edit. Re-read immediately before replacing.
+    let current = "";
+    let currentExists = true;
+    try {
+      current = readFileSync(filePath, "utf8");
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") throw e;
+      currentExists = false;
+    }
+    if (currentExists !== existed || current !== raw) {
+      if (attempt < 2) sleepSync(50);
+      continue;
+    }
+    let mode = 0o600;
+    if (existed) {
+      try { mode = statSync(filePath).mode & 0o777; } catch {}
+    }
+    backupLiveFile(appType, filePath);
+    atomicWrite(filePath, next, mode);
+    return;
+  }
+  throw new Error(`${filePath} kept changing under us (desktop app writing concurrently?) — run switch sync again`);
+}
+
+function patchClaudeLiveFile(patchObj) {
+  const result = withFileLockSync(GLOBAL_CLAUDE_SETTINGS_PATH, () =>
+    casWriteLiveFile(GLOBAL_CLAUDE_SETTINGS_PATH, "claude", (raw) => {
+      let doc: any = {};
+      if (raw.trim()) {
+        doc = JSON.parse(raw);
+        if (!isPlainObject(doc)) throw new Error(`${GLOBAL_CLAUDE_SETTINGS_PATH} is not a JSON object`);
+      }
+      return JSON.stringify(applyMergePatch(doc, jsonDeepClone(patchObj)), null, 2) + "\n";
+    }),
+  );
+  if (!result.acquired) {
+    throw new Error(`could not lock ${GLOBAL_CLAUDE_SETTINGS_PATH} (${result.reason}) — run switch sync again`);
+  }
+}
+
+function patchCodexLiveFile(patchObj) {
+  const result = withFileLockSync(GLOBAL_CODEX_CONFIG_PATH, () =>
+    casWriteLiveFile(GLOBAL_CODEX_CONFIG_PATH, "codex", (raw) => applyTomlPatchText(raw, patchObj)),
+  );
+  if (!result.acquired) {
+    throw new Error(`could not lock ${GLOBAL_CODEX_CONFIG_PATH} (${result.reason}) — run switch sync again`);
+  }
+}
+
+function applyClaudeProviderPatches(providerPatches) {
   for (const [providerId, patchObj] of Object.entries(providerPatches || {})) {
     if (!patchObj || !Object.keys(patchObj).length) continue;
     // Virtual Stack entry: no DB row — an UPDATE here would silently match 0
@@ -157,6 +243,35 @@ function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
       process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} settings: ${e.message}\x1b[0m\n`);
     }
   }
+}
+
+function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
+  if (commonPatch && Object.keys(commonPatch).length) {
+    try {
+      patchCommonConfigClaude(commonPatch);
+    } catch (e: any) {
+      process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
+    }
+  }
+  applyClaudeProviderPatches(providerPatches);
+}
+
+// live mode: shared fields go to ~/.claude/settings.json, provider fields to
+// the provider row exactly as before.
+function applyClaudeLiveSettingsFieldPatches(sharedPatch, providerPatches) {
+  if (sharedPatch && Object.keys(sharedPatch).length) {
+    try {
+      patchClaudeLiveFile(sharedPatch);
+    } catch (e: any) {
+      process.stderr.write(`\x1b[31m✗ Failed to write global live config: ${e.message}\x1b[0m\n`);
+    }
+  }
+  applyClaudeProviderPatches(providerPatches);
+}
+
+function applyClaudeLivePluginPatch(patch) {
+  if (!patch || !Object.keys(patch).length) return;
+  patchClaudeLiveFile({ enabledPlugins: patch });
 }
 
 // ─── Codex write-back (TOML) ───────────────────────────────────────────
@@ -257,6 +372,17 @@ function patchCodexProviderConfig(providerId, patchObj) {
 
 // Thin shell mirroring applyClaudeSettingsFieldPatches: same separate
 // try-blocks, same report-don't-swallow error style.
+function applyCodexProviderPatches(providerPatches) {
+  for (const [providerId, patchObj] of Object.entries(providerPatches || {})) {
+    if (!patchObj || !Object.keys(patchObj).length) continue;
+    try {
+      patchCodexProviderConfig(providerId, patchObj);
+    } catch (e: any) {
+      process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} config: ${e.message}\x1b[0m\n`);
+    }
+  }
+}
+
 function applyCodexSettingsFieldPatches(drift) {
   if (drift.commonPatch && Object.keys(drift.commonPatch).length) {
     try {
@@ -265,14 +391,21 @@ function applyCodexSettingsFieldPatches(drift) {
       process.stderr.write(`\x1b[31m✗ Failed to write common config: ${e.message}\x1b[0m\n`);
     }
   }
-  for (const [providerId, patchObj] of Object.entries(drift.providerPatches || {})) {
-    if (!patchObj || !Object.keys(patchObj).length) continue;
+  applyCodexProviderPatches(drift.providerPatches);
+}
+
+// live mode: shared fields go to ~/.codex/config.toml (whole-document
+// re-serialization — comments/formatting are lost, surfaced at the prompt),
+// provider fields to the provider row.
+function applyCodexLiveSettingsFieldPatches(drift) {
+  if (drift.commonPatch && Object.keys(drift.commonPatch).length) {
     try {
-      patchCodexProviderConfig(providerId, patchObj);
+      patchCodexLiveFile(drift.commonPatch);
     } catch (e: any) {
-      process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} config: ${e.message}\x1b[0m\n`);
+      process.stderr.write(`\x1b[31m✗ Failed to write global live config: ${e.message}\x1b[0m\n`);
     }
   }
+  applyCodexProviderPatches(drift.providerPatches);
 }
 
 // Collapse a patch subtree into one null (RFC 7396 whole-subtree remove)
@@ -431,4 +564,4 @@ function normalizeInstalledPluginPaths() {
 }
 
 
-export { INSTANCE_PLUGIN_PATH_RE, applyClaudeSettingsFieldPatches, applyCodexSettingsFieldPatches, buildNestedAssign, collectPatchPaths, execDBWithChanges, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, normalizeInstalledPluginPaths, patchCodexCommonConfig, patchCodexProviderConfig, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget };
+export { INSTANCE_PLUGIN_PATH_RE, applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyClaudeSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, applyCodexSettingsFieldPatches, buildNestedAssign, collectPatchPaths, execDBWithChanges, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, normalizeInstalledPluginPaths, patchCodexCommonConfig, patchCodexLiveFile, patchCodexProviderConfig, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget };

@@ -7,12 +7,13 @@ import type { DoctorCheck, InstanceInfo } from "../types.js";
 import { APP_ADAPTERS } from "../adapters.js";
 import { instanceInstructionsPath } from "./customize.js";
 import { pruneInstanceBaselines } from "./ps.js";
-import { queryCommonConfig, queryDB, queryProviderById, queryProvidersByApp } from "../db.js";
+import { queryCommonConfig, queryDB, queryProviderById, queryProvidersByApp, readSchemaUserVersion } from "../db.js";
 import { lstatSyncSafe, readdirSyncSafe } from "../fs-utils.js";
 import { pruneInstanceSettingsBackups } from "../guard.js";
 import { isPlainObject } from "../json-utils.js";
 import { readSessions, sessionLiveness } from "../sessions.js";
 import { DB_PATH, INSTANCES_DIR, LIVE_STATE_PATH, SYNC_STATE_PATH } from "../paths.js";
+import { detectSharedConfigMode, readSharedConfig } from "../shared-config.js";
 import { codexAggregationRoute } from "../stack/catalog.js";
 import { isAggregationProviderSettings, probeTcpReachable, readStackState, virtualStackProviderFor } from "../stack/state.js";
 import { parseToml } from "../toml.js";
@@ -206,19 +207,50 @@ async function runDoctor(): Promise<void> {
   }
   add("cc-switch DB", dbOk, dbOk ? `readable (providers — ${counts})` : counts);
 
+  // Shared settings source: cc-switch 4.0.2+ moved shared settings into the
+  // clients' live config files and froze the DB snippets. Show which source
+  // this run uses so "I deleted it but switch still applies it" is diagnosable.
+  const sharedMode = detectSharedConfigMode();
+  const schemaVersion = readSchemaUserVersion();
+  add(
+    "shared config source",
+    schemaVersion !== null,
+    `${sharedMode} mode (DB user_version ${schemaVersion === null ? "unknown" : schemaVersion}; override with CC_SWITCH_SHARED_SOURCE)`,
+  );
+
   // CLI binaries
   for (const adapter of Object.values(APP_ADAPTERS)) {
     const p = which(adapter.bin);
     add(`${adapter.bin} binary`, !!p, p || "not found on PATH");
   }
 
-  // common config parse
+  // Shared config: the live global file in 4.0.2+ mode (the DB snippet is a
+  // frozen legacy snapshot then), the DB snippet in legacy mode.
   for (const adapter of Object.values(APP_ADAPTERS)) {
+    const shared = readSharedConfig(adapter.appType);
+    if (shared.mode === "live") {
+      add(
+        `shared config (${adapter.appType})`,
+        !shared.unavailable,
+        shared.unavailable
+          ? `unreadable: ${shared.sourcePath}`
+          : `live · ${Object.keys(shared.parsed || {}).length} user key(s) — ${shared.sourcePath}`,
+      );
+      const snip = queryCommonConfig(adapter.appType);
+      if (snip) {
+        add(
+          `common_config_${adapter.appType}`,
+          true,
+          "legacy snapshot (frozen — ignored in live mode)",
+        );
+      }
+      continue;
+    }
     const snip = queryCommonConfig(adapter.appType);
     if (!snip) { add(`common_config_${adapter.appType}`, true, "not set"); continue; }
     let pass = true;
     try { adapter.appType === "claude" ? JSON.parse(snip) : parseToml(snip); } catch { pass = false; }
-    add(`common_config_${adapter.appType}`, pass, pass ? "parseable" : "unparseable");
+    add(`common_config_${adapter.appType}`, pass, pass ? "parseable (legacy source)" : "unparseable");
   }
 
   // instance dirs

@@ -95,7 +95,17 @@ switch --help     # 列出所有命令
 
 ## 配置漂移与同步
 
-**心智模型：配置在启动时向下下发，你在会话里改的东西应该能被收回来。** `switch` 每次启动都从 cc-switch 数据库生成各实例的配置——会话内的改动是唯一的例外，同步机制就是为收编它而存在的。上行通道覆盖 Claude 实例 `settings.json` 与 Codex 实例 `config.toml` 的**全部字段**：插件状态、生成的 statusLine 与 Codex 的 `[tui] status_line`（三者均为 channel 专属，见下文）之外的 env、permissions、hooks、模型、审批策略等都会被检测、展示、按字段归属写回。Codex CLI 自己写入实例 `config.toml` 的**运行时状态**（`projects.*` 项目信任、`hooks.state.*` hook 信任哈希、`tui` 下的一次性标记）不属于用户配置，上行同步与覆盖守卫都会忽略它们；它们由启动路径单独携带——每次重新生成 `config.toml` 时从现有文件原样保留，因此 hook 授权与项目信任不会因重启丢失，也不会再触发同步提示。改动展示为字段路径（dotted path），确认后按**智能拆分**写回——通用配置里已有的字段写回 `common_config_<app>`（否则下次启动时通用配置的旧值会盖掉它），其余写回该 provider 的配置。Codex 的通用配置是 TOML 文档，确认通用方向的写回会重新序列化整个文档——`common_config_codex` 里的注释与排版会丢失（确认前提示会明确告知）。
+**心智模型：配置在启动时向下下发，你在会话里改的东西应该能被收回来。** `switch` 每次启动都从 cc-switch 数据库生成各实例的配置——会话内的改动是唯一的例外，同步机制就是为收编它而存在的。上行通道覆盖 Claude 实例 `settings.json` 与 Codex 实例 `config.toml` 的**全部字段**：插件状态、生成的 statusLine 与 Codex 的 `[tui] status_line`（三者均为 channel 专属，见下文）之外的 env、permissions、hooks、模型、审批策略等都会被检测、展示、按字段归属写回。Codex CLI 自己写入实例 `config.toml` 的**运行时状态**（`projects.*` 项目信任、`hooks.state.*` hook 信任哈希、`tui` 下的一次性标记）不属于用户配置，上行同步与覆盖守卫都会忽略它们；它们由启动路径单独携带——每次重新生成 `config.toml` 时从现有文件原样保留，因此 hook 授权与项目信任不会因重启丢失，也不会再触发同步提示。改动展示为字段路径（dotted path），确认后按**智能拆分**写回——共享配置文档里已有的字段写回共享配置，其余写回该 provider 的配置。Codex 的共享配置是 TOML 文档，写回会重新序列化整个文档——注释与排版会丢失（确认前提示会明确告知）。
+
+### 共享配置来源（cc-switch 4.0.2+）
+
+cc-switch 4.0 移除了「通用配置片段」功能：共享设置改为**直接保存在客户端 live 配置文件**（`~/.claude/settings.json`、`~/.codex/config.toml`），数据库里的 `common_config_<app>` 变成冻结的旧版快照。`switch` 按 DB 的 `PRAGMA user_version` 自动选择来源：
+
+- **`user_version >= 20`（4.0.2+）**：从全局 live 文件按上游 floor 规则提取 **user keys**（hooks、permissions、enabledPlugins、用户 env 等）；凭证、地址、模型、协议等供应商关键字段永不进入共享投影。`statusLine` 虽属于 user key，但留在 live 文件里由 statusline wrapper 运行时读取，不参与 prepare 内联。上行同步写回全局文件（文件锁 + 读后 compare-and-swap + 备份 + 保留原文件权限）。
+- **`user_version <= 19`（3.x、4.0.0/4.0.1）**：沿用 `common_config_<app>`。
+- 环境变量 `CC_SWITCH_SHARED_SOURCE=live|legacy` 可强制覆盖（4.0.0/4.0.1 与 3.20.4 同为 schema 19，无法自动区分）。
+
+live 模式下，数据库里冻结的 `common_config_*` **不会被读取，也不会作为回退**——这正是“桌面端删了配置但 switch 还在用”的根因。全局文件缺失或不可解析时，本次启动不带共享配置并给出提示；`switch doctor` 会显示当前来源与 live 文件状态。
 
 即使你不做同步，`switch` 在覆盖实例主配置文件（`settings.json` / `config.toml`）之前也会自动把它**备份**到 `~/.cc-switch/backups/<app>/<provider-id>/`（保留最近 10 份），并在 stderr 警告即将被覆盖的字段——改动永不静默丢失。升级说明：本机制需要实例级基线（`preparedSettings`）；升级前做出的会话内改动无法被识别，只会被备份兜底。
 
@@ -103,10 +113,10 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 
 `switch` 会保存一份它上次看到的配置快照（`~/.cc-switch/sync-state.json`），并在每次启动时检测两类漂移：
 
-- **下行** —— cc-switch 的*通用配置*（`common_config_claude` / `common_config_codex`）在桌面端被改动。陈旧状态**按实例跟踪**：警告会指出具体哪些 provider 还在用旧配置。确认同步（y）会就地重新生成这些实例的配置文件并刷新基线，提示随之消失；**正在运行的会话**仍需重启才能用上新配置（这正是提示里 "restart to apply" 的含义）。`switch clean` 删除实例目录时也会同步清掉它的基线，陈旧提示不会再点名已删除的 provider。
+- **下行** —— 共享配置在桌面端被改动（live 模式看全局 live 文件的 user keys，旧 schema 看 `common_config_claude` / `common_config_codex`）。陈旧状态**按实例跟踪**：警告会指出具体哪些 provider 还在用旧配置。确认同步（y）会就地重新生成这些实例的配置文件并刷新基线，提示随之消失；**正在运行的会话**仍需重启才能用上新配置（这正是提示里 "restart to apply" 的含义）。`switch clean` 删除实例目录时也会同步清掉它的基线，陈旧提示不会再点名已删除的 provider。
 - **上行** —— 在 `switch` 启动的会话里改动配置，分两个通道收编：
-  - **插件**（仅 Claude——Codex 没有插件概念）：安装、移除或切换（`/plugin`），写回 `common_config_claude.enabledPlugins`。多个实例状态冲突时，只有插件状态被真实修改过的实例才有投票权（旧通用配置的陈旧镜像没有）；被修改过的实例之间，以最近的改动为准。
-  - **配置字段**：非插件字段（Claude 的 env、permissions、hooks、模型等；Codex 的模型、审批策略、MCP 服务器等）按叶子级 diff 展示（数组按整块比较——元素级合并在 RFC 7396 下没有可靠原语），确认后按智能拆分写回。仲裁与插件通道同语义：与基线一致的镜像实例无票，各字段的胜者是最新修改（mtime）的实例。已知限制：某字段在通用配置中存在、但你只想改单个 provider 时，它仍会写进通用配置、波及所有启用通用配置的 provider——这是「通用配置覆盖 provider」合并语义下唯一不丢改动的选择。例外：含凭据命名的敏感字段（`*_TOKEN` / `*_KEY` / `*SECRET*` 等）不会被写回通用配置——改动保留在实例内，需在桌面端手动更新；从通用配置删除敏感字段则不受限。Codex 的写回基于存储文本的 compare-and-swap（CAS）：桌面端并发写入永远不会被覆盖——最坏情况是提示你重跑 `switch sync`。
+  - **插件**（仅 Claude——Codex 没有插件概念）：安装、移除或切换（`/plugin`），写回共享配置的 `enabledPlugins`（live 模式写全局 `~/.claude/settings.json`，旧 schema 写 `common_config_claude`）。多个实例状态冲突时，只有插件状态被真实修改过的实例才有投票权（旧共享配置的陈旧镜像没有）；被修改过的实例之间，以最近的改动为准。
+  - **配置字段**：非插件字段（Claude 的 env、permissions、hooks、模型等；Codex 的模型、审批策略、MCP 服务器等）按叶子级 diff 展示（数组按整块比较——元素级合并在 RFC 7396 下没有可靠原语），确认后按智能拆分写回。仲裁与插件通道同语义：与基线一致的镜像实例无票，各字段的胜者是最新修改（mtime）的实例。已知限制：某字段在共享配置中存在、但你只想改单个 provider 时，它仍会写进共享配置、波及所有合并共享配置的 provider——这是「共享配置覆盖 provider」合并语义下唯一不丢改动的选择。例外：含凭据命名的敏感字段（`*_TOKEN` / `*_KEY` / `*SECRET*` 等）不会被写回共享配置——改动保留在实例内，需在桌面端手动更新；从共享配置删除敏感字段则不受限。写回基于存储文本的 compare-and-swap（CAS）：桌面端并发写入永远不会被覆盖——最坏情况是提示你重跑 `switch sync`。
 
 在 **TUI 模式**下，漂移会在 CLI 选择器之前展示，你可以就地确认同步。在**命令模式**下，它是在 stderr 上的非阻塞警告 —— 运行 `switch sync` 来查看并应用，加 `--sync` 可在启动前就地确认，加 `--no-sync` 则完全抑制警告。首次运行会静默记录一份基线，因此已有的插件永远不会被报告为「新增」。
 
@@ -115,8 +125,8 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
 每个由 `switch` 启动的 Claude 实例都会在状态栏里显示**当前运行的是哪个 provider**：生成的 `settings.json` 自带一个 statusLine，其 wrapper 脚本在模型名前打上 `[provider]` 标签（每个 provider 颜色稳定）——配合 claude-hud 的效果是 `[Zhipu GLM en][Opus] │ myproject`——然后**原样转发你自己的全局 statusLine**：claude-hud、ccstatusline、手写脚本，任何配置在 `~/.claude/settings.json` 里的工具都照常工作。Claude Code 传给 statusline 的 JSON 原样透传，全局工具渲染出的内容与直接启动时完全一致；provider 标签是 `switch` 唯一添加的东西（若 statusline 首字符不是模型名、或根本没配 statusline，标签就放在行首）。
 
 - **你的全局 `~/.claude/settings.json` 永远不会被改动，生成的 statusLine 也不会被同步回 cc-switch 数据库**——`statusLine` 是 channel 专属路径（与插件同机制）：覆盖守卫忽略它，上行同步对它让权。全局换任何 statusline 工具，所有实例下次启动自动跟随。
-- 全局没有配 statusline？实例就只显示 provider 标签。
-- 在 cc-switch 的 provider 或通用配置里显式写的 `statusLine` 会被**包装而非替换**：生成的条目指向 wrapper，你的显式命令被内联为 wrapper 的首选转发源（全局 `~/.claude/settings.json` 作为回退）。刻意的配置照常渲染——provider 标签照样添加。
+- 全局没有配 statusline？实例只显示 provider 标签；如果当前 provider 有可查询的用量（Z.AI GLM 配额 / DeepSeek 余额），用量段会直接跟在标签后面。
+- 在 cc-switch 的 provider 配置里显式写的 `statusLine` 会被**包装而非替换**：生成的条目指向 wrapper，你的显式命令被内联为 wrapper 的首选转发源（全局 `~/.claude/settings.json` 作为回退）。刻意的配置照常渲染——provider 标签照样添加。cc-switch 4.0.2+ 的 live 模式下，数据库里冻结的 `common_config_*` 不参与合并，因此在桌面端删除的 statusLine 不会复活。
 - **标签颜色在 TUI 里设置**：provider 选择屏高亮某行后按 `o`，从 auto（按名字哈希，默认）+ 16 个 ANSI 经典色（30–37 标准、90–97 亮色，带色块预览）中选取，⏎ 保存、esc 取消。存于 `~/.cc-switch/statusline-preferences.json`（本 CLI 独有——cc-switch 桌面端与数据库都不读不写），下次启动该 provider 的实例时生效，运行中的会话保持旧色直至重启。claude 的颜色由 wrapper 消费；codex 的颜色由 tmux 状态栏消费（见下节）。
 - 在实例**内部**自定义 statusline（`/statusline`）没有意义——该条目每次启动都会重新生成。请改全局配置文件。
 
@@ -141,7 +151,7 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 
 - 聚合代理随 cc-switch 桌面进程生灭——桌面端退出后聚合实例会指向已死的代理地址（上游退出时只恢复全局配置，不会碰 `switch` 的实例文件），重开桌面端即恢复。`switch` 启动聚合实例前会对代理地址做一次 300ms TCP 探测，不可达时在 stderr 警告（不阻塞启动）；`switch doctor` 亦含聚合检查（live-state 契约版本、成员行在位、虚拟入口派生、代理可达性）。
 - `/model` 的聚合列表来自桌面端写进全局 `~/.claude/settings.json` 的 `modelPicker` 键；`switch` 在每次启动聚合实例时从全局同步它，所以桌面端改聚合名单后**重进实例**即可见（运行中的会话不自动跟）。桌面端把列表清空（恢复内置模型）同样是合法状态——实例的聚合列表随之清空，不会沿用旧快照。
-- 聚合入口只承载路由（loopback 地址、代理凭据、`ccs` 模型别名），不含通用配置内容——`switch` 启动聚合实例时**始终合并通用配置**（hooks、permissions 等，与普通 provider 一致）；路由身份 env（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`）与 `ccs` 模型别名以聚合入口为准，通用配置覆盖不了它们。在桌面端对聚合行显式关闭「使用通用配置」仍然生效。
+- 聚合入口只承载路由（loopback 地址、代理凭据、`ccs` 模型别名），不含共享配置内容——`switch` 启动聚合实例时**始终合并共享配置**（hooks、permissions 等；4.0.2+ 来自全局 live 文件的 user keys，旧 schema 来自 `common_config_*`，与普通 provider 一致）；路由身份 env（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`）与 `ccs` 模型别名以聚合入口为准，共享配置覆盖不了它们。在桌面端对聚合行显式关闭「使用通用配置」仍然生效。
 - 桌面端关闭聚合后，聚合入口仍在（TUI 显示「未激活」；成员行已删时显示「N 个成员缺失」），实例照常启动但代理不在——请回到普通 provider 实例。聚合实例的 `/model` 不再列指向死代理的 ccs 旧条目。
 - 实例编辑写回（`switch sync`）对聚合入口不生效：provider 侧改动会被标记为 blocked 并说明原因（虚拟行不落库，实例配置每次启动由桌面端状态重新生成）；落在通用配置上的改动照常写回。
 - **从 ≤ 0.19 升级**：首次运行会自动清理旧版写入数据库的聚合 provider 行（幂等），并把启动历史、置顶与 statusline 颜色迁移到虚拟 id `__stack__`；正在桌面端使用中的聚合行（is_current）会保留并提示。运行中的旧聚合实例不受影响，其 UUID 目录在会话结束后可用 `switch clean` 清理。
@@ -151,7 +161,7 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 Codex 聚合入口与 claude 同架构（同一个虚拟行 `__stack__`、同一套 TUI 分组与探测），差异在投影方式与模型列表来源：
 
 - **路由投影**：虚拟行每次从全局 `~/.codex/config.toml` **白名单现算**——只取 `model_provider`、`model`、`web_search`、`model_catalog_json` 与活动 `[model_providers.<id>]` 表的 `name/base_url/wire_api`，并强制 `experimental_bearer_token = "PROXY_MANAGED"`、`requires_openai_auth = false`、`auth = {}`（真实凭据永远不进聚合行）。`[projects.*]`、`[hooks.state.*]`、`[tui]`、`model_reasoning_effort` 等运行时/偏好键不进投影，避免固化进行触发漂移。全局 config 缺失、`model_provider` 是官方保留 id 或 base_url 非 loopback 时派生不出入口（栈仍开着则 `switch doctor` 会报）。
-- **通用配置**：与 claude 聚合行一致**始终强制合并** `common_config_codex`，且合并后做身份保护——`model_provider`、活动 provider 整张表、`model_catalog_json`、`web_search` 以聚合行为准（行没有的 provider 表直接删除），通用配置覆盖不了路由身份；顶层 `base_url/wire_api/experimental_bearer_token/requires_openai_auth` 回退通道一律删除。桌面端对聚合行显式关闭「使用通用配置」仍然生效。
+- **通用配置**：与 claude 聚合行一致**始终强制合并**共享配置（4.0.2+ 来自全局 `~/.codex/config.toml` 的 user-key 投影，旧 schema 来自 `common_config_codex`），且合并后做身份保护——`model_provider`、活动 provider 整张表、`model_catalog_json`、`web_search` 以聚合行为准（行没有的 provider 表直接删除），共享配置覆盖不了路由身份；顶层 `base_url/wire_api/experimental_bearer_token/requires_openai_auth` 回退通道一律删除。桌面端对聚合行显式关闭「使用通用配置」仍然生效。
 - **模型列表**：`/model` 列表来自桌面端写进全局 `~/.codex/cc-switch-model-catalog.json` 的完整 catalog（成员 id 规则 `ccs-<key>/<model>`，如 `ccs-deepseek/deepseek-flash`；默认供应商的模型不带前缀）。`switch` 每次启动聚合实例时把它**原样字节复制**进实例目录——不是模板重生成，桌面端写入的全部字段原样保留；全局 catalog 缺失/损坏时保留实例已有副本并警告（列表可能过期）。桌面端改聚合名单后**重进实例**即可见。
 - **/model 选择跨重启保留**：实例内的模型选择写在实例 `config.toml` 的 `model` 键，聚合实例每次启动会携带它（普通 codex 行仍走既有的漂移+sync 流程，行为不变）。选择指向的成员已被移除或聚合已关闭时，本次启动回退默认模型并提示。
 - **限制**：Codex TUI 的状态栏只支持内置字段（上游 openai/codex#17827），故聚合实例没有 claude 侧的 wrapper 计费段与动态 provider 标签——tmux 状态栏的 provider 段（经 tmuxclihook）仍显示启动时的 `Stack`；`switch ps` 也不解码当前计费成员。`switch doctor` 含 codex 聚合检查（虚拟入口派生、代理可达性）。
