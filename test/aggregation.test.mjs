@@ -2,9 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const { codexAggregationRoute, isCustomCodexModelProviderId } = await import(
-  "../src/stack/aggregation.ts"
-);
+const {
+  ccsClaudeKeyFromModel,
+  ccsCodexKeyFromModel,
+  codexAggregationRoute,
+  isCustomCodexModelProviderId,
+} = await import("../src/stack/aggregation.ts");
 
 test("codexAggregationRoute: active provider table wins", () => {
   const route = codexAggregationRoute(`
@@ -47,6 +50,16 @@ test("isCustomCodexModelProviderId: reserved ids are case-insensitive", () => {
   assert.equal(isCustomCodexModelProviderId("OpenAI"), false);
   assert.equal(isCustomCodexModelProviderId("ollama"), false);
   assert.equal(isCustomCodexModelProviderId("  "), false);
+});
+
+test("ccs model id parsing: shared key extraction for both apps", () => {
+  assert.equal(ccsClaudeKeyFromModel("ccs-claude-deepseek--deepseek-flash[1m]"), "deepseek");
+  assert.equal(ccsClaudeKeyFromModel("ccs-claude-ZAI--glm"), "zai");
+  assert.equal(ccsClaudeKeyFromModel("claude-sonnet-4"), null);
+  assert.equal(ccsClaudeKeyFromModel(undefined), null);
+  assert.equal(ccsCodexKeyFromModel("ccs-deepseek/deepseek-chat"), "deepseek");
+  assert.equal(ccsCodexKeyFromModel("openai/gpt-5"), null);
+  assert.equal(ccsCodexKeyFromModel(""), null);
 });
 
 test("stack/state no longer imports stack/catalog (cycle guard)", () => {

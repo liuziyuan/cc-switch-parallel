@@ -6,6 +6,7 @@ import { queryProviderById } from "./db.js";
 import { atomicWrite, ensurePrivateDir } from "./fs-utils.js";
 import { isPlainObject } from "./json-utils.js";
 import { HOME, INSTANCES_DIR, STATUSLINE_PREFS_PATH } from "./paths.js";
+import { CCS_CLAUDE_MODEL_ID_SOURCE } from "./stack/aggregation.js";
 import {
   buildStackUsageConfig,
   isAggregationProviderSettings,
@@ -697,7 +698,7 @@ function buildStackUsageWrapperLines(stackConfig) {
     `// model part may freely contain further dashes or slashes.`,
     `let modelId = "";`,
     `try { const m = JSON.parse(input)?.model; modelId = String((m && (m.id || m.display_name)) || ""); } catch {}`,
-    `const ccsMatch = modelId.match(/^ccs-claude-([a-z0-9-]+?)--/i);`,
+    `const ccsMatch = modelId.match(/${CCS_CLAUDE_MODEL_ID_SOURCE}/i);`,
     `let activeKey = null;`,
     `if (ccsMatch) {`,
     `  const k = ccsMatch[1].toLowerCase();`,

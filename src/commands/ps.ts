@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { buildRunningSet, collectInstances, pruneInstanceBaselines } from "../instances.js";
+import { ccsClaudeKeyFromModel } from "../stack/aggregation.js";
 import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
 import { confirmSync } from "../drift.js";
@@ -27,10 +28,9 @@ import { isAggregationProviderSettings, readStackState } from "../stack/state.js
 // ccs prefix, stack off, or the key no longer live) — the plain provider
 // name is shown then. Pure given (model, stack); DB lookup inside.
 function stackBillingMemberName(model, stack) {
-  if (typeof model !== "string" || !model) return null;
-  const ccs = model.match(/^ccs-claude-([a-z0-9-]+?)--/i);
-  if (!ccs) return null;
-  const pid = stack?.keys?.[ccs[1].toLowerCase()];
+  const key = ccsClaudeKeyFromModel(model);
+  if (!key) return null;
+  const pid = stack?.keys?.[key];
   if (!pid) return null;
   try {
     return queryProviderById(pid, "claude")?.name || null;

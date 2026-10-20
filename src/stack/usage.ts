@@ -1,6 +1,7 @@
 // ─── stack/usage (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { isPlainObject } from "../json-utils.js";
+import { isLoopbackHost } from "./aggregation.js";
 
 // ─── Provider usage snapshot (app-agnostic, statusline) ───────────────
 // Optional usage segment for the instance statusline wrapper: zhipu/zai
@@ -58,14 +59,8 @@ function extractClaudeUsageSource(settingsConfig) {
   return { baseUrl, token };
 }
 
-// Loopback check kept local on purpose: importing isLoopbackBaseUrl from
-// stack/state.ts would create a state → usage → state cycle. Same host set.
-function isLoopbackHost(hostname) {
-  const host = String(hostname || "")
-    .toLowerCase()
-    .replace(/^\[|\]$/g, "");
-  return host === "127.0.0.1" || host === "localhost" || host === "::1";
-}
+// Loopback check shared with the aggregation primitives (aggregation.ts is a
+// leaf module, so this no longer needs a local copy to avoid a cycle).
 
 // Query endpoint for a kind, derived from the provider's own base-url
 // origin (https://api.z.ai/api/anthropic → https://api.z.ai/api/monitor/…;

@@ -10,6 +10,7 @@ import {
 } from "./json-utils.js";
 import { INSTANCES_DIR } from "./paths.js";
 import { isLiveSharedSnippet, sharedSnippetText } from "./shared-config.js";
+import { ccsClaudeKeyFromModel } from "./stack/aggregation.js";
 import {
   isAggregationProviderSettings,
   protectAggregationIdentityEnv,
@@ -220,10 +221,9 @@ function buildClaudeEffectiveSettings(
         // guard's computeEffectiveSettings [C3] drops it identically — the
         // one-time overwrite note the guard shows for the rollback is the
         // desired signal, not a false positive.
-        const ccs = model.match(/^ccs-claude-([a-z0-9-]+?)--/i);
-        if (ccs) {
+        const key = ccsClaudeKeyFromModel(model);
+        if (key) {
           const stack = readStackState("claude");
-          const key = ccs[1].toLowerCase();
           if (!stack || !(key in stack.keys)) {
             console.error(
               `\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`,

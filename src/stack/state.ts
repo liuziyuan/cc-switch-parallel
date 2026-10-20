@@ -20,9 +20,18 @@ import {
   VIRTUAL_STACK_PROVIDER_ID,
 } from "../paths.js";
 import {
+  AGGREGATION_IDENTITY_ENV_KEYS,
+  AGGREGATION_MODEL_ALIAS_KEYS,
   CC_SWITCH_CATALOG_FILENAME,
+  PROXY_MANAGED_TOKEN,
+  aggregationBaseUrlFor,
   codexAggregationRoute,
+  isAggregationProviderSettings,
+  isCodexAggregationProviderSettings,
   isCustomCodexModelProviderId,
+  isLoopbackBaseUrl,
+  protectAggregationIdentityEnv,
+  providerIsAggregation,
 } from "./aggregation.js";
 import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.js";
 import { loadStatuslinePreferences } from "../statusline-colors.js";
@@ -52,111 +61,9 @@ import { parseToml, stringifyToml } from "../toml.js";
 // Loopback host = the aggregation proxy endpoint (a plain provider never
 // points at one; a user's own local gateway would simply not match a live
 // stack and fall through to the regular single-provider path).
-function isLoopbackBaseUrl(baseUrl) {
-  if (typeof baseUrl !== "string" || !baseUrl.trim()) return false;
-  try {
-    // URL.hostname keeps the brackets on IPv6 literals ("[::1]").
-    const host = new URL(baseUrl.trim()).hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    return host === "127.0.0.1" || host === "localhost" || host === "::1";
-  } catch {
-    return false;
-  }
-}
-
-// Deterministic Stack-row signature: loopback base URL + the upstream
-// placeholder token (the shape the desktop live projection and the virtual
-// entry write). Loopback alone cannot tell a Stack row from a user's own
-// local gateway (LiteLLM, one-api …) — the earlier loopback-only test
-// mistook gateway rows for Stack rows (forced common merge, picker
-// injection, the old auto-create swallowing the gateway row as the
-// "existing" Stack). Still no readStackState here: the merge decision must
-// not flip with desktop state (prepare determinism).
-function isAggregationProviderSettings(settingsConfig) {
-  const env =
-    isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
-  return (
-    !!env &&
-    isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL) &&
-    env.ANTHROPIC_AUTH_TOKEN === "PROXY_MANAGED"
-  );
-}
-
-// Codex mirror of isAggregationProviderSettings — same signature, TOML shape:
-// the ACTIVE provider table's base_url is loopback AND its bearer token is the
-// upstream placeholder. Loopback alone does NOT make an aggregation row (a
-// user's own local gateway would false-positive otherwise). Reads the
-// settings_config JSON envelope ({config: "<TOML>", auth}) — never live-state,
-// so the merge/launch decisions stay deterministic under prepare.
-function isCodexAggregationProviderSettings(settingsConfig) {
-  if (!isPlainObject(settingsConfig) || typeof settingsConfig.config !== "string") return false;
-  const r = codexAggregationRoute(settingsConfig.config);
-  return !!r && isLoopbackBaseUrl(r.baseUrl) && r.bearer === "PROXY_MANAGED";
-}
-
-// per-app dispatch over the two signature shapes above — claude reads the
-// env object, codex parses the config TOML. TUI grouping and the doctor's
-// legacy-row count key on this instead of hardcoding the claude test.
-function providerIsAggregation(appType, settingsConfig) {
-  return appType === "codex"
-    ? isCodexAggregationProviderSettings(settingsConfig)
-    : isAggregationProviderSettings(settingsConfig);
-}
-
-// Base URL of an aggregation row, for the pre-launch TCP probe. Returns null
-// for non-aggregation rows (the caller skips the probe entirely).
-function aggregationBaseUrlFor(appType, settingsConfig) {
-  if (appType === "codex") {
-    if (!isCodexAggregationProviderSettings(settingsConfig)) return null;
-    return codexAggregationRoute(settingsConfig.config)?.baseUrl ?? null;
-  }
-  if (!isAggregationProviderSettings(settingsConfig)) return null;
-  return settingsConfig.env.ANTHROPIC_BASE_URL ?? null;
-}
-
-// Identity keys the aggregation merge must never let the common config win
-// or plant: the row's env IS the routing identity. A common BASE_URL would
-// bypass the proxy; a common AUTH_TOKEN/API_KEY would re-auth it (the Claude
-// CLI ranks AUTH_TOKEN/Bearer above API_KEY/x-api-key, so an unrequested
-// common Bearer hijacks auth even when the row carries API_KEY) — keys the
-// row lacks are deleted outright, not just overwritten.
-const AGGREGATION_IDENTITY_ENV_KEYS = [
-  "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_API_KEY",
-];
-
-// The ccs model aliases the virtual entry copies from the global env
-// (ANTHROPIC_DEFAULT_*_MODEL/_NAME) route default models through the proxy's
-// key map — a common scalar would silently swap them and mis-attribute
-// billing. Row value wins when present; when the row lacks a key the common
-// value is harmless (no delete), unlike the identity keys above.
-const AGGREGATION_MODEL_ALIAS_KEYS = [
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_FABLE_MODEL",
-  "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-];
-
-// Post-merge guard for aggregation rows (called from
-// buildClaudeEffectiveSettings only after mergeCommonOverProvider ran).
-// effective.env can be non-object when a scalar/mismatched common `env`
-// full-overwrote the row's env through the merge fallthrough — rebuild it
-// from the row's env in that case rather than crash on the restore below.
-function protectAggregationIdentityEnv(effective, settingsConfig) {
-  const rowEnv = isPlainObject(settingsConfig?.env) ? settingsConfig.env : {};
-  if (!isPlainObject(effective.env)) effective.env = {};
-  for (const key of AGGREGATION_IDENTITY_ENV_KEYS) {
-    if (rowEnv[key] !== undefined) effective.env[key] = rowEnv[key];
-    else delete effective.env[key];
-  }
-  for (const key of AGGREGATION_MODEL_ALIAS_KEYS) {
-    if (rowEnv[key] !== undefined) effective.env[key] = rowEnv[key];
-  }
-}
+//
+// Moved to stack/aggregation.ts so usage.ts can reuse it without importing
+// this module. Re-exported below to keep the public surface stable.
 
 // {keys: key→providerId, members: [providerId], proxyRoute} when aggregation
 // is enabled for the app, else null. Everything tolerates shape drift: a
@@ -272,7 +179,7 @@ function buildStackSettingsFromGlobal() {
   }
   if (!isPlainObject(globalEnv) || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return null;
   const env: Record<string, any> = {
-    ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+    ANTHROPIC_AUTH_TOKEN: PROXY_MANAGED_TOKEN,
     ANTHROPIC_BASE_URL: globalEnv.ANTHROPIC_BASE_URL,
   };
   for (const k of AGGREGATION_MODEL_ALIAS_KEYS) {
@@ -322,7 +229,7 @@ function buildCodexStackSettingsFromGlobal() {
         name: typeof table.name === "string" && table.name.trim() ? table.name : providerId,
         base_url: baseUrl,
         wire_api: table.wire_api === "chat" ? "chat" : "responses",
-        experimental_bearer_token: "PROXY_MANAGED",
+        experimental_bearer_token: PROXY_MANAGED_TOKEN,
         requires_openai_auth: false,
       },
     },
@@ -349,7 +256,7 @@ function codexStackDormantSettings(baseUrl) {
         name: "cc-switch-stack",
         base_url: baseUrl,
         wire_api: "responses",
-        experimental_bearer_token: "PROXY_MANAGED",
+        experimental_bearer_token: PROXY_MANAGED_TOKEN,
         requires_openai_auth: false,
       },
     },
@@ -365,7 +272,7 @@ const STACK_SETTINGS_DERIVERS = {
   claude: {
     fromGlobal: buildStackSettingsFromGlobal,
     dormant(baseUrl) {
-      return { env: { ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED", ANTHROPIC_BASE_URL: baseUrl } };
+      return { env: { ANTHROPIC_AUTH_TOKEN: PROXY_MANAGED_TOKEN, ANTHROPIC_BASE_URL: baseUrl } };
     },
   },
   codex: {

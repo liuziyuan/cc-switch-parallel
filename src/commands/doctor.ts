@@ -28,7 +28,7 @@ import {
   VIRTUAL_STACK_PROVIDER_ID,
 } from "../paths.js";
 import { detectSharedConfigMode, readSharedConfig } from "../shared-config.js";
-import { codexAggregationRoute } from "../stack/catalog.js";
+import { codexAggregationRoute } from "../stack/aggregation.js";
 import {
   isAggregationProviderSettings,
   probeTcpReachable,

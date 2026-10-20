@@ -7,12 +7,14 @@ import { atomicWrite } from "../fs-utils.js";
 import { isPlainObject, jsonDeepClone, mergeCommonOverProvider } from "../json-utils.js";
 import { HOME, INSTANCES_DIR, RESOURCES_DIR } from "../paths.js";
 import { isLiveSharedSnippet, sharedSnippetText } from "../shared-config.js";
-import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
+import { isCodexAggregationProviderSettings } from "./aggregation.js";
+import { readStackState } from "./state.js";
 import { parseToml, stringifyToml } from "../toml.js";
 import { tomlDeepMerge } from "../toml-utils.js";
 import {
   CC_SWITCH_CATALOG_FILENAME,
   CODEX_RESERVED_MODEL_PROVIDER_IDS,
+  ccsCodexKeyFromModel,
   codexAggregationRoute,
   isCustomCodexModelProviderId,
 } from "./aggregation.js";
@@ -437,10 +439,9 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
       // (ccs-<key>/<model> — key never contains "/"). Runs here, not at the
       // write site, so prepare AND computeEffectiveSettings drop it identically.
       let model = current.model;
-      const ccs = model.match(/^ccs-([a-z0-9-]+)\//i);
-      if (ccs) {
+      const key = ccsCodexKeyFromModel(model);
+      if (key) {
         const stack = readStackState("codex");
-        const key = ccs[1].toLowerCase();
         if (!stack || !(key in stack.keys)) {
           console.error(
             `\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`,
