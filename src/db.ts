@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { DB_PATH, SETTINGS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
-import { appendVirtualStackRow, virtualStackProviderFor } from "./stack/state.js";
+import { appendVirtualStackRowCore, virtualStackProviderForCore } from "./stack/virtual-row.js";
 import type { ProviderRow } from "./types.js";
 
 // ─── DB queries ───────────────────────────────────────────────────────
@@ -47,6 +47,26 @@ function sqlQuote(str: string): string {
   return "'" + String(str).replace(/'/g, "''") + "'";
 }
 
+// Provider names already in the DB for this app — injected into the virtual
+// row derivation so this module does not have to import stack/state.
+function takenProviderNames(appType: string): string[] {
+  try {
+    return queryDB(`SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`).map(
+      (r) => r.name,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function virtualProvider(appType: string) {
+  return virtualStackProviderForCore(appType, takenProviderNames(appType));
+}
+
+function appendVirtualStackRow(rows: any[], appType: string) {
+  return appendVirtualStackRowCore(rows, appType, takenProviderNames(appType));
+}
+
 // All DB providers matching a name, ordered by id. Names are NOT unique in
 // the cc-switch DB, so launch/customize must use this instead of taking the
 // first row blindly. The virtual aggregation entry answers only when the DB
@@ -60,7 +80,7 @@ function queryProviderMatches(name: string, appType: string): ProviderRow[] {
   // under its own (collision-dodged) display name. Fail-open on derive trouble.
   try {
     if (VIRTUAL_STACK_APPS.has(appType)) {
-      const v = virtualStackProviderFor(appType);
+      const v = virtualProvider(appType);
       if (v && v.name === name) return [v];
     }
   } catch {
@@ -79,7 +99,7 @@ function queryProviderById(id: string, appType: string): ProviderRow | null {
   if (rows[0]) return rows[0];
   try {
     if (id === VIRTUAL_STACK_PROVIDER_ID && VIRTUAL_STACK_APPS.has(appType)) {
-      return virtualStackProviderFor(appType);
+      return virtualProvider(appType);
     }
   } catch {
     /* fall through to null */
