@@ -1,7 +1,12 @@
 // ─── drift (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS, computeEnabledPluginsPatch, readSharedEnabledPlugins } from "./adapters.js";
+import {
+  APP_ADAPTERS,
+  computeEnabledPluginsPatch,
+  getAdapter,
+  readSharedEnabledPlugins,
+} from "./adapters.js";
 import { loadSettings, queryProviderById, queryProvidersByApp } from "./db.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { isPlainObject, parseJsonObject } from "./json-utils.js";
@@ -175,7 +180,7 @@ function buildInstanceBaselineEntry(adapter: any, instanceDir: string, shared: a
 // state was actually edited by the user". Called on every launch, for every
 // app — not just claude/plugins — so codex's commonHash tracking works too.
 // Best-effort: a failure here must never block a launch.
-function recordInstanceBaseline(adapter, providerId, instanceDir, shared) {
+function recordInstanceBaseline(adapter: any, providerId: any, instanceDir: any, shared: any) {
   try {
     withSyncStateLock((state) => {
       state.instances = state.instances || {};
@@ -200,7 +205,7 @@ function recordInstanceBaseline(adapter, providerId, instanceDir, shared) {
 // claude's global plugin baseline (installedKeys / enabledPlugins, used by
 // detectPluginDrift's added/removed/toggled diff) is snapshotted only after a
 // confirmed plugin sync.
-function snapshotSyncState(state, pluginSyncedCmds) {
+function snapshotSyncState(state: any, pluginSyncedCmds: any) {
   if (pluginSyncedCmds.includes("claude")) {
     const { installedKeys } = computeEnabledPluginsPatch(state);
     state.claude = state.claude || {};
@@ -255,7 +260,7 @@ function mergeAndSaveSyncState(
 //   interrupt — Ctrl-C: the caller must abort, not continue as "no"
 //   eof       — stdin closed while waiting
 function confirmSync(
-  lines,
+  lines: any,
   question = "Sync these changes?",
   io: { stdin?: any; stdout?: any; stderr?: any } = {},
 ): Promise<"yes" | "no" | "interrupt" | "eof"> {
@@ -290,7 +295,7 @@ function confirmSync(
         stdin.pause();
       } catch {}
     };
-    const onData = (data) => {
+    const onData = (data: any) => {
       const key = data.toString();
       const outcome = classifyConfirmKey(key);
       cleanup();
@@ -423,7 +428,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // (common_config_codex) and live (~/.codex/config.toml) modes. Say so
     // BEFORE the confirm.
     if (
-      (APP_ADAPTERS[cmd]?.rewritesCommonOnSync || cmd === "codex") &&
+      (getAdapter(cmd)?.rewritesCommonOnSync || cmd === "codex") &&
       Object.keys(d.commonPatch || {}).length
     ) {
       const where = d.sharedMode === "live" ? "the global live config" : "common config";
@@ -471,7 +476,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   if (outcome === "yes") {
     const syncedCmds: string[] = [];
     for (const [cmd, d] of Object.entries(pluginDrifts)) {
-      APP_ADAPTERS[cmd]?.syncPluginsBack?.(d);
+      getAdapter(cmd)?.syncPluginsBack?.(d);
       syncedCmds.push(cmd);
     }
     // Settings-field write-back runs AFTER the plugin channel and BEFORE
@@ -480,7 +485,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // write-back made stale must be refreshed in this same run or the prompt
     // would re-fire.
     for (const [cmd, d] of Object.entries(settingsDrifts)) {
-      APP_ADAPTERS[cmd]?.syncSettingsBack?.(d);
+      getAdapter(cmd)?.syncSettingsBack?.(d);
     }
     // Order matters: the plugin write-back above just changed common_config,
     // so staleness is recomputed AFTER it. Every stale instance — the ones

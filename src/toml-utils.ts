@@ -5,7 +5,7 @@ import { parseToml, stringifyToml } from "./toml.js";
 
 // ─── TOML utils (port of Rust merge_toml_table_like) ───────────────────
 
-function tomlDeepMerge(target, source) {
+function tomlDeepMerge(target: any, source: any) {
   for (const [key, sourceValue] of Object.entries(source)) {
     if (!isSafeObjectKey(key)) continue;
     if (Object.hasOwn(target, key) && isPlainObject(target[key]) && isPlainObject(sourceValue)) {
@@ -17,7 +17,7 @@ function tomlDeepMerge(target, source) {
   return target;
 }
 
-function tomlIsSubset(target, source) {
+function tomlIsSubset(target: any, source: any) {
   for (const [key, sourceValue] of Object.entries(source)) {
     if (!isSafeObjectKey(key)) continue;
     if (!Object.hasOwn(target, key)) return false;
@@ -45,7 +45,7 @@ function tomlIsSubset(target, source) {
 // the JS ecosystem and this is a single-file CLI. Throws on parse failure —
 // the DB write-back shells let that surface as a reported error, never a
 // silent partial write.
-function applyTomlPatchText(tomlText, patchObj) {
+function applyTomlPatchText(tomlText: any, patchObj: any) {
   return stringifyToml(applyMergePatch(parseToml(tomlText || ""), jsonDeepClone(patchObj)));
 }
 

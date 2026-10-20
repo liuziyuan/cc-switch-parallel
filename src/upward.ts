@@ -47,9 +47,9 @@ import { applyTomlPatchText } from "./toml-utils.js";
 // (backtracking — two sibling keys may both be dotted-prefix candidates).
 // Returns the naive split when nothing fits, so dot-free paths (the
 // overwhelming majority) behave byte-identically to before.
-function resolvePathSegmentsDetailed(obj, path): { parts: string[]; resolved: boolean } {
+function resolvePathSegmentsDetailed(obj: any, path: any): { parts: string[]; resolved: boolean } {
   const parts = String(path).split(".");
-  function walk(node, i): string[] | null {
+  function walk(node: any, i: any): string[] | null {
     if (!isPlainObject(node)) return null;
     if (i === parts.length - 1) return Object.hasOwn(node, parts[i]) ? [parts[i]] : null;
     const exact = Object.hasOwn(node, parts[i]) ? walk(node[parts[i]], i + 1) : null;
@@ -75,7 +75,7 @@ function resolvePathSegmentsDetailed(obj, path): { parts: string[]; resolved: bo
   return found ? { parts: found, resolved: true } : { parts, resolved: false };
 }
 
-function resolvePathSegments(obj, path) {
+function resolvePathSegments(obj: any, path: any) {
   return resolvePathSegmentsDetailed(obj, path).parts;
 }
 
@@ -86,13 +86,13 @@ function resolvePathSegments(obj, path) {
 // into `profiles.my.profile`. When the target DOES have a shape for the path
 // (it parsed via real keys, not the naive fallback), follow the target's
 // shape so the write-back stays consistent with the document it lands in.
-function resolveWriteSegments(refObj, path, segments) {
+function resolveWriteSegments(refObj: any, path: any, segments: any) {
   if (!Array.isArray(segments) || segments.length === 0) return resolvePathSegments(refObj, path);
   const detailed = resolvePathSegmentsDetailed(refObj, path);
   return detailed.resolved ? detailed.parts : segments;
 }
 
-function pathExistsInSnippet(snippetObj, path) {
+function pathExistsInSnippet(snippetObj: any, path: any) {
   if (!isPlainObject(snippetObj) || !path) return false;
   const parts = resolvePathSegments(snippetObj, path);
   let cur = snippetObj;
@@ -109,7 +109,7 @@ function pathExistsInSnippet(snippetObj, path) {
 // recoverable), while leaking one credential into common_config reaches
 // EVERY provider that consumes the snippet (unrecoverable). Pattern classes,
 // not name enumeration — enumerating `*_API_KEY` would miss the next one.
-function isSensitiveConfigKey(name) {
+function isSensitiveConfigKey(name: any) {
   const upper = String(name).toUpperCase();
   const SENSITIVE_SUFFIXES = [
     "_KEY",
@@ -160,7 +160,7 @@ function isSensitiveConfigKey(name) {
 // Dotted-path variant for the smart split: every segment of a change path is
 // a map key at some nesting level, and Rust strips sensitive keys at EVERY
 // level — so a hit on any segment routes the change out of common's direction.
-function isSensitiveConfigPath(path, segments: string[] | null = null) {
+function isSensitiveConfigPath(path: any, segments: string[] | null = null) {
   // Segments are the real key sequence when the caller has them (a key may
   // contain dots); the string split is the backward-compatible fallback.
   const parts =
@@ -171,7 +171,7 @@ function isSensitiveConfigPath(path, segments: string[] | null = null) {
 // Read the value at a dotted path inside a parsed object (undefined if absent).
 // Resolution is tree-aware — see resolvePathSegments for why the naive split
 // misreads keys that themselves contain dots.
-function getPathValue(obj, path) {
+function getPathValue(obj: any, path: any) {
   let cur = obj;
   for (const part of resolvePathSegments(obj, path)) {
     if (!isPlainObject(cur) || !Object.hasOwn(cur, part)) return undefined;
@@ -200,7 +200,7 @@ function getPathValue(obj, path) {
 const LIVE_BACKUP_DIR = join(CC_SWITCH_DIR, "backups", "live");
 const LIVE_BACKUP_KEEP = 10;
 
-function backupLiveFile(appType, filePath) {
+function backupLiveFile(appType: any, filePath: any) {
   try {
     if (!existsSync(filePath)) return null;
     const dir = join(LIVE_BACKUP_DIR, appType);
@@ -224,7 +224,7 @@ function backupLiveFile(appType, filePath) {
   }
 }
 
-function casWriteLiveFile(filePath, appType, transform) {
+function casWriteLiveFile(filePath: any, appType: any, transform: any) {
   for (let attempt = 0; attempt < 3; attempt++) {
     let raw = "";
     let existed = true;
@@ -264,9 +264,9 @@ function casWriteLiveFile(filePath, appType, transform) {
   );
 }
 
-function patchClaudeLiveFile(patchObj) {
+function patchClaudeLiveFile(patchObj: any) {
   const result = withFileLockSync(GLOBAL_CLAUDE_SETTINGS_PATH, () =>
-    casWriteLiveFile(GLOBAL_CLAUDE_SETTINGS_PATH, "claude", (raw) => {
+    casWriteLiveFile(GLOBAL_CLAUDE_SETTINGS_PATH, "claude", (raw: any) => {
       let doc: any = {};
       if (raw.trim()) {
         doc = JSON.parse(raw);
@@ -283,9 +283,11 @@ function patchClaudeLiveFile(patchObj) {
   }
 }
 
-function patchCodexLiveFile(patchObj) {
+function patchCodexLiveFile(patchObj: any) {
   const result = withFileLockSync(GLOBAL_CODEX_CONFIG_PATH, () =>
-    casWriteLiveFile(GLOBAL_CODEX_CONFIG_PATH, "codex", (raw) => applyTomlPatchText(raw, patchObj)),
+    casWriteLiveFile(GLOBAL_CODEX_CONFIG_PATH, "codex", (raw: any) =>
+      applyTomlPatchText(raw, patchObj),
+    ),
   );
   if (!result.acquired) {
     throw new Error(
@@ -294,7 +296,7 @@ function patchCodexLiveFile(patchObj) {
   }
 }
 
-function applyClaudeProviderPatches(providerPatches) {
+function applyClaudeProviderPatches(providerPatches: any) {
   for (const [providerId, patchObj] of Object.entries(providerPatches || {})) {
     if (!patchObj || !Object.keys(patchObj).length) continue;
     // Virtual Stack entry: no DB row — an UPDATE here would silently match 0
@@ -311,7 +313,7 @@ function applyClaudeProviderPatches(providerPatches) {
   }
 }
 
-function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
+function applyClaudeSettingsFieldPatches(commonPatch: any, providerPatches: any) {
   if (commonPatch && Object.keys(commonPatch).length) {
     try {
       patchCommonConfigClaude(commonPatch);
@@ -324,7 +326,7 @@ function applyClaudeSettingsFieldPatches(commonPatch, providerPatches) {
 
 // live mode: shared fields go to ~/.claude/settings.json, provider fields to
 // the provider row exactly as before.
-function applyClaudeLiveSettingsFieldPatches(sharedPatch, providerPatches) {
+function applyClaudeLiveSettingsFieldPatches(sharedPatch: any, providerPatches: any) {
   if (sharedPatch && Object.keys(sharedPatch).length) {
     try {
       patchClaudeLiveFile(sharedPatch);
@@ -335,7 +337,7 @@ function applyClaudeLiveSettingsFieldPatches(sharedPatch, providerPatches) {
   applyClaudeProviderPatches(providerPatches);
 }
 
-function applyClaudeLivePluginPatch(patch) {
+function applyClaudeLivePluginPatch(patch: any) {
   if (!patch || !Object.keys(patch).length) return;
   patchClaudeLiveFile({ enabledPlugins: patch });
 }
@@ -352,13 +354,13 @@ function applyClaudeLivePluginPatch(patch) {
 // lost updates; two failed retries surface as a reported error (same
 // report-don't-swallow contract as applyClaudeSettingsFieldPatches above).
 
-function dbError(code, message) {
+function dbError(code: any, message: any) {
   const err: any = new Error(message);
   err.code = code;
   return err;
 }
 
-function execDBWithChanges(sql, timeoutMs = DB_PROC_TIMEOUT_MS) {
+function execDBWithChanges(sql: any, timeoutMs = DB_PROC_TIMEOUT_MS) {
   try {
     // Trailing semicolon is REQUIRED: without it the appended SELECT would
     // parse as one (invalid) statement and the whole batch would error out.
@@ -384,11 +386,11 @@ function execDBWithChanges(sql, timeoutMs = DB_PROC_TIMEOUT_MS) {
   }
 }
 
-function sleepSync(ms) {
+function sleepSync(ms: any) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function patchCodexCommonConfig(patchObj) {
+function patchCodexCommonConfig(patchObj: any) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const cur = queryCommonConfig("codex");
     if (cur === null || cur === undefined) {
@@ -410,7 +412,7 @@ function patchCodexCommonConfig(patchObj) {
   );
 }
 
-function patchCodexProviderConfig(providerId, patchObj) {
+function patchCodexProviderConfig(providerId: any, patchObj: any) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = queryProviderById(providerId, "codex");
     if (!row) return; // provider gone — nothing to write (mirrors the generic drift drop)
@@ -441,7 +443,7 @@ function patchCodexProviderConfig(providerId, patchObj) {
 
 // Thin shell mirroring applyClaudeSettingsFieldPatches: same separate
 // try-blocks, same report-don't-swallow error style.
-function applyCodexProviderPatches(providerPatches) {
+function applyCodexProviderPatches(providerPatches: any) {
   for (const [providerId, patchObj] of Object.entries(providerPatches || {})) {
     if (!patchObj || !Object.keys(patchObj).length) continue;
     try {
@@ -454,7 +456,7 @@ function applyCodexProviderPatches(providerPatches) {
   }
 }
 
-function applyCodexSettingsFieldPatches(drift) {
+function applyCodexSettingsFieldPatches(drift: any) {
   if (drift.commonPatch && Object.keys(drift.commonPatch).length) {
     try {
       patchCodexCommonConfig(drift.commonPatch);
@@ -468,7 +470,7 @@ function applyCodexSettingsFieldPatches(drift) {
 // live mode: shared fields go to ~/.codex/config.toml (whole-document
 // re-serialization — comments/formatting are lost, surfaced at the prompt),
 // provider fields to the provider row.
-function applyCodexLiveSettingsFieldPatches(drift) {
+function applyCodexLiveSettingsFieldPatches(drift: any) {
   if (drift.commonPatch && Object.keys(drift.commonPatch).length) {
     try {
       patchCodexLiveFile(drift.commonPatch);
@@ -488,7 +490,7 @@ function applyCodexLiveSettingsFieldPatches(drift) {
 // the fold must consult the object the patch will be applied to. The TOP
 // level never folds: an RFC 7396 patch IS an object, a top-level null is
 // an invalid patch.
-function foldRemovalPatch(patch, target) {
+function foldRemovalPatch(patch: any, target: any) {
   if (!isPlainObject(patch)) return;
   for (const k of Object.keys(patch)) {
     if (!isSafeObjectKey(k)) continue;
@@ -586,7 +588,13 @@ function splitChangesByTarget(
 // diffed against) anchors tree-aware segment resolution: without it a key
 // containing dots would be re-nested into levels that don't exist in the
 // target document, corrupting it on write-back.
-function buildNestedAssign(patch, path, value, refObj, segments: string[] | null = null) {
+function buildNestedAssign(
+  patch: any,
+  path: any,
+  value: any,
+  refObj: any,
+  segments: string[] | null = null,
+) {
   const parts = resolveWriteSegments(refObj, path, segments);
   // Never build a patch through prototype keys: assigning them mutates the
   // prototype instead of creating a config entry.
