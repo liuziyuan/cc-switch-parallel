@@ -42,6 +42,8 @@ Shows a TUI — first select the CLI tool (claude / codex), then pick a provider
 
 **Recent (top 5):** the CLI screen lists your 5 most-used launches (`a s d f g` for one-key quick launch), ranked by use count with each row showing when it was last used (`· 2h`, `· 3d`, …). Command-mode launches (`switch "X" claude …`) count towards the ranking too, and a quick launch replays the recorded argv — if you launched with `--continue`, pressing the quick key launches with `--continue` again (rows carrying extra flags are marked `· +args`).
 
+**Quick launch from the command line:** skip the picker with `switch a` / `switch s` / `switch d` / `switch f` / `switch g` — identical to pressing the same letter in the TUI (same pin order, same replayed argv, same launch mode), with a one-line `→ provider · cli · mode` header on stderr. Only the bare key form qualifies; `switch a claude` still parses as a provider name. Full-auto slots ask for confirmation just like the TUI does, and refuse to launch where no terminal is available to confirm in.
+
 **Pinning is persistent.** Highlight a Recent row and press `t` + `1`–`5` to pin it into that slot (or `t` on the provider screen — pinning drops you straight into the launch-mode pick, so the next keypress launches); pinned rows show a `*` marker and keep their slot across launches until you press `u` to unpin. Entries are keyed by provider id: renaming a provider in cc-switch keeps its slot, history and count — Recent follows the new name automatically.
 
 **Change the launch mode:** highlight a Recent row and press `e`, then pick `⏎` Default / `2` Semi-auto / `3` Full-auto to switch that entry's mode in place (non-permission flags like `--continue` are kept).
@@ -54,6 +56,7 @@ A Full-auto quick-launch row (`⚠`) asks for confirmation before launching with
 
 ```bash
 switch [--sync|--no-sync] <provider> <cmd> [args...]
+switch [--sync|--no-sync] a|s|d|f|g       # launch a Recent top5 slot directly
 ```
 
 Examples:
@@ -63,6 +66,8 @@ switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
 switch --sync "Claude Official" claude   # confirm config drift interactively before launching
 switch --no-sync "Example Provider" codex       # launch silently, suppress the drift warning
+switch s                                 # Recent slot 2 — exactly what the TUI's `s` key does
+switch --no-sync d                       # silently launch Recent slot 3
 ```
 
 ### Other commands

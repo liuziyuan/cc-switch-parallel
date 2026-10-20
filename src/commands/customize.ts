@@ -253,6 +253,7 @@ Usage:
   switch --id <providerId> <cmd> [...]  Launch by provider id (disambiguates duplicate names)
   switch --sync <provider> <cmd> [...]  Same, but confirm config drift first
   switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
+  switch a|s|d|f|g                      Launch a Recent top5 slot directly (same slots as the TUI)
   switch sync                           Detect & sync config drift (plugins, settings fields, shared config)
   switch doctor                         Diagnose the environment
   switch clean [--all] [--force]        Remove instance directories (refuses live sessions; --force overrides)
@@ -268,7 +269,8 @@ Commands: ${Object.keys(APP_ADAPTERS).join(", ")}
 
 Examples:
   switch "Claude Official" claude
-  switch "Zhipu GLM en" claude --continue`);
+  switch "Zhipu GLM en" claude --continue
+  switch s                              # Recent slot 2 — same as pressing s in the TUI`);
 }
 
 

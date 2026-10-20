@@ -8,6 +8,7 @@ import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRunti
 import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.js";
 import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
 import { runPs, stackBillingMemberName } from "./commands/ps.js";
+import { isQuickLaunchKey, runQuickLaunch } from "./commands/quick.js";
 import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
@@ -265,12 +266,22 @@ async function main() {
   }
 
   if (args.length < 2) {
+    // Recent top5 shortcut: a bare `a`/`s`/`d`/`f`/`g` launches that slot
+    // exactly as the TUI's quick key would, without opening the picker. Only
+    // the single-token form qualifies — with a second token this is the
+    // provider-name path below.
+    if (args.length === 1 && isQuickLaunchKey(args[0])) {
+      await runQuickLaunch(args[0], syncFlag);
+      return;
+    }
     console.error(`Usage: switch <provider> <cmd> [args...]`);
     console.error(`       switch --id <providerId> <cmd> [args...]`);
+    console.error(`       switch a|s|d|f|g                     (launch a Recent top5 slot)`);
     console.error(`  Run \`switch --help\` for all commands.`);
     console.error(`Examples: switch "Claude Official" claude`);
     console.error(`          switch "Zhipu GLM en" claude --continue`);
     console.error(`          switch --id <providerId> claude`);
+    console.error(`          switch s                      (Recent slot 2, same as the TUI)`);
     process.exit(1);
   }
 
