@@ -40,11 +40,11 @@ const USAGE_HOST_MATCHERS = [
 // Authorization with HTTP 200 + {"code":401,"success":false} and only accepts
 // Bearer — verified against a live coding-plan key. bigmodel.cn untested; if
 // it ever needs bare, move authStyle into USAGE_HOST_MATCHERS per host.
-const USAGE_AUTH_STYLE = { zhipu: "bearer", deepseek: "bearer" };
+const USAGE_AUTH_STYLE: Record<string, string> = { zhipu: "bearer", deepseek: "bearer" };
 
 // {baseUrl, token} out of a Claude provider settings_config; null when
 // either is missing (no creds → no usage segment).
-function extractClaudeUsageSource(settingsConfig) {
+function extractClaudeUsageSource(settingsConfig: any) {
   const env =
     isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
   if (!env) return null;
@@ -69,7 +69,7 @@ function extractClaudeUsageSource(settingsConfig) {
 // than https is rejected — except plain http to a loopback host, which is
 // the local-proxy case. URL.origin is the string "null" for non-special
 // schemes (file:, ftp: …); the protocol check below rejects those.
-function usageEndpointFor(kind, baseUrl) {
+function usageEndpointFor(kind: any, baseUrl: any) {
   let url;
   try {
     url = new URL(baseUrl);
@@ -90,7 +90,7 @@ function usageEndpointFor(kind, baseUrl) {
 // never guesses — it falls through to host matching. meta.usage_script with
 // enabled === false is an explicit opt-out; a non-empty custom `code` means
 // the desktop app runs user JS we cannot replicate, so we stay out.
-function resolveUsageIdentity(settingsConfig, meta) {
+function resolveUsageIdentity(settingsConfig: any, meta: any) {
   const usage = isPlainObject(meta) && isPlainObject(meta.usage_script) ? meta.usage_script : null;
   if (usage) {
     if (usage.enabled === false) return null;
@@ -133,7 +133,7 @@ function resolveUsageIdentity(settingsConfig, meta) {
 // (identity, cachePath, selfPath) — prepare and the guard's
 // computeEffectiveSettings get the same inputs, so the generated wrapper is
 // identical on both paths [C3].
-function buildUsageQueryConfig(identity, cachePath, selfPath) {
+function buildUsageQueryConfig(identity: any, cachePath: any, selfPath: any) {
   if (!identity) return null;
   return {
     kind: identity.kind,

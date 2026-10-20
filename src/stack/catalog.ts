@@ -61,7 +61,7 @@ const CONFIRMED_TEXT_ONLY_TAILS = [
   "us.deepseek.r1-v1",
 ];
 
-function normalizeModelId(value) {
+function normalizeModelId(value: any) {
   if (typeof value !== "string") return "";
   let n = value
     .trim()
@@ -74,13 +74,13 @@ function normalizeModelId(value) {
   return n;
 }
 
-function isConfirmedTextOnlyModel(model) {
+function isConfirmedTextOnlyModel(model: any) {
   const normalized = normalizeModelId(model);
   const tail = normalized.split("/").pop() || "";
   return CONFIRMED_TEXT_ONLY_TAILS.includes(tail);
 }
 
-function imageInputCapabilityFromModalities(model, modalities) {
+function imageInputCapabilityFromModalities(model: any, modalities: any) {
   // The catalog is user/DB data: a non-array or non-string entries used to
   // throw on .some/.trim and abort prepare. Ignore unusable shapes; an array
   // with no string entries is "not declared", not "text only".
@@ -94,12 +94,12 @@ function imageInputCapabilityFromModalities(model, modalities) {
   return "Unknown";
 }
 
-function codexCatalogInputModalities(model, declaredModalities) {
+function codexCatalogInputModalities(model: any, declaredModalities: any) {
   const cap = imageInputCapabilityFromModalities(model, declaredModalities);
   return cap === "Unsupported" ? ["text"] : ["text", "image"];
 }
 
-function parsePositiveU64(value) {
+function parsePositiveU64(value: any) {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "number") return value > 0 ? value : undefined;
   if (typeof value === "string") {
@@ -109,7 +109,7 @@ function parsePositiveU64(value) {
   return undefined;
 }
 
-function codexCatalogModelSpecs(settingsConfig) {
+function codexCatalogModelSpecs(settingsConfig: any) {
   const models = settingsConfig?.modelCatalog?.models;
   if (!Array.isArray(models)) return [];
   const seen = new Set();
@@ -130,7 +130,7 @@ function codexCatalogModelSpecs(settingsConfig) {
     }
     if (seen.has(model)) continue;
     seen.add(model);
-    const str = (v) => (typeof v === "string" ? v.trim() : "");
+    const str = (v: any) => (typeof v === "string" ? v.trim() : "");
     const displayName = [mc.displayName, mc.display_name].map(str).find(Boolean);
     const baseInstructions = [mc.baseInstructions, mc.base_instructions].map(str).find(Boolean);
     specs.push({
@@ -155,7 +155,7 @@ function codexCatalogModelSpecs(settingsConfig) {
   return specs;
 }
 
-function resolveCodexCatalogToolProfile(provider) {
+function resolveCodexCatalogToolProfile(provider: any) {
   if (provider.id === CODEX_OFFICIAL_PROVIDER_ID && provider.category === "official") {
     return "NativeResponses";
   }
@@ -166,13 +166,19 @@ function resolveCodexCatalogToolProfile(provider) {
   return "ProxyChat";
 }
 
-function loadTemplate(profile) {
+function loadTemplate(profile: any) {
   const filename =
     profile === "ProxyChat" ? "gpt5_5_template.json" : "codex_native_responses_template.json";
   return JSON.parse(readFileSync(join(RESOURCES_DIR, filename), "utf8"));
 }
 
-function codexCatalogModelEntry(template, spec, priority, profile, defaultContextWindow) {
+function codexCatalogModelEntry(
+  template: any,
+  spec: any,
+  priority: any,
+  profile: any,
+  defaultContextWindow: any,
+) {
   const entry = jsonDeepClone(template);
   const displayName = spec.displayName || spec.model;
   const contextWindow = spec.contextWindow || defaultContextWindow;
@@ -204,7 +210,7 @@ function codexCatalogModelEntry(template, spec, priority, profile, defaultContex
   return entry;
 }
 
-function codexModelCatalogFromSettings(settingsConfig, configText, profile) {
+function codexModelCatalogFromSettings(settingsConfig: any, configText: any, profile: any) {
   const specs = codexCatalogModelSpecs(settingsConfig);
   if (specs.length === 0) return null;
   const defaultContextWindow = extractTopLevelU64(configText, "model_context_window") || 128000;
@@ -237,7 +243,7 @@ function readGlobalCodexCatalogText() {
   }
 }
 
-function copyGlobalCodexCatalogIntoInstance(instanceDir) {
+function copyGlobalCodexCatalogIntoInstance(instanceDir: any) {
   const text = readGlobalCodexCatalogText();
   const dest = join(instanceDir, CC_SWITCH_CATALOG_FILENAME);
   if (text !== null) {
@@ -253,7 +259,7 @@ function copyGlobalCodexCatalogIntoInstance(instanceDir) {
   return { copied: false };
 }
 
-function extractTopLevelU64(configText, field) {
+function extractTopLevelU64(configText: any, field: any) {
   try {
     const doc = parseToml(configText);
     const v = doc[field];
@@ -268,7 +274,7 @@ function extractTopLevelU64(configText, field) {
 // derivation and the launch probe all agree on one parse. Null on unparsable
 // input. baseUrl/bearer are non-empty strings or null.
 
-function extractCodexBaseUrl(configText) {
+function extractCodexBaseUrl(configText: any) {
   try {
     const doc = parseToml(configText);
     const activeProvider = doc.model_provider;
@@ -280,7 +286,7 @@ function extractCodexBaseUrl(configText) {
   return undefined;
 }
 
-function codexNativeGatewayRejectsWebSearch(configText) {
+function codexNativeGatewayRejectsWebSearch(configText: any) {
   const baseUrl = extractCodexBaseUrl(configText)?.toLowerCase();
   if (baseUrl && CODEX_WEB_SEARCH_REJECT_HOSTS.some((h) => baseUrl.includes(h))) return true;
   try {
@@ -294,7 +300,7 @@ function codexNativeGatewayRejectsWebSearch(configText) {
   return false;
 }
 
-function setCodexModelCatalogField(configObj, hasCatalog) {
+function setCodexModelCatalogField(configObj: any, hasCatalog: any) {
   if (hasCatalog) {
     configObj.model_catalog_json = CC_SWITCH_CATALOG_FILENAME;
   } else if (configObj.model_catalog_json === CC_SWITCH_CATALOG_FILENAME) {
@@ -302,7 +308,7 @@ function setCodexModelCatalogField(configObj, hasCatalog) {
   }
 }
 
-function setCodexWebSearchField(configObj, disable) {
+function setCodexWebSearchField(configObj: any, disable: any) {
   if (disable) {
     configObj.web_search = "disabled";
   } else if (configObj.web_search === "disabled") {
@@ -320,7 +326,7 @@ function setCodexWebSearchField(configObj, disable) {
 // must take precedence); `status_line = []` opts out entirely.
 const CODEX_STATUS_LINE_ITEMS = ["model-with-reasoning", "current-dir"];
 
-function applyCodexStatusLineInjection(configObj) {
+function applyCodexStatusLineInjection(configObj: any) {
   if (!isPlainObject(configObj.tui)) configObj.tui = {};
   const tui = configObj.tui;
   if (tui.status_line === undefined) tui.status_line = [...CODEX_STATUS_LINE_ITEMS];
@@ -332,7 +338,7 @@ function applyCodexStatusLineInjection(configObj) {
 // overwrite guard must neither report nor vote on this subtree. Exact match +
 // dotted-suffix (never a bare "tui." prefix) so the user's own [tui] keys
 // (notifications, terminal_title, …) keep syncing normally.
-function isCodexStatusLineChannelPath(path) {
+function isCodexStatusLineChannelPath(path: any) {
   return (
     path === "tui.status_line" ||
     path.startsWith("tui.status_line.") ||
@@ -349,7 +355,7 @@ function isCodexStatusLineChannelPath(path) {
 // prompt's write-back corrupted the provider row (dotted-key bug). Listed
 // exactly rather than tui-subtree-wide so user-configured [tui] keys
 // (terminal_title, notifications, …) keep syncing normally.
-function isCodexRuntimeStatePath(path) {
+function isCodexRuntimeStatePath(path: any) {
   return (
     path.startsWith("projects.") ||
     path.startsWith("hooks.state.") ||
@@ -370,7 +376,7 @@ function isCodexRuntimeStatePath(path) {
 //   real user hook config, which must keep syncing;
 // - tui.model_availability_nux: the whole table is one-shot nux markers.
 // `change` is optional so existing path-only callers keep working.
-function isCodexRuntimeStateChange(path, change) {
+function isCodexRuntimeStateChange(path: any, change: any) {
   if (isCodexRuntimeStatePath(path)) return true;
   if (path === "projects" || path === "tui.model_availability_nux") return true;
   if (path === "hooks") {
@@ -398,7 +404,7 @@ function isCodexRuntimeStateChange(path, change) {
 // longer live (stack off, member removed) is dropped — it would fail at the
 // proxy on every request. Plain rows do NOT carry model: their pick flows
 // through the guard + sync write-back instead (established semantics).
-function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
+function mergeCodexRuntimeState(configText: any, instanceDir: any, isAgg = false) {
   try {
     const current = parseToml(readFileSync(join(instanceDir, "config.toml"), "utf8"));
     const generated = parseToml(configText);
@@ -463,11 +469,11 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
 // Instance dir derivation shared by prepare and computeEffectiveSettings —
 // same expression, so the guard's comparison [C3] stays identical by
 // construction (applyStatusLineInjection derives claude's the same way).
-function codexInstanceDirFor(providerId) {
+function codexInstanceDirFor(providerId: any) {
   return join(INSTANCES_DIR, "codex", providerId);
 }
 
-function setCodexExperimentalBearerToken(configObj, token) {
+function setCodexExperimentalBearerToken(configObj: any, token: any) {
   const providerId = configObj.model_provider;
   if (!providerId || !isCustomCodexModelProviderId(providerId)) {
     configObj.experimental_bearer_token = token;
@@ -480,12 +486,12 @@ function setCodexExperimentalBearerToken(configObj, token) {
   configObj.experimental_bearer_token = token;
 }
 
-function extractCodexAuthApiKey(auth) {
+function extractCodexAuthApiKey(auth: any) {
   const key = auth?.OPENAI_API_KEY;
   return typeof key === "string" && key.trim() ? key.trim() : undefined;
 }
 
-function codexAuthHasLoginMaterial(auth) {
+function codexAuthHasLoginMaterial(auth: any) {
   if (!isPlainObject(auth)) return false;
   for (const [key, value] of Object.entries(auth)) {
     if (key === "auth_mode") continue;
@@ -527,7 +533,7 @@ const CODEX_AGG_TOPLEVEL_FALLBACK_KEYS = [
   "requires_openai_auth",
 ];
 
-function protectCodexAggregationIdentity(configObj, settingsConfig) {
+function protectCodexAggregationIdentity(configObj: any, settingsConfig: any) {
   let rowDoc: any = null;
   try {
     rowDoc = parseToml(settingsConfig?.config || "");
@@ -557,7 +563,14 @@ function protectCodexAggregationIdentity(configObj, settingsConfig) {
   return configObj;
 }
 
-function buildCodexConfig(settingsConfig, meta, category, shared, provider, settings) {
+function buildCodexConfig(
+  settingsConfig: any,
+  meta: any,
+  category: any,
+  shared: any,
+  provider: any,
+  settings: any,
+) {
   // Defensive: a malformed DB row (null/array/scalar) would throw on
   // settingsConfig.config below and abort prepare.
   if (!isPlainObject(settingsConfig)) settingsConfig = {};

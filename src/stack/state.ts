@@ -62,7 +62,7 @@ import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.js";
 // overwrite it. Yield the path like runtime state in the guard and the drift
 // diff. Plain codex rows are unaffected: their /model pick still flows
 // through guard + sync write-back (established semantics).
-function isCodexAggModelPath(appType, providerId, path) {
+function isCodexAggModelPath(appType: any, providerId: any, path: any) {
   if (appType !== "codex" || path !== "model") return false;
   if (providerId === VIRTUAL_STACK_PROVIDER_ID) return true;
   try {
@@ -83,7 +83,7 @@ async function probeTcpReachable(baseUrl: string, timeoutMs = 300): Promise<bool
     if (!u.hostname || !Number.isFinite(port)) return false;
     return await new Promise((resolve) => {
       const socket = net.connect({ host: u.hostname, port });
-      const done = (ok) => {
+      const done = (ok: any) => {
         socket.destroy();
         resolve(ok);
       };
@@ -105,7 +105,7 @@ async function probeTcpReachable(baseUrl: string, timeoutMs = 300): Promise<bool
 // Derive the virtual aggregation row with the DB names injected. The file-only
 // halves live in stack/live-state and stack/virtual-row, so db.ts can use them
 // without importing this module (breaks the db → state cycle).
-function takenProviderNames(appType) {
+function takenProviderNames(appType: any) {
   try {
     return queryDB(`SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`).map(
       (r) => r.name,
@@ -115,11 +115,11 @@ function takenProviderNames(appType) {
   }
 }
 
-function virtualStackProviderFor(appType) {
+function virtualStackProviderFor(appType: any) {
   return virtualStackProviderForCore(appType, takenProviderNames(appType));
 }
 
-function appendVirtualStackRow(rows, appType) {
+function appendVirtualStackRow(rows: any, appType: any) {
   return appendVirtualStackRowCore(rows, appType, takenProviderNames(appType));
 }
 
@@ -128,7 +128,7 @@ function appendVirtualStackRow(rows, appType) {
 // proxy placeholder token) — the same resolveUsageIdentity the member would
 // get as a direct provider. Members without a resolvable identity are simply
 // absent from the map (no usage cell for them, never an error).
-function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
+function buildStackUsageConfig(stack: any, instanceDir: any, wrapperPath: any) {
   const map: Record<string, any> = {};
   const names: Record<string, any> = {};
   for (const [key, providerId] of Object.entries(stack.keys) as [string, string][]) {
@@ -179,7 +179,7 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
 // stack off (the entry still launches; it just proxies nothing until
 // re-enabled). Returns { ids: Set, labels: Map<id, label> }, or null when no
 // aggregation provider exists at all.
-function buildAggregationGroup(appType) {
+function buildAggregationGroup(appType: any) {
   const rows = queryDB(
     `SELECT id, name, settings_config FROM providers WHERE app_type = ${sqlQuote(appType)}`,
   );
