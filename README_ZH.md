@@ -156,13 +156,13 @@ switch --dry-run --show-secrets "Zhipu GLM en" claude
 
 检测配置漂移（插件、配置字段、通用配置），确认后写回。要求 TTY，非交互调用以 1 退出。`switch --sync <provider> <cmd>` 会在启动前执行同一流程。
 
-#### `switch doctor [--json]`
+#### `switch doctor [--json] [--fix]`
 
 诊断 sqlite3、cc-switch 数据库、CLI 二进制、共享配置来源、实例目录、instructions 软链、sync-state 与聚合状态（live-state、members、Stack 行、代理）。
 
-- `--json` 只向 stdout 输出 `{ "version": 1, "ok", "summary": { "total", "passed", "failed" }, "checks": [{ "label", "pass", "detail", "fixable" }] }`，不含 ANSI。
-- 任一检查失败时退出码为 `1`，否则为 `0`（JSON 模式同样如此）。
-- `--fix` 为保留能力，当前直接拒绝（`--fix is not implemented yet.`）。未知 flag 以 1 退出。
+- `--json` 只向 stdout 输出 `{ "version": 1, "ok", "summary": { "total", "passed", "failed" }, "fixes": [...], "checks": [{ "label", "pass", "detail", "fixable", "fixId" }] }`，不含 ANSI。`fixes` 仅在 `--fix` 时出现；`fixable`/`fixId` 只出现在可修的失败项上。
+- `--fix` 按严格白名单自愈：重建有基线记录但缺失的实例目录；全局文件存在时重连断链的 instructions 软链；仅在实例文件与当前 provider + 共享配置的推导结果完全一致时补记缺失的实例基线。它不删数据、不改 DB、不写实例配置、不触发 prepare；其余失败项标记为不可自动修复。
+- 自愈后仍有检查失败时退出码为 `1`，否则为 `0`（JSON 模式同样如此）。未知 flag 以 1 退出。
 
 #### `switch clean [--all|--yes] [--force]`
 

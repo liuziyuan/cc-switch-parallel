@@ -283,7 +283,7 @@ Providers:
 
 Maintenance:
   switch sync                         Detect & sync config drift
-  switch doctor [--json]              Diagnose the environment
+  switch doctor [--json] [--fix]      Diagnose the environment; --fix rehomes broken links, missing instance dirs and baselines
   switch clean [--all|--yes] [--force] Remove instance directories
   switch update | self-update | --update
                                       Self-update to the latest npm version

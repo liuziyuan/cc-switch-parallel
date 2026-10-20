@@ -67,6 +67,14 @@ export interface DoctorCheck {
   fixId?: string;
 }
 
+/** One `doctor --fix` action result. */
+export interface DoctorFixResult {
+  fixId: string;
+  label: string;
+  status: "fixed" | "failed";
+  detail: string;
+}
+
 /** One instance directory on disk. */
 export interface InstanceInfo {
   name: string;

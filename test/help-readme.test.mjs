@@ -21,7 +21,7 @@ test("help lists every command, flag and alias", () => {
     "switch list", "--json", "--app",
     "switch ps", "switch ps kill", "switch ps attach", "--force",
     "switch sync",
-    "switch doctor",
+    "switch doctor", "--fix",
     "switch clean", "--all", "--yes",
     "switch customize", "switch uncustomize",
     "switch update", "self-update", "--update",
@@ -55,7 +55,7 @@ test("both READMEs document every command", () => {
     for (const token of COMMAND_HEADINGS) {
       assert.ok(text.includes(token), `${name} is missing ${token}`);
     }
-    for (const flag of ["--json", "--app", "--dry-run", "--diff", "--show-secrets", "--force", "--all", "--yes", "--id", "--sync", "--no-sync"]) {
+    for (const flag of ["--json", "--app", "--dry-run", "--diff", "--show-secrets", "--force", "--all", "--yes", "--id", "--sync", "--no-sync", "--fix"]) {
       assert.ok(text.includes(flag), `${name} is missing ${flag}`);
     }
   }

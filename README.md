@@ -156,13 +156,13 @@ Focuses the tmux pane running that session.
 
 Detects config drift (plugins, settings fields, shared config) and writes the sync back after confirmation. Requires a TTY; non-interactive invocations exit 1. `switch --sync <provider> <cmd>` runs the same pass before a launch.
 
-#### `switch doctor [--json]`
+#### `switch doctor [--json] [--fix]`
 
 Diagnoses sqlite3, the cc-switch DB, CLI binaries, shared config sources, instance dirs, instructions symlinks, sync state and aggregation (live state, members, Stack row, proxy).
 
-- `--json` prints only `{ "version": 1, "ok", "summary": { "total", "passed", "failed" }, "checks": [{ "label", "pass", "detail", "fixable" }] }` on stdout, with no ANSI.
-- Exit code is `1` when any check fails, `0` otherwise (also in JSON mode).
-- `--fix` is reserved and currently rejected (`--fix is not implemented yet.`). Unknown flags exit 1.
+- `--json` prints only `{ "version": 1, "ok", "summary": { "total", "passed", "failed" }, "fixes": [...], "checks": [{ "label", "pass", "detail", "fixable", "fixId" }] }` on stdout, with no ANSI. `fixes` appears only with `--fix`; `fixable`/`fixId` only on fixable failures.
+- `--fix` self-heals a strict whitelist: recreate missing instance dirs that have a recorded baseline, relink broken instructions symlinks when the global file exists, and backfill a missing per-instance baseline **only when the instance file is exactly what the current provider + shared config would write**. It never deletes data, edits the DB, writes instance settings, or runs prepare; every other failure is reported as not auto-fixable.
+- Exit code is `1` when any check still fails after the pass (also in JSON mode), `0` otherwise. Unknown flags exit 1.
 
 #### `switch clean [--all|--yes] [--force]`
 

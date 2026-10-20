@@ -63,10 +63,19 @@ test("doctor --json: stdout is parseable, no ANSI, exit code matches ok", async 
   assert.equal(parsed.ok, r.code === 0, `exit code ${r.code} must match ok=${parsed.ok}`);
 });
 
-test("doctor --fix: rejected until implemented", async () => {
+test("doctor --fix --json: accepted, parseable, fixes array, no ANSI", async () => {
+  const r = await runDoctorProcess(["--fix", "--json"]);
+  assert.ok(!r.stdout.includes("\x1b"), "no ANSI in JSON output");
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(parsed.version, 1);
+  assert.ok(Array.isArray(parsed.fixes), "fixes is an array");
+  assert.equal(parsed.ok, r.code === 0, `exit code ${r.code} must match ok=${parsed.ok}`);
+});
+
+test("doctor --fix text mode no longer reports not implemented", async () => {
   const r = await runDoctorProcess(["--fix"]);
-  assert.equal(r.code, 1);
-  assert.match(r.stderr, /not implemented/);
+  assert.ok(!/not implemented/.test(r.stdout + r.stderr));
+  assert.match(r.stdout, /cc-switch-parallel doctor/);
 });
 
 test("doctor: unknown argument reports usage", async () => {
