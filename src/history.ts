@@ -1,7 +1,7 @@
 // ─── history (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { readFileSync, renameSync } from "node:fs";
-import { APP_ADAPTERS } from "./adapters.js";
+import { APP_TYPES, CLI_META } from "./cli-meta.js";
 import { queryProvidersStrict } from "./db.js";
 import { withFileLockSync } from "./file-lock.js";
 import { atomicWrite } from "./fs-utils.js";
@@ -183,7 +183,7 @@ function migrateHistory(data) {
   );
   const appTypes = new Set<string>();
   for (const e of entries) {
-    const t = APP_ADAPTERS[e.cli]?.appType;
+    const t = CLI_META[e.cli]?.appType;
     if (t) appTypes.add(t);
   }
   const idsByName = new Map<string, string[]>(); // `appType|name` → every matching id
@@ -198,7 +198,7 @@ function migrateHistory(data) {
   const ambiguous = new Map<string, { appType: string; name: string; ids: string[] }>();
   const keyMap = new Map(); // old `cli|name` order-slot ids → new entryKey form
   for (const e of entries) {
-    const appType = APP_ADAPTERS[e.cli]?.appType;
+    const appType = CLI_META[e.cli]?.appType;
     const ids = idsByName.get(`${appType}|${e.provider}`) ?? [];
     if (ids.length === 1) {
       e.providerId = ids[0];
@@ -246,9 +246,9 @@ function isDeadEntry(e, aliveByCli) {
 // display names, so renames surface without touching history.
 function snapshotAliveByCli() {
   const byCli = new Map();
-  for (const [value, adapter] of Object.entries(APP_ADAPTERS)) {
+  for (const value of APP_TYPES) {
     try {
-      const rows = queryProvidersStrict(adapter.appType);
+      const rows = queryProvidersStrict(value);
       byCli.set(value, {
         idSet: new Set(rows.map((r) => r.id)),
         nameById: new Map(rows.map((r) => [r.id, r.name])),
@@ -313,7 +313,7 @@ function quickItemsFor(entries, order, aliveByCli) {
   return mergeTop5(entries, order, aliveByCli).map((e, i) => {
     const snap = aliveByCli?.get(e.cli);
     const name = (e.providerId && snap?.nameById.get(e.providerId)) || e.provider;
-    const permArgs = APP_ADAPTERS[e.cli]?.permissionArgs?.(e.hotkey) ?? [];
+    const permArgs = CLI_META[e.cli]?.permissionArgs?.(e.hotkey) ?? [];
     const replay = Array.isArray(e.extraArgs) ? e.extraArgs : [];
     // "+args" marks rows whose replay goes beyond the bare permission flags
     // (--continue etc.). An empty extraArgs on a non-default mode is NOT
@@ -464,7 +464,7 @@ function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
       target.hotkey = hotkey ?? null; // undefined (Default) normalizes to null
       target.extraArgs = [
         ...stripPermissionArgs(Array.isArray(target.extraArgs) ? target.extraArgs : []),
-        ...(APP_ADAPTERS[cli]?.permissionArgs?.(hotkey ?? null) ?? []),
+        ...(CLI_META[cli]?.permissionArgs?.(hotkey ?? null) ?? []),
       ];
       saveHistory(entries, order);
       return mergeTop5(entries, order, aliveByCli);

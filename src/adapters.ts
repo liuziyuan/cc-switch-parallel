@@ -3,6 +3,7 @@
 import { readFileSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildClaudeEffectiveSettings, isClaudeRuntimeStatePath } from "./claude-config.js";
+import { CLI_META } from "./cli-meta.js";
 import {
   buildCodexInstructionsTemplate,
   refreshCodexInstructionsSnapshot,
@@ -131,7 +132,7 @@ const APP_ADAPTERS = {
 
     // Capability interfaces [C1][C9] — see the comment block above the table.
     instanceSettingsFileName: "settings.json",
-    fullAutoFlag: "--dangerously-skip-permissions",
+    fullAutoFlag: CLI_META.claude.fullAutoFlag,
 
     setupInstance: setupClaudeInstance,
 
@@ -162,9 +163,7 @@ const APP_ADAPTERS = {
     },
 
     permissionArgs(hotkey) {
-      if (hotkey === "2") return ["--permission-mode", "acceptEdits"];
-      if (hotkey === "3") return ["--dangerously-skip-permissions"];
-      return [];
+      return CLI_META.claude.permissionArgs(hotkey);
     },
 
     // Reverse of permissionArgs for history recording: which permission mode
@@ -172,11 +171,7 @@ const APP_ADAPTERS = {
     // permission flag is present — never "1"/default, or the same launch would
     // fork two history entries.
     inferHotkeyFromArgs(args) {
-      if (args.includes("--dangerously-skip-permissions")) return "3";
-      const i = args.indexOf("--permission-mode");
-      if (i >= 0 && args[i + 1] === "acceptEdits") return "2";
-      if (args.includes("--permission-mode=acceptEdits")) return "2";
-      return undefined;
+      return CLI_META.claude.inferHotkeyFromArgs(args);
     },
 
     // Read the enabledPlugins this instance's settings.json currently holds
@@ -351,7 +346,7 @@ const APP_ADAPTERS = {
     // subtree (isCodexStatusLineChannelPath): the guard ignores it and the
     // upward settings sync yields it, mirroring claude's statusLine channel.
     instanceSettingsFileName: "config.toml",
-    fullAutoFlag: "--dangerously-bypass-approvals-and-sandbox",
+    fullAutoFlag: CLI_META.codex.fullAutoFlag,
     // common_config_codex is a TOML text: write-back re-serializes the whole
     // document (parse → patch → stringify), so comments/formatting are lost.
     // Surfaced at the sync prompt; no format-preserving TOML editor exists.
@@ -508,16 +503,12 @@ const APP_ADAPTERS = {
     },
 
     permissionArgs(hotkey) {
-      if (hotkey === "2") return ["--approve-for-me"];
-      if (hotkey === "3") return ["--dangerously-bypass-approvals-and-sandbox"];
-      return [];
+      return CLI_META.codex.permissionArgs(hotkey);
     },
 
     // See the claude adapter for the contract (undefined = no permission flag).
     inferHotkeyFromArgs(args) {
-      if (args.includes("--dangerously-bypass-approvals-and-sandbox")) return "3";
-      if (args.includes("--approve-for-me")) return "2";
-      return undefined;
+      return CLI_META.codex.inferHotkeyFromArgs(args);
     },
 
     // Same shared pipeline as claude's — method-invocation `this` binding.
