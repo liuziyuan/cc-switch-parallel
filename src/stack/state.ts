@@ -10,7 +10,7 @@ import { isPlainObject } from "../json-utils.js";
 import type { ProviderRow } from "../types.js";
 import { withFileLockSync } from "../file-lock.js";
 import { HOME, HISTORY_PATH, INSTANCES_DIR, LIVE_STATE_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "../paths.js";
-import { CC_SWITCH_CATALOG_FILENAME, codexAggregationRoute, isCustomCodexModelProviderId } from "./catalog.js";
+import { CC_SWITCH_CATALOG_FILENAME, codexAggregationRoute, isCustomCodexModelProviderId } from "./aggregation.js";
 import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.js";
 import { loadStatuslinePreferences } from "../statusline-colors.js";
 import { parseToml, stringifyToml } from "../toml.js";

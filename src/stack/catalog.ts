@@ -10,14 +10,11 @@ import { isLiveSharedSnippet, sharedSnippetText } from "../shared-config.js";
 import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
 import { parseToml, stringifyToml } from "../toml.js";
 import { tomlDeepMerge } from "../toml-utils.js";
+import { CC_SWITCH_CATALOG_FILENAME, CODEX_RESERVED_MODEL_PROVIDER_IDS, codexAggregationRoute, isCustomCodexModelProviderId } from "./aggregation.js";
 
 // ─── Codex config generation ──────────────────────────────────────────
 
 const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
-const CODEX_RESERVED_MODEL_PROVIDER_IDS = [
-  "amazon-bedrock", "openai", "ollama", "lmstudio", "oss", "ollama-chat",
-];
-const CC_SWITCH_CATALOG_FILENAME = "cc-switch-model-catalog.json";
 const CODEX_WEB_SEARCH_REJECT_HOSTS = [
   "xiaomimimo.com", "longcat.chat", "minimax.io", "minimaxi.com",
 ];
@@ -216,20 +213,6 @@ function extractTopLevelU64(configText, field) {
 // WRITE priority of setCodexExperimentalBearerToken so signature checks,
 // derivation and the launch probe all agree on one parse. Null on unparsable
 // input. baseUrl/bearer are non-empty strings or null.
-function codexAggregationRoute(configText) {
-  let doc;
-  try { doc = parseToml(configText || ""); } catch { return null; }
-  if (!isPlainObject(doc)) return null;
-  const pid = typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
-  const table = pid && isPlainObject(doc.model_providers?.[pid]) ? doc.model_providers[pid] : null;
-  const pickStr = (v) => (typeof v === "string" && v.trim() ? v : null);
-  return {
-    providerId: pid || null,
-    table,
-    baseUrl: pickStr(table?.base_url ?? doc.base_url),
-    bearer: pickStr(table?.experimental_bearer_token ?? doc.experimental_bearer_token),
-  };
-}
 
 function extractCodexBaseUrl(configText) {
   try {
@@ -420,11 +403,6 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
 // construction (applyStatusLineInjection derives claude's the same way).
 function codexInstanceDirFor(providerId) {
   return join(INSTANCES_DIR, "codex", providerId);
-}
-
-function isCustomCodexModelProviderId(id) {
-  const trimmed = id.trim();
-  return trimmed.length > 0 && !CODEX_RESERVED_MODEL_PROVIDER_IDS.some((r) => r.toLowerCase() === trimmed.toLowerCase());
 }
 
 function setCodexExperimentalBearerToken(configObj, token) {
