@@ -30,7 +30,7 @@ import { HOME, INSTANCES_DIR } from "./paths.js";
 
 // ─── Instance dir initialization ──────────────────────────────────────
 
-function ensureSymlink(target, linkPath) {
+function ensureSymlink(target: any, linkPath: any) {
   if (existsSync(linkPath) || isBrokenSymlink(linkPath)) {
     try {
       const stats = lstatSyncSafe(linkPath);
@@ -67,7 +67,7 @@ function ensureSymlink(target, linkPath) {
   } catch {}
 }
 
-function isBrokenSymlink(path) {
+function isBrokenSymlink(path: any) {
   try {
     return lstatSyncSafe(path)?.isSymbolicLink() === true;
   } catch {
@@ -75,7 +75,7 @@ function isBrokenSymlink(path) {
   }
 }
 
-function lstatSyncSafe(path) {
+function lstatSyncSafe(path: any) {
   try {
     return lstatSync(path);
   } catch {
@@ -83,7 +83,7 @@ function lstatSyncSafe(path) {
   }
 }
 
-function readdirSyncSafe(path) {
+function readdirSyncSafe(path: any) {
   try {
     return readdirSync(path);
   } catch {
@@ -116,7 +116,7 @@ const CLAUDE_SHARED_PATHS = [
 // Instance dirs hold credentials, so they are owner-only. Existing dirs from
 // older versions are tightened in place (best-effort: a read-only parent or
 // exotic filesystem must not block the launch).
-function ensurePrivateDir(dir) {
+function ensurePrivateDir(dir: any) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
     chmodSync(dir, 0o700);
@@ -317,7 +317,7 @@ function setupClaudePlans(instanceDir: string, globalPlansDir: string, providerI
   });
 }
 
-function setupClaudeInstance(providerId) {
+function setupClaudeInstance(providerId: any) {
   const instanceDir = join(INSTANCES_DIR, "claude", providerId);
   ensurePrivateDir(instanceDir);
   const globalClaudeDir = join(HOME, ".claude");
@@ -368,7 +368,7 @@ const CODEX_SHARED_PATHS = [
   // real files, and uncustomize restores the link.
 ];
 
-function setupCodexInstance(providerId) {
+function setupCodexInstance(providerId: any) {
   const instanceDir = join(INSTANCES_DIR, "codex", providerId);
   ensurePrivateDir(instanceDir);
   const globalCodexDir = join(HOME, ".codex");
@@ -388,7 +388,7 @@ function setupCodexInstance(providerId) {
 // place. The final chmod ENFORCES `mode` even when the previous file was more
 // permissive: credentials must shrink, not inherit a stale 0644. On failure
 // the temp file is removed so no half-written secret is left behind.
-function atomicWrite(path, data, mode = 0o600) {
+function atomicWrite(path: any, data: any, mode = 0o600) {
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true });
   const tmp = join(

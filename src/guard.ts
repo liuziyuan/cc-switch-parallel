@@ -20,9 +20,14 @@ import { isCodexAggModelPath } from "./stack/state.js";
 // warning then, but never blocks the launch).
 const BACKUPS_DIR = join(CC_SWITCH_DIR, "backups");
 const BACKUP_KEEP = 10;
-const backupDirFor = (appType, providerId) => join(BACKUPS_DIR, appType, providerId);
+const backupDirFor = (appType: any, providerId: any) => join(BACKUPS_DIR, appType, providerId);
 
-function backupInstanceSettings(appType, providerId, instanceDir, fileName = "settings.json") {
+function backupInstanceSettings(
+  appType: any,
+  providerId: any,
+  instanceDir: any,
+  fileName = "settings.json",
+) {
   try {
     const src = join(instanceDir, fileName);
     if (!existsSync(src)) return null;
@@ -49,7 +54,7 @@ function backupInstanceSettings(appType, providerId, instanceDir, fileName = "se
 // Remove the backup tree of instances whose provider row is gone — called
 // from clean's baseline pruning, same best-effort contract (a state-file
 // hiccup must not fail the clean itself).
-function pruneInstanceSettingsBackups(instances) {
+function pruneInstanceSettingsBackups(instances: any) {
   try {
     for (const { name, appType } of instances) {
       rmSync(backupDirFor(appType, name), { recursive: true, force: true });
@@ -70,7 +75,7 @@ function pruneInstanceSettingsBackups(instances) {
 
 // Filter the enabledPlugins subtree out of a leaf-diff (the plugin channel
 // owns that path — the field channel must neither report nor vote on it).
-function isPluginChannelPath(path) {
+function isPluginChannelPath(path: any) {
   return path === "enabledPlugins" || path.startsWith("enabledPlugins.");
 }
 
@@ -79,7 +84,7 @@ function isPluginChannelPath(path) {
 // The two blocked flavors must not share wording: a sensitive field is
 // intentionally not synced (edit it in cc-switch), whereas a virtual-row edit
 // has no DB row to land in and is rebuilt from desktop state next launch.
-function formatSettingsChangeLine(ch, target) {
+function formatSettingsChangeLine(ch: any, target: any) {
   const mark = ch.op === "add" ? "+" : ch.op === "remove" ? "-" : "~";
   const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
   const targetTag =
@@ -101,7 +106,13 @@ function formatSettingsChangeLine(ch, target) {
 // vanishing silently. Channel-owned [C6] and runtime-state paths are
 // filtered out. Capability-probed (C2 + C3), never appType-branched —
 // an adapter without both is v2-shaped and skips the guard entirely.
-function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, shared, settings) {
+function guardInstanceConfigBeforeOverwrite(
+  adapter: any,
+  row: any,
+  instanceDir: any,
+  shared: any,
+  settings: any,
+) {
   try {
     if (!adapter.readInstanceSettingsSnapshot || !adapter.computeEffectiveSettings) return;
     const current = adapter.readInstanceSettingsSnapshot(instanceDir);

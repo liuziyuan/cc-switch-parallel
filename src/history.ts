@@ -22,7 +22,7 @@ const HISTORY_VERSION = 2;
 // Entry/pin identity: cli + provider id when resolved, cli + stored name for
 // entries whose provider no longer exists (dead rows — the name is their only
 // identifier). order slots hold these key strings.
-const entryKey = (e) => (e.providerId ? `${e.cli}|${e.providerId}` : `${e.cli}|${e.provider}`);
+const entryKey = (e: any) => (e.providerId ? `${e.cli}|${e.providerId}` : `${e.cli}|${e.provider}`);
 
 // Set when the file must not be written back in this process: unreadable /
 // corrupt content, an unknown (future) schema version, or a failed migration.
@@ -177,9 +177,9 @@ function mutateHistory<T>(fn: (entries: HistoryEntry[], order: (string | null)[]
 // Names are not unique in the cc-switch DB. A name that matches more than one
 // provider is left unbound (providerId:null) instead of silently picking the
 // first row — those entries surface as missing and can be cleaned with `c`.
-function migrateHistory(data) {
+function migrateHistory(data: any) {
   const entries = (Array.isArray(data?.entries) ? data.entries : []).filter(
-    (e) => e && typeof e.cli === "string" && typeof e.provider === "string",
+    (e: any) => e && typeof e.cli === "string" && typeof e.provider === "string",
   );
   const appTypes = new Set<string>();
   for (const e of entries) {
@@ -225,7 +225,7 @@ function migrateHistory(data) {
 
 // Single write path so the manual order survives entry updates — recordLaunch
 // used to rewrite the file from scratch, which would silently drop pins.
-function saveHistory(entries, order) {
+function saveHistory(entries: any, order: any) {
   // Single choke point for every write path: a frozen file (corrupt /
   // unknown version / failed migration) must never be replaced by whatever
   // the current process happened to parse. Some callers load and save in the
@@ -234,7 +234,7 @@ function saveHistory(entries, order) {
   atomicWrite(HISTORY_PATH, JSON.stringify({ version: HISTORY_VERSION, entries, order }, null, 2));
 }
 
-function isDeadEntry(e, aliveByCli) {
+function isDeadEntry(e: any, aliveByCli: any) {
   const snap = aliveByCli?.get(e.cli);
   if (!snap) return false;
   return e.providerId ? !snap.idSet.has(e.providerId) : true;
@@ -264,8 +264,8 @@ function snapshotAliveByCli() {
 // live before dead, then count, then recency. Shared by mergeTop5 and
 // setEntryHotkey (the latter needs the SAME displayed-entry choice, or an
 // edit would land on a different row than the one the user highlighted).
-function byStrength(a, b, aliveByCli) {
-  const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
+function byStrength(a: any, b: any, aliveByCli: any) {
+  const liveness = (e: any) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
   return liveness(b) - liveness(a) || b.count - a.count || b.lastUsed - a.lastUsed;
 }
 
@@ -275,18 +275,18 @@ function byStrength(a, b, aliveByCli) {
 // filler. Dead rows rank after live ones, so they only surface when live rows
 // can't fill all 5 slots; pinned slots keep dead rows (the user's explicit
 // placement wins, flagged red for cleanup).
-function mergeTop5(entries, order, aliveByCli) {
+function mergeTop5(entries: any, order: any, aliveByCli: any) {
   // Duplicate slots are dropped here as well as in normalizeOrder: an entry
   // key must never render twice even if an old/migrated file holds it twice.
   const seenValid = new Set<string>();
-  const valid = order.map((id) => {
-    if (!id || seenValid.has(id) || !entries.some((e) => entryKey(e) === id)) return null;
+  const valid = order.map((id: any) => {
+    if (!id || seenValid.has(id) || !entries.some((e: any) => entryKey(e) === id)) return null;
     seenValid.add(id);
     return id;
   });
   const pinnedSet = new Set(valid.filter(Boolean));
-  const cmp = (a, b) => byStrength(a, b, aliveByCli);
-  const rep = (id) => entries.filter((e) => entryKey(e) === id).sort(cmp)[0];
+  const cmp = (a: any, b: any) => byStrength(a, b, aliveByCli);
+  const rep = (id: any) => entries.filter((e: any) => entryKey(e) === id).sort(cmp)[0];
   const seen = new Set<string>();
   const natural: HistoryEntry[] = [];
   for (const e of [...entries].sort(cmp)) {
@@ -309,7 +309,7 @@ function mergeTop5(entries, order, aliveByCli) {
 // resolve a slot to the same provider, argv and mode; two copies of this
 // projection would drift on pin order, renames and dead rows.
 // `running` (● live) is TUI-only presentation state and is added by the caller.
-function quickItemsFor(entries, order, aliveByCli) {
+function quickItemsFor(entries: any, order: any, aliveByCli: any) {
   return mergeTop5(entries, order, aliveByCli).map((e, i) => {
     const snap = aliveByCli?.get(e.cli);
     const name = (e.providerId && snap?.nameById.get(e.providerId)) || e.provider;
@@ -344,13 +344,13 @@ const ONE_SHOT_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
 
 // Raw launch argv → the argv worth replaying. Non-arrays normalize to the
 // empty-array form every recordLaunch write site expects.
-function stripOneShotFlags(args) {
+function stripOneShotFlags(args: any) {
   if (!Array.isArray(args)) return [];
   return args.filter((a) => !ONE_SHOT_FLAGS.has(a));
 }
 
 // In-place heal of loaded entries; returns true when anything changed.
-function healRecordedArgs(entries) {
+function healRecordedArgs(entries: any) {
   let dirty = false;
   for (const e of Array.isArray(entries) ? entries : []) {
     if (!Array.isArray(e?.extraArgs) || e.extraArgs.length === 0) continue;
@@ -366,7 +366,7 @@ function healRecordedArgs(entries) {
 // Pins are persistent: only an explicit unpin (or removing the pair) releases
 // a slot — a real launch never does. Launches update count/lastUsed/extraArgs
 // and follow renames so the stored display name never goes stale.
-function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
+function recordLaunch(cli: any, providerId: any, providerName: any, hotkey: any, extraArgs: any) {
   if (_historyFrozen) return;
   try {
     mutateHistory((entries, order) => {
@@ -419,7 +419,7 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
   }
 }
 
-function top5(aliveByCli) {
+function top5(aliveByCli: any) {
   const { entries, order } = loadHistory();
   return mergeTop5(entries, order, aliveByCli);
 }
@@ -453,7 +453,7 @@ function stripPermissionArgs(args: string[]): string[] {
 // recordLaunch's upgrade path), and rebuilds extraArgs as
 // [non-permission tail, new permission flags] so quick-launch replays the
 // right argv. Returns the updated top5 rows, or null on failure.
-function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
+function setEntryHotkey(pairKey: any, hotkey: any, cli: any, aliveByCli: any) {
   if (_historyFrozen) return null;
   try {
     return mutateHistory((entries, order) => {
@@ -477,7 +477,7 @@ function setEntryHotkey(pairKey, hotkey, cli, aliveByCli) {
 // Release a pin slot (idempotent — unpinning an unpinned pair is a no-op).
 // The entry itself stays and returns to natural ranking. Returns the updated
 // top5 rows so the caller can refresh its view in place, or null on failure.
-function unpinPair(key, aliveByCli) {
+function unpinPair(key: any, aliveByCli: any) {
   if (_historyFrozen) return null;
   try {
     return mutateHistory((entries, order) => {
@@ -496,7 +496,7 @@ function unpinPair(key, aliveByCli) {
 // Drop every history trace of a pair: all permission-mode entries plus any
 // manual-pin slot it holds. Used by the TUI remove confirm. Returns the
 // updated top5 rows, or null on failure.
-function removeHistoryPair(key, aliveByCli) {
+function removeHistoryPair(key: any, aliveByCli: any) {
   if (_historyFrozen) return null;
   try {
     return mutateHistory((entries, order) => {
@@ -516,7 +516,7 @@ function removeHistoryPair(key, aliveByCli) {
 // natural-filler row). Stale order slots need no handling here: mergeTop5's
 // valid check drops keys with no remaining entry. Returns rows removed, or
 // -1 on failure.
-function removeAllDeadPairs(aliveByCli) {
+function removeAllDeadPairs(aliveByCli: any) {
   if (_historyFrozen) return -1;
   try {
     const removed = mutateHistory((entries, order) => {
@@ -536,7 +536,7 @@ function removeAllDeadPairs(aliveByCli) {
 // down (the old slot 5 drops off), then project back so that only explicitly
 // pinned keys keep holding slots. item = {cli, providerId, provider}. Returns
 // the effective slot (1-5), or null on failure.
-function insertManualOrder(item, pos, aliveByCli) {
+function insertManualOrder(item: any, pos: any, aliveByCli: any) {
   if (_historyFrozen) return null;
   try {
     return mutateHistory((entries, order) => {
@@ -576,7 +576,7 @@ function insertManualOrder(item, pos, aliveByCli) {
 
 // Compact relative age for Recent rows. count-0 pin placeholders carry
 // lastUsed 0 — that's "never", not "55 years ago".
-function relTime(ts) {
+function relTime(ts: any) {
   const t = typeof ts === "number" && ts > 0 ? ts : 0;
   if (!t) return "never";
   const s = Math.max(0, Date.now() - t) / 1000;
@@ -588,7 +588,7 @@ function relTime(ts) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function permLabel(hotkey) {
+function permLabel(hotkey: any) {
   if (hotkey === "2") return "Semi-auto";
   if (hotkey === "3") return "Full-auto ⚠";
   return "Default";

@@ -166,7 +166,7 @@ function readSchemaUserVersion(): number | null {
   }
 }
 
-function queryCommonConfig(appType) {
+function queryCommonConfig(appType: any) {
   const key = `common_config_${appType}`;
   const rows = queryDB(`SELECT value FROM settings WHERE key = ${sqlQuote(key)}`);
   return rows[0]?.value || null;
@@ -177,7 +177,7 @@ function queryCommonConfig(appType) {
 // are left untouched). A single UPDATE is atomic, so concurrent launches can't
 // lose updates on disjoint keys. Only updates an existing row — never creates
 // the common config if absent.
-function patchCommonConfigClaude(patchObj) {
+function patchCommonConfigClaude(patchObj: any) {
   const key = "common_config_claude";
   const patchLit = sqlQuote(JSON.stringify(patchObj));
   execDB(
@@ -190,7 +190,7 @@ function patchCommonConfigClaude(patchObj) {
 // target is providers.settings_config, a TEXT column holding JSON). A single
 // UPDATE is atomic, so concurrent launches can't lose updates on disjoint
 // keys. Only updates an existing row — never INSERTs a provider.
-function patchProviderSettingsConfig(providerId, appType, patchObj) {
+function patchProviderSettingsConfig(providerId: any, appType: any, patchObj: any) {
   const patchLit = sqlQuote(JSON.stringify(patchObj));
   execDB(
     `UPDATE providers SET settings_config = json_patch(settings_config, json(${patchLit})) ` +
