@@ -1,15 +1,15 @@
 // ─── commands/args ─────────────────────────────────────────────────────
 
-type ParsedLaunchArgs =
-  | { error: string }
-  | {
-      syncFlag: string | null;
-      providerId: string | null;
-      dryRun: boolean;
-      diff: boolean;
-      showSecrets: boolean;
-      rest: string[];
-    };
+interface ParsedLaunchOptions {
+  syncFlag: string | null;
+  providerId: string | null;
+  dryRun: boolean;
+  diff: boolean;
+  showSecrets: boolean;
+  rest: string[];
+}
+
+type ParsedLaunchArgs = { error: string } | ParsedLaunchOptions;
 
 // Parse leading launch flags. `--id` selects a provider by id and is
 // mutually exclusive with the positional provider name (with --id the first
@@ -71,4 +71,4 @@ function parseLaunchArgs(argv: string[]): ParsedLaunchArgs {
   return { syncFlag, providerId, dryRun, diff, showSecrets, rest };
 }
 
-export { parseLaunchArgs, type ParsedLaunchArgs };
+export { parseLaunchArgs, type ParsedLaunchArgs, type ParsedLaunchOptions };
