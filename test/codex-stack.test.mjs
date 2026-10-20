@@ -28,8 +28,8 @@ const {
   isCodexAggModelPath,
   virtualStackProviderFor,
   appendVirtualStackRow,
-  queryProvider,
   queryProviderById,
+  queryProviderMatches,
   queryProvidersByApp,
   queryProvidersStrict,
   readStackState,
@@ -363,7 +363,7 @@ test("codex aggregation: query exits merge the virtual row, DB wins on id collis
   assert.ok(strict.some((r) => r.id === VIRTUAL_STACK_PROVIDER_ID));
   const byId = queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "codex");
   assert.ok(byId && byId.is_virtual, "by-id fallback hits the virtual row");
-  const byName = queryProvider("Stack", "codex");
+  const byName = queryProviderMatches("Stack", "codex")[0];
   assert.ok(byName && byName.id === VIRTUAL_STACK_PROVIDER_ID);
   // claude query exits never surface the codex row
   assert.equal(queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "claude"), null);

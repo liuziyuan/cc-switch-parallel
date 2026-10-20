@@ -8,7 +8,7 @@ import { APP_ADAPTERS } from "../adapters.js";
 import { loadSettings, queryProvidersByApp } from "../db.js";
 import { diffSettingsLeaves, jsonNormalize, parseJsonObject } from "../json-utils.js";
 import { INSTANCES_DIR } from "../paths.js";
-import { formatAmbiguousProvider, resolveProviderRef, type ProviderRef } from "../provider-ref.js";
+import { formatAmbiguousProvider, formatAvailableProviders, resolveProviderRef, type ProviderRef } from "../provider-ref.js";
 import { redactArgv, redactAtPath, redactSecrets } from "../redact.js";
 import { buildLaunchExtraEnv } from "../sessions.js";
 import { readSharedConfig } from "../shared-config.js";
@@ -174,8 +174,7 @@ async function runDryRun(
     const adapter = APP_ADAPTERS[cmd];
     if (adapter && plan.error.startsWith("Provider ")) {
       try {
-        console.error("  Available providers:");
-        queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
+        console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
       } catch {}
     }
     process.exit(1);

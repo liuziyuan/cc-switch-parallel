@@ -34,3 +34,11 @@ export function formatAmbiguousProvider(
   lines.push(`  (or rename one provider in cc-switch)`);
   return lines.join("\n");
 }
+
+// One line per provider, including the id: duplicate names are indistinguishable
+// when only the display name is printed.
+export function formatAvailableProviders(rows: Array<{ id: string; name: string }>): string {
+  const lines = ["  Available providers:"];
+  for (const p of rows) lines.push(`    ${p.id}  ${p.name}`);
+  return lines.join("\n");
+}

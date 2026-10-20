@@ -11,7 +11,7 @@ import { runPs, stackBillingMemberName } from "./commands/ps.js";
 import { runList } from "./commands/list.js";
 import { runDryRun } from "./commands/dry-run.js";
 import { isQuickLaunchKey, runQuickLaunch } from "./commands/quick.js";
-import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
+import { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
 import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.js";
@@ -346,7 +346,6 @@ export const __test = Object.freeze({
   isSensitiveConfigPath,
   stripOneShotFlags,
   healRecordedArgs,
-  queryProvider,
   queryProviderById,
   queryProviderMatches,
   queryProvidersByApp,

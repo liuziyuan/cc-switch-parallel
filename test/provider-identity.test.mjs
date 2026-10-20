@@ -39,15 +39,16 @@ insertRow("codex-dup", "codex", "Dup");
 
 const { __test } = await import("../bin/cc-launch.mjs");
 const {
-  queryProvider,
   queryProviderById,
   queryProviderMatches,
+  queryProvidersByApp,
   resolveProviderRef,
   formatAmbiguousProvider,
   parseLaunchArgs,
   launchRefForRow,
   launchRefForQuick,
 } = __test;
+const { formatAvailableProviders } = await import("../src/provider-ref.ts");
 
 test("queryProviderMatches: returns every same-name row in id order", () => {
   const rows = queryProviderMatches("Dup", "claude");
@@ -56,9 +57,11 @@ test("queryProviderMatches: returns every same-name row in id order", () => {
   assert.deepEqual(queryProviderMatches("Nope", "claude"), []);
 });
 
-test("queryProvider: keeps legacy first-wins semantics", () => {
-  assert.equal(queryProvider("Dup", "claude").id, "a-dup");
-  assert.equal(queryProvider("Nope", "claude"), null);
+test("formatAvailableProviders: includes ids so duplicate names disambiguate", () => {
+  const text = formatAvailableProviders(queryProvidersByApp("claude"));
+  assert.match(text, /a-dup\s+Dup/);
+  assert.match(text, /z-dup\s+Dup/);
+  assert.match(text, /solo\s+Solo/);
 });
 
 test("resolveProviderRef: name ambiguity is reported, id is exact", () => {
