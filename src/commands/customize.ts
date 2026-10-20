@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { APP_ADAPTERS } from "../adapters.js";
+import { APP_ADAPTERS, getAdapter } from "../adapters.js";
 import { queryProviderById, queryProviderMatches, queryProvidersByApp } from "../db.js";
 import { formatAmbiguousProvider, formatAvailableProviders } from "../provider-ref.js";
 import { confirmSync } from "../drift.js";
@@ -25,7 +25,7 @@ export {
 // consumed only when it names an adapter AND a provider follows; otherwise the
 // command defaults to claude. `--id <id>` selects the provider by id and is
 // mutually exclusive with the positional provider name.
-function parseCustomizeArgs(args) {
+function parseCustomizeArgs(args: string[]) {
   const rest = args.filter((a) => a !== "--yes");
   let providerId: string | null = null;
   const positional: string[] = [];
@@ -49,25 +49,30 @@ function parseCustomizeArgs(args) {
   if (providerId !== null) {
     // With --id the only allowed positional token is an optional app name.
     if (positional.length === 0) return { cmd: "claude", providerId, providerName: null };
-    if (positional.length === 1 && APP_ADAPTERS[positional[0]]) {
+    if (positional.length === 1 && getAdapter(positional[0])) {
       return { cmd: positional[0], providerId, providerName: null };
     }
     return null; // id + provider name are mutually exclusive
   }
   if (positional.length === 0) return null;
-  if (APP_ADAPTERS[positional[0]]) {
+  if (getAdapter(positional[0])) {
     if (positional.length < 2) return null; // app named but no provider
     return { cmd: positional[0], providerId: null, providerName: positional[1] };
   }
   return { cmd: "claude", providerId: null, providerName: positional[0] };
 }
 
-function instanceInstructionsPath(appType, providerId) {
-  return join(INSTANCES_DIR, appType, providerId, APP_ADAPTERS[appType].instructions.fileName);
+function instanceInstructionsPath(appType: string, providerId: string) {
+  return join(INSTANCES_DIR, appType, providerId, getAdapter(appType)!.instructions!.fileName);
 }
 
-function findCustomizeProviderOrExit(cmd, providerId, providerName, usage) {
-  const adapter = APP_ADAPTERS[cmd];
+function findCustomizeProviderOrExit(
+  cmd: string,
+  providerId: string | null,
+  providerName: string | null,
+  usage: string,
+) {
+  const adapter = getAdapter(cmd)!;
   if (providerId) {
     const row = queryProviderById(providerId, adapter.appType);
     if (!row) {
@@ -106,7 +111,7 @@ function findCustomizeProviderOrExit(cmd, providerId, providerName, usage) {
 // refresh the snapshot region in place. The real file survives every later
 // launch because ensureSymlink preserves non-symlink files instead of
 // re-linking the shared global one.
-function runCustomize(args) {
+function runCustomize(args: string[]) {
   const parsed = parseCustomizeArgs(args);
   const usage =
     "Usage: switch customize [claude|codex] <provider>\n       switch customize [claude|codex] --id <providerId>";
@@ -114,8 +119,8 @@ function runCustomize(args) {
     console.error(usage);
     process.exit(1);
   }
-  const adapter = APP_ADAPTERS[parsed.cmd];
-  const inst = adapter.instructions;
+  const adapter = getAdapter(parsed.cmd)!;
+  const inst = adapter.instructions!;
   const row = findCustomizeProviderOrExit(
     parsed.cmd,
     parsed.providerId,
@@ -175,7 +180,7 @@ function runCustomize(args) {
   process.exit(0);
 }
 
-async function runUncustomize(args) {
+async function runUncustomize(args: string[]) {
   const yes = args.includes("--yes");
   const parsed = parseCustomizeArgs(args);
   const usage =
@@ -184,8 +189,8 @@ async function runUncustomize(args) {
     console.error(usage);
     process.exit(1);
   }
-  const adapter = APP_ADAPTERS[parsed.cmd];
-  const inst = adapter.instructions;
+  const adapter = getAdapter(parsed.cmd)!;
+  const inst = adapter.instructions!;
   const row = findCustomizeProviderOrExit(
     parsed.cmd,
     parsed.providerId,

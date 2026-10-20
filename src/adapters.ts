@@ -4,6 +4,7 @@ import { readFileSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildClaudeEffectiveSettings, isClaudeRuntimeStatePath } from "./claude-config.js";
 import { CLI_META } from "./cli-meta.js";
+import type { AppAdapter, AppKey } from "./types.js";
 import {
   buildCodexInstructionsTemplate,
   refreshCodexInstructionsSnapshot,
@@ -177,7 +178,7 @@ const APP_ADAPTERS = {
     // Read the enabledPlugins this instance's settings.json currently holds
     // (used by recordInstanceBaseline() to snapshot per-instance provenance).
     readInstancePluginState(instanceDir) {
-      const snap = this.readInstanceSettingsSnapshot(instanceDir);
+      const snap = this.readInstanceSettingsSnapshot?.(instanceDir);
       if (!snap) return null;
       return isPlainObject(snap.enabledPlugins) ? snap.enabledPlugins : {};
     },
@@ -544,7 +545,13 @@ const APP_ADAPTERS = {
       },
     },
   },
-};
+} satisfies Record<AppKey, AppAdapter>;
+
+// Typed lookup for dynamic app keys. Callers keep their existing
+// "unknown app → skip/error" behavior.
+function getAdapter(appType: string): AppAdapter | undefined {
+  return (APP_ADAPTERS as unknown as Record<string, AppAdapter>)[appType];
+}
 
 // Settings-field upward drift, CLI-agnostic — extracted verbatim from the
 // claude adapter when codex joined the C1-C5 capability set. The leaf diff,
@@ -554,7 +561,7 @@ const APP_ADAPTERS = {
 // runtime-state filter (paths that never sync — they're carried across
 // prepare instead).
 // Reads instance files + DB; writes nothing.
-function detectConfigDriftGeneric(adapter, state) {
+function detectConfigDriftGeneric(adapter: any, state: any) {
   const dir = join(INSTANCES_DIR, adapter.appType);
   const baselines = state?.instances?.[adapter.appType] || {};
   if (!existsSync(dir)) return null;
@@ -606,10 +613,10 @@ function detectConfigDriftGeneric(adapter, state) {
     }
   }
   const commonPatch = {};
-  const providerPatches = {};
-  const conflicts = {};
+  const providerPatches: Record<string, any> = {};
+  const conflicts: Record<string, number> = {};
   const rejectedPaths: string[] = [];
-  const rejectedReasons = {}; // path → "sensitive" | "virtual" (prompt wording)
+  const rejectedReasons: Record<string, string> = {}; // path → "sensitive" | "virtual" (prompt wording)
   let virtualBlocked = false; // provider-target changes refused for the virtual Stack entry
   const warnedMalformedRows = new Set<string>();
   for (const [path, voters] of votes.entries()) {
@@ -753,7 +760,7 @@ const readCommonEnabledPluginKeys = readSharedEnabledPluginKeys;
 // sync-state.json predating this tracking) are treated as lowest priority so
 // they don't clobber instances we do have provenance for.
 // Returns { patch, installedKeys } — patch is a json_patch object or null.
-function computeEnabledPluginsPatch(state) {
+function computeEnabledPluginsPatch(state: any) {
   try {
     const dir = join(INSTANCES_DIR, "claude");
     const installedUser = readUserInstalledPluginSet();
@@ -784,7 +791,7 @@ function computeEnabledPluginsPatch(state) {
     // rest, oldest-first so the most recently modified instance wins last.
     candidates.sort((a, b) => (a.known !== b.known ? (a.known ? 1 : -1) : a.mtimeMs - b.mtimeMs));
 
-    const epPatch = {};
+    const epPatch: Record<string, any> = {};
     let has = false;
     for (const { ep } of candidates) {
       for (const [k, v] of Object.entries(ep)) {
@@ -814,7 +821,7 @@ function computeEnabledPluginsPatch(state) {
 // Write an enabledPlugins patch into the shared document (used by the sync
 // flow after user confirmation): the live global file in 4.0.2+ mode,
 // common_config_claude in legacy. No-op on an empty patch.
-function applyEnabledPluginsPatch(patch, sharedMode = detectSharedConfigMode()) {
+function applyEnabledPluginsPatch(patch: any, sharedMode = detectSharedConfigMode()) {
   if (!patch || Object.keys(patch).length === 0) return;
   try {
     if (sharedMode === "live") applyClaudeLivePluginPatch(patch);
@@ -829,6 +836,7 @@ export {
   applyEnabledPluginsPatch,
   computeEnabledPluginsPatch,
   detectConfigDriftGeneric,
+  getAdapter,
   readCommonEnabledPluginKeys,
   readSharedEnabledPluginKeys,
   readSharedEnabledPlugins,
