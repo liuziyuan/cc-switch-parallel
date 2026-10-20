@@ -55,48 +55,143 @@ Full-auto（`⚠`）的快捷启动行会先确认再以 `--dangerously-skip-per
 ### 命令模式
 
 ```bash
-switch [--sync|--no-sync] <provider> <cmd> [args...]
-switch [--sync|--no-sync] --id <providerId> <cmd> [args...]
-switch [--sync|--no-sync] a|s|d|f|g         # 直接启动 Recent top5 对应槽位
+switch [全局 flag] <provider> <cmd> [args...]
+switch [全局 flag] a|s|d|f|g
 ```
 
-示例：
+`<provider> <cmd>` 之后的所有参数都会原样转发给被启动的 CLI；全局 flag 必须写在最前面。
+
+#### 全局 flag
+
+| Flag | 含义 |
+| --- | --- |
+| `--sync` | 启动前交互确认配置漂移（需要 TTY）。 |
+| `--no-sync` | 完全抑制漂移警告。 |
+| `--id <providerId>` / `--id=<providerId>` | 按 id 选择 provider；同名时用它消歧。 |
+| `--dry-run` | 打印一次启动将写入的配置、实例目录、命令和环境变量；不写文件、不启动进程。 |
+| `--diff` | 配合 `--dry-run`：与磁盘上的当前实例配置逐叶子比较。 |
+| `--show-secrets` | 配合 `--dry-run`：显示真实凭据而不是 `***`（会把凭据打印到终端）。 |
+
+`--diff` / `--show-secrets` 未与 `--dry-run` 同时出现时直接报错。写在尾部（`switch P claude --dry-run`）的 flag **不是** switch 的参数，会被原样转发给被启动的 CLI。
+
+#### 启动 provider
 
 ```bash
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
-switch --sync "Claude Official" claude   # 启动前就地交互确认配置漂移
-switch --no-sync "Example Provider" codex       # 静默启动，抑制漂移警告
-switch --id <providerId> claude          # 按 id 启动（同名 provider 时消歧）
-switch s                                 # 启动 Recent 第 2 槽，等价于 TUI 里按 s
-switch --no-sync d                       # 静默启动 Recent 第 3 槽
+switch --id <providerId> claude --continue
+switch --sync "Claude Official" claude       # 启动前交互确认漂移
+switch --no-sync "Example Provider" codex    # 静默启动
 ```
 
-provider 名在 cc-switch 中不要求唯一：命令模式遇到同名 provider 会**报错并列出所有匹配的 id**，不会静默选择第一个。此时用 `--id` 指定，或在 cc-switch 中改名；TUI 始终按 id 启动，不受重名影响。
+provider 名在 cc-switch 中不要求唯一：命令模式遇到同名 provider 会**报错并列出所有匹配的 id**，不会静默选择第一个；用 `--id` 指定或在 cc-switch 中改名。找不到 provider 时会列出可用名称。两种情况都以 1 退出。
+
+#### Recent 槽位
+
+```bash
+switch s          # 启动 Recent 第 2 槽，等价于 TUI 里按 s
+switch --no-sync d
+```
+
+只有裸键形式会命中（`switch a claude` 会被当作名为 `a` 的 provider）。Full-auto 槽位启动前需要确认，且要求有可用终端。
+
+#### Dry run
+
+```bash
+switch --dry-run "Zhipu GLM en" claude --continue
+switch --dry-run --diff "Zhipu GLM en" claude
+switch --dry-run --show-secrets "Zhipu GLM en" claude
+```
+
+输出包含 provider、实例目录、命令、环境变量、将写入的 `settings.json` / `config.toml`，以及（加 `--diff` 时）与当前实例文件的逐叶子差异。疑似凭据的键默认显示为 `***`。
+
+`--dry-run` 不执行漂移/同步流程，不创建实例目录与 statusline wrapper，不做备份或覆盖配置，也不写启动历史与 sync-state。不支持 Recent 快捷槽位；同时给出 `--sync` / `--no-sync` 时忽略。
 
 ### 其他命令
 
-```bash
-switch ps         # 列出正在运行的、由 switch 启动的会话
-switch sync       # 检测并同步配置漂移（插件、配置字段、通用配置）
-switch doctor     # 诊断环境（sqlite3、数据库、二进制、instructions 文件等）
-switch clean      # 删除实例目录（交互式，或 --all；有运行中会话时拒绝，--force 强制）
-switch customize [claude|codex] <provider>           # 实例级 CLAUDE.md / AGENTS.md（打开编辑器）
-switch customize [claude|codex] --id <providerId>    # 同名时按 id 选择
-switch uncustomize [claude|codex] <provider> [--yes] # 恢复共享的全局 instructions 文件
-switch uncustomize [claude|codex] --id <providerId> [--yes]
-switch update     # 自更新到最新 npm 版本
-switch --help     # 列出所有命令
+#### `switch list [--json] [--app claude|codex]`
+
+列出 cc-switch 数据库中的 provider（含虚拟聚合入口）。
+
+- 表格列：`APP`、`NAME`、`ID`、`KIND`（`provider` / `stack`）、`CURRENT`（桌面端当前指向时显示 `*`）、`MEMBERS`（聚合成员）、`STATUS`（`ok` 或 `invalid: …`）。
+- `--app` 可重复；未知 app、缺值或未知 flag 都以 1 退出。
+- JSON：`{ "version": 1, "providers": [{ app, id, name, kind, aggregation, virtual, current, members, available, issues, nameAmbiguous }] }`。
+- `available: false` 表示该行配置无法在无修复的情况下启动，`issues` 给出原因；同名行标记 `nameAmbiguous: true`，用 `switch --id` 消歧。
+- 只读。数据库缺失或不可读会报错，而不是返回空列表。
+
+#### `switch ps [--json]`
+
+每个运行中的、由 switch 启动的会话一行 —— 同一 provider 并发跑多个终端时各占一行，互不覆盖：
+
+```
+  #  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m   claude
+  2  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d   claude --continue
 ```
 
-`switch ps` 每个会话一行 —— 同一 provider 并发跑多个终端时各占一行，互不覆盖：
+- `#` 是本次输出内稳定的 1-based 序号（按启动时间从早到晚），供 `ps kill` / `ps attach` 使用；两次调用之间可能变化。
+- tmux 列在非 tmux 环境下回退显示 tty。聚合实例显示 `provider → member`（当前计费成员）。
+- `--json`：`{ "version": 1, "sessions": [{ index, pid, cli, providerId, name, tmux, tty, cwd, startedAt, upMs, extraArgs, billingMember, status }] }`。`status` 为 `alive` 或 `unknown`（`unknown` 表示 pid 存在但无法验证身份）。
+- 可证明已死的会话文件会被清理。
 
-```
-  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
-  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d
-```
+#### `switch ps kill <pid|index> [--force]`
 
-第三列是 tmux 会话名（不在 tmux 里运行时回退显示终端 tty），第四列是启动时所在的项目目录（`~` 缩写）。
+停止本工具记录的会话。
+
+- `#N` 强制按序号；`pid:<pid>` 强制按 pid；裸数字在 `1..N` 内按序号，否则按 pid。
+- 只对「记录的 `lstart` 仍与进程匹配」的会话发信号；身份为 `unknown` 的一律拒绝。
+- 不加 `--force`：要求 TTY，二次确认后先发 `SIGTERM`，5 秒未退出再发 `SIGKILL`。
+- 加 `--force`：跳过确认，直接 `SIGKILL`，供脚本使用。
+- 退出码：成功或已退出为 `0`，拒绝/失败为 `1`，确认时按 Ctrl-C 为 `130`。
+- 只会给 CLI 进程发信号，不保证它派生的子进程一并退出。
+
+#### `switch ps attach <index>`
+
+聚焦该会话所在的 tmux pane。
+
+- 在 tmux 内：`switch-client` + `select-pane`。
+- 在 tmux 外：`select-window` + `select-pane` + `attach-session`（需要 TTY）。
+- 会话不在 tmux 内、tmux 二进制缺失或没有 tmux server 时明确报错并以 1 退出。
+
+#### `switch sync`
+
+检测配置漂移（插件、配置字段、通用配置），确认后写回。要求 TTY，非交互调用以 1 退出。`switch --sync <provider> <cmd>` 会在启动前执行同一流程。
+
+#### `switch doctor [--json]`
+
+诊断 sqlite3、cc-switch 数据库、CLI 二进制、共享配置来源、实例目录、instructions 软链、sync-state 与聚合状态（live-state、members、Stack 行、代理）。
+
+- `--json` 只向 stdout 输出 `{ "version": 1, "ok", "summary": { "total", "passed", "failed" }, "checks": [{ "label", "pass", "detail", "fixable" }] }`，不含 ANSI。
+- 任一检查失败时退出码为 `1`，否则为 `0`（JSON 模式同样如此）。
+- `--fix` 为保留能力，当前直接拒绝（`--fix is not implemented yet.`）。未知 flag 以 1 退出。
+
+#### `switch clean [--all|--yes] [--force]`
+
+删除实例目录。
+
+- 不带参数：交互式选择（需要 TTY）。
+- `--all` / `--yes`：跳过选择器删除全部实例目录；它们**不会**绕过运行中会话保护。
+- 有运行中或无法验证的会话时拒绝删除，除非加 `--force`。
+- 同时清理对应的 sync-state 基线与配置备份。非 TTY 且未给 `--all` 时以 1 退出。
+
+#### `switch customize [claude|codex] <provider>` / `--id <providerId>`
+
+创建或打开实例级 `CLAUDE.md` / `AGENTS.md`（打开 `$EDITOR`，未设置时回退系统编辑器）。provider 可按名称或 `--id` 选择；找不到或同名歧义时以 1 退出。
+
+#### `switch uncustomize [claude|codex] <provider> [--yes]` / `--id <providerId> [--yes]`
+
+恢复共享的全局 instructions 软链。不加 `--yes` 时要求 TTY 并二次确认；Ctrl-C 退出码 130，拒绝退出码 1。
+
+#### `switch update` / `switch self-update` / `switch --update`
+
+自更新到最新 npm 版本。失败以 1 退出。
+
+#### `switch version` / `switch -v` / `switch --version`
+
+打印当前版本，并在可用时附带 npm 上的最新版本。
+
+#### `switch help` / `switch -h` / `switch --help`
+
+打印完整命令列表。
 
 ## 配置漂移与同步
 
