@@ -834,7 +834,7 @@ function buildStackUsageWrapperLines(stackConfig) {
 // meta feed the usage identity the same way: both call sites pass the
 // provider's own values, so the generated wrapper stays identical on both
 // paths, and settings.json itself stays usage-blind.
-function applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta) {
+function applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta, opts: { writeWrapper?: boolean } = {}) {
   try {
     const instanceDir = join(INSTANCES_DIR, "claude", providerId);
     const wrapperPath = join(instanceDir, STATUSLINE_WRAPPER_FILENAME);
@@ -850,31 +850,36 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
       typeof existing.command === "string" && existing.command.trim() &&
       !existing.command.includes(STATUSLINE_WRAPPER_FILENAME)
     ) relayCommand = existing.command;
-    ensurePrivateDir(instanceDir);
-    // Tag color comes from the TUI preference file (fail-open "auto"). It is
-    // inlined into the WRAPPER's content only — never into settings.json —
-    // so the guard/baseline comparison of settings.json cannot see it and
-    // prepare vs computeEffectiveSettings stay identical by construction.
-    const colorCode = statuslineColorFor("claude", providerId);
-    // Same channel for usage: resolved from the provider's own
-    // settings_config + meta, inlined into the wrapper only. A throw here
-    // (shouldn't happen — resolution is guarded) means no usage segment,
-    // never a failed injection. Aggregation instances (loopback base URL +
-    // live stack) take the per-member map instead of a single identity.
-    let usageConfig: any = null;
-    let stackConfig: any = null;
-    try {
-      const stack = isAggregationProviderSettings(settingsConfig) ? readStackState("claude") : null;
-      if (stack) stackConfig = buildStackUsageConfig(stack, instanceDir, wrapperPath);
-      if (!stackConfig) {
-        usageConfig = buildUsageQueryConfig(
-          resolveUsageIdentity(settingsConfig, meta),
-          join(instanceDir, USAGE_CACHE_FILENAME),
-          wrapperPath,
-        );
-      }
-    } catch {}
-    atomicWrite(wrapperPath, buildStatusLineWrapperScript(providerName, join(HOME, ".claude", "settings.json"), relayCommand, colorCode, usageConfig, stackConfig) + "\n");
+    // dry-run derives the same effective config but must not touch the
+    // instance directory; the wrapper path is still computed so the
+    // statusLine command shown matches what a real launch would write.
+    if (opts.writeWrapper !== false) {
+      ensurePrivateDir(instanceDir);
+      // Tag color comes from the TUI preference file (fail-open "auto"). It is
+      // inlined into the WRAPPER's content only — never into settings.json —
+      // so the guard/baseline comparison of settings.json cannot see it and
+      // prepare vs computeEffectiveSettings stay identical by construction.
+      const colorCode = statuslineColorFor("claude", providerId);
+      // Same channel for usage: resolved from the provider's own
+      // settings_config + meta, inlined into the wrapper only. A throw here
+      // (shouldn't happen — resolution is guarded) means no usage segment,
+      // never a failed injection. Aggregation instances (loopback base URL +
+      // live stack) take the per-member map instead of a single identity.
+      let usageConfig: any = null;
+      let stackConfig: any = null;
+      try {
+        const stack = isAggregationProviderSettings(settingsConfig) ? readStackState("claude") : null;
+        if (stack) stackConfig = buildStackUsageConfig(stack, instanceDir, wrapperPath);
+        if (!stackConfig) {
+          usageConfig = buildUsageQueryConfig(
+            resolveUsageIdentity(settingsConfig, meta),
+            join(instanceDir, USAGE_CACHE_FILENAME),
+            wrapperPath,
+          );
+        }
+      } catch {}
+      atomicWrite(wrapperPath, buildStatusLineWrapperScript(providerName, join(HOME, ".claude", "settings.json"), relayCommand, colorCode, usageConfig, stackConfig) + "\n");
+    }
     // No chmod 0755: the statusLine command runs `node <path>`, so the wrapper
     // only needs to be READABLE by the owner. atomicWrite lands it at 0600 —
     // it contains the inlined usage token(s).

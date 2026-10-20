@@ -175,7 +175,7 @@ async function codexAggregationDoctorChecks(): Promise<DoctorCheck[]> {
   return checks;
 }
 
-async function runDoctor(): Promise<void> {
+async function collectDoctorChecks(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
 
@@ -293,7 +293,10 @@ async function runDoctor(): Promise<void> {
   for (const c of await aggregationDoctorChecks()) add(c.label, c.pass, c.detail);
   for (const c of await codexAggregationDoctorChecks()) add(c.label, c.pass, c.detail);
 
-  // render
+  return checks;
+}
+
+function renderDoctorText(checks: DoctorCheck[]): void {
   console.log("\n  \x1b[1mcc-switch-parallel doctor\x1b[0m\n");
   for (const c of checks) {
     const mark = c.pass ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
@@ -306,6 +309,10 @@ async function runDoctor(): Promise<void> {
     process.exit(1);
   }
   console.log("  \x1b[32mAll checks passed.\x1b[0m\n");
+}
+
+async function runDoctor(_args: string[] = []): Promise<void> {
+  renderDoctorText(await collectDoctorChecks());
 }
 
 async function runClean(args) {
@@ -354,4 +361,4 @@ async function runClean(args) {
 }
 
 
-export { aggregationDoctorChecks, assertCleanable, blockingSessions, codexAggregationDoctorChecks, collectInstances, runClean, runDoctor, which };
+export { aggregationDoctorChecks, assertCleanable, blockingSessions, codexAggregationDoctorChecks, collectDoctorChecks, collectInstances, renderDoctorText, runClean, runDoctor, which };

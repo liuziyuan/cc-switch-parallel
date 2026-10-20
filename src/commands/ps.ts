@@ -68,31 +68,48 @@ function tmuxSessionByTty() {
   }
 }
 
-function runPs() {
-  const running: { inst: InstanceInfo; session: any }[] = [];
+// One row per live/unknown session, shared by the table and JSON renderers
+// (and later by `ps kill`/`ps attach`, so an index always means the same row).
+// "unknown" (EPERM, unreadable lstart) stays visible and is never deleted.
+type RunningSessionRow = {
+  path: string;
+  inst: InstanceInfo;
+  session: any;
+  status: "alive" | "unknown";
+  pid: number | null;
+  cli: string;
+  providerId: string;
+  name: string;
+  billingMember: string | null;
+  tmux: string | null;
+  tty: string | null;
+  cwd: string | null;
+  startedAt: number | null;
+  upMs: number;
+  extraArgs: string[];
+};
+
+function collectRunningSessions(): RunningSessionRow[] {
+  const running: { path: string; inst: InstanceInfo; session: any; status: "alive" | "unknown" }[] = [];
   for (const inst of collectInstances()) {
     for (const { path, session } of readSessions(inst.path)) {
-      // Only a provably dead session is cleaned up. "unknown" (EPERM,
-      // unreadable lstart) stays visible and is never deleted.
-      if (sessionLiveness(session) === "dead") {
+      const status = sessionLiveness(session);
+      if (status === "dead") {
         // A crashed parent (kill -9) leaves no exit event behind — clean up
         // here. Only the dead session's own file, never its siblings.
         try { unlinkSync(path); } catch {}
         continue;
       }
-      running.push({ inst, session });
+      running.push({ path, inst, session, status });
     }
   }
-  if (!running.length) {
-    console.log("✓ No running instances");
-    return;
-  }
+  if (!running.length) return [];
   const tmuxByTty = tmuxSessionByTty();
   let stackForBilling; // lazy: readStackState once, only when a claude row asks
-  const home = process.env.HOME;
-  const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
-  const rows = running.map(({ inst, session }) => {
-    let name = session.providerId || inst.name;
+  const now = Date.now();
+  return running.map(({ path, inst, session, status }) => {
+    const providerId = session.providerId || inst.name;
+    let name = providerId;
     let row: ProviderRow | null = null;
     try {
       row = queryProviderById(inst.name, inst.appType);
@@ -104,41 +121,73 @@ function runPs() {
     // Aggregation-row gated: a plain row's instance can carry a stale ccs
     // pick (historically synced in), which would mis-bill the suffix.
     // Stack state is read lazily, once, shared across rows.
+    let billingMember: string | null = null;
     if (inst.appType === "claude" && row) {
       try {
         if (isAggregationProviderSettings(JSON.parse(row.settings_config))) {
           stackForBilling ??= readStackState("claude");
           const s = JSON.parse(readFileSync(join(inst.path, "settings.json"), "utf8"));
-          const member = stackBillingMemberName(s?.model, stackForBilling);
-          if (member) name = `${name} → ${member}`;
+          billingMember = stackBillingMemberName(s?.model, stackForBilling);
         }
       } catch {} // unreadable row/settings → plain name stands
     }
+    const startedAt = typeof session.startedAt === "number" && Number.isFinite(session.startedAt)
+      ? session.startedAt
+      : null;
+    const tmux = session.tty && tmuxByTty.get(session.tty) ? tmuxByTty.get(session.tty) : null;
     return {
+      path,
+      inst,
+      session,
+      status,
+      pid: Number.isInteger(session.pid) && session.pid > 0 ? session.pid : null,
       cli: inst.appType,
+      providerId: sanitizeText(providerId),
       name: sanitizeText(name),
-      tmux: sanitizeText((session.tty && tmuxByTty.get(session.tty)) || session.tty || "-"),
-      dir: sanitizeText(shorten(session.cwd) || "-"),
-      up: formatDuration(Date.now() - (session.startedAt || Date.now())),
-      args: sanitizeText(Array.isArray(session.extraArgs) && session.extraArgs.length
-        ? ` ${session.extraArgs.join(" ")}`
-        : ""),
+      billingMember: billingMember === null ? null : sanitizeText(billingMember),
+      tmux: tmux === null ? null : sanitizeText(tmux),
+      tty: session.tty ? sanitizeText(session.tty) : null,
+      cwd: session.cwd ? sanitizeText(session.cwd) : null,
+      startedAt,
+      upMs: startedAt === null ? 0 : Math.max(0, now - startedAt),
+      extraArgs: Array.isArray(session.extraArgs) ? session.extraArgs.map((a) => sanitizeText(a)) : [],
     };
   });
+}
+
+function renderPsTable(rows: RunningSessionRow[]): void {
+  if (!rows.length) {
+    console.log("✓ No running instances");
+    return;
+  }
+  const home = process.env.HOME;
+  const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
+  const display = rows.map((r) => ({
+    cli: r.cli,
+    name: r.billingMember ? `${r.name} → ${r.billingMember}` : r.name,
+    tmux: r.tmux || r.tty || "-",
+    dir: shorten(r.cwd) || "-",
+    up: formatDuration(r.upMs),
+    args: r.extraArgs.length ? ` ${r.extraArgs.join(" ")}` : "",
+  }));
   const w = (xs) => Math.max(...xs.map((x) => displayWidth(x)), 1);
-  const wCli = w(rows.map((r) => r.cli));
-  const wName = w(rows.map((r) => r.name));
-  const wTmux = w(rows.map((r) => r.tmux));
-  const wDir = w(rows.map((r) => r.dir));
-  const wUp = w(rows.map((r) => r.up));
+  const wCli = w(display.map((r) => r.cli));
+  const wName = w(display.map((r) => r.name));
+  const wTmux = w(display.map((r) => r.tmux));
+  const wDir = w(display.map((r) => r.dir));
+  const wUp = w(display.map((r) => r.up));
   console.log("");
-  for (const r of rows) {
+  for (const r of display) {
     console.log(
       `  ${padDisplay(r.cli, wCli)}  ${padDisplay(r.name, wName)}  ${padDisplay(r.tmux, wTmux)}  ` +
       `${padDisplay(r.dir, wDir)}  up ${padDisplay(r.up, wUp)}  ${r.cli}${r.args}`,
     );
   }
   console.log("");
+}
+
+function runPs(_args: string[] = []): void {
+  renderPsTable(collectRunningSessions());
 }
 
 // Drop the drift baselines of removed instance dirs, so stale-instance
@@ -163,4 +212,4 @@ function pruneInstanceBaselines(instances) {
 }
 
 
-export { buildRunningSet, formatDuration, pruneInstanceBaselines, runPs, stackBillingMemberName, tmuxSessionByTty };
+export { buildRunningSet, collectRunningSessions, formatDuration, pruneInstanceBaselines, renderPsTable, runPs, stackBillingMemberName, tmuxSessionByTty };
