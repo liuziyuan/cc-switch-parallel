@@ -125,7 +125,7 @@ test("claude model carry: dangling ccs model drops when its stack key is gone", 
   removeLiveState();
   const off = captureStderr(() => buildFor("p-ccs", base, "{}"));
   assert.equal(off.value.model, "fallback-model");
-  assert.ok(off.buf.includes("已不在当前聚合栈中"), "fallback note printed");
+  assert.ok(off.buf.includes("is no longer in the current aggregation stack"), "fallback note printed");
 
   // stack live + key present → the pick holds (no note)
   writeLiveState({ enabled: true, members: ["m1"], keys: { zhipu: "m1" } });
@@ -137,7 +137,7 @@ test("claude model carry: dangling ccs model drops when its stack key is gone", 
   writeLiveState({ enabled: true, members: ["m2"], keys: { deepseek: "m2" } });
   const gone = captureStderr(() => buildFor("p-ccs", base, "{}"));
   assert.equal(gone.value.model, "fallback-model");
-  assert.ok(gone.buf.includes("已不在当前聚合栈中"));
+  assert.ok(gone.buf.includes("is no longer in the current aggregation stack"));
 
   // non-ccs picks ignore stack state entirely (regression lock)
   removeLiveState();

@@ -62,7 +62,7 @@ test("clipFrame: fits the height and keeps the last (notice) line", () => {
   const clipped = clipFrame(lines, 5); // usable height 4
   assert.equal(clipped.length, 4);
   assert.equal(clipped[clipped.length - 1], "8");
-  assert.ok(clipped.some((l) => l.includes("行未显示")));
+  assert.ok(clipped.some((l) => l.includes("lines hidden")));
   assert.deepEqual(clipFrame(lines, 2), ["1"]);
 });
 

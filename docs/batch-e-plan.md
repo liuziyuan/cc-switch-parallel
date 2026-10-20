@@ -1,6 +1,6 @@
 # 批次 E：功能增强候选与调查
 
-> 基线：v0.21.6（批次 A–D 已合入 main）。
+> 基线：v0.21.6（批次 A–D 已合入 main）。当前 v0.26.0：命令扩展见 PR #58，遗留项修复见 PR #59（均已合并发布），P1 增强见本 PR（详见第 7 节）。
 > 性质：本文记录的是**功能增强**，不是缺陷修复。A–D 修完后，E 中没有一项是严格必须的；应结合实际使用场景挑选。
 
 ## 1. 背景
@@ -270,22 +270,22 @@
 
 ## 4. 建议范围
 
-### 最小 E（低成本、明确收益）
+### 最小 E —— 已完成（PR #58，v0.25.0）
 
-1. `switch list [--json]`
-2. `switch ps --json`
+1. ✅ `switch list [--json] [--app]`
+2. ✅ `switch ps --json`
 
-两项共享“收集 → 渲染”的结构，可在一个 PR 内完成；不需要版本大改。
+两项共享“收集 → 渲染”的结构，同一 PR 完成。
 
-### 按实际需求选择
+### 按实际需求选择 —— 已完成（PR #58，v0.25.0）
 
-- **频繁管理并行 tmux 会话** → `ps kill/attach`。
-- **经常排查实例配置** → `launch --dry-run`。
-- **CI/自动化** → `doctor --json`（`--fix` 可后续）。
+- ✅ **频繁管理并行 tmux 会话** → `ps kill/attach`。
+- ✅ **经常排查实例配置** → `launch --dry-run`（前置 flag，含 `--diff` / `--show-secrets`）。
+- ✅ **CI/自动化** → `doctor --json`；`doctor --fix`（严格白名单，见第 7 节）。
 
-### 建议延后
+### 建议延后 —— 未做
 
-- shell completion、提示语言统一、ps 性能优化、Windows 支持、catalog 模板跟进。
+- shell completion、ps 性能优化、Windows 支持、catalog 模板跟进。
 
 ### 已放弃
 
@@ -303,22 +303,62 @@
 | `main.ts` 的 update/__test 面 | 工程 / **已修复** | 实际 `runUpdate` 为 46 行（连同 helper 89 行），`__test` 为 108 项且 107 项只是转出口。已抽出 `commands/update.ts` 与 `commands/args.ts`，20 个测试改为直接 import 源模块，`__test` 已删除。 |
 | catalog 模板字段跟进 | 维护 | 上游模型更新时手动同步。 |
 
-## 6. 验收标准（若实施）
+## 6. 验收标准（已实施项）
 
 - `list` / `ps --json`：字段稳定、只读、无控制字符；`npm test` 新增对应单测。
 - `ps kill/attach`：只操作本工具记录且 lstart 匹配的会话；二次确认；失败明确报错。
-- `doctor --fix`：只修白名单问题；`--json` 可被 `jq` 解析。
+- `doctor --fix`：严格白名单（断链、缺失实例目录、基线缺失）；`doctor --json` 可被 `jq` 解析。
 - `launch --dry-run`：不写实例文件、不启动 CLI、不计入 history；默认脱敏 token。
-- Copilot 路由：官方与 Copilot 实例并行可用；代理退出即销毁；失败不影响其他 provider。
 - **help 完整性（硬性要求）**：所有 `switch` 命令、子命令与 flag（含 `--json`、`--app`、`--fix`、`--dry-run`、`--id`、`--sync/--no-sync` 等）都必须出现在 `switch --help` 中，含一行用法与简短说明；新增/修改命令的 PR 必须同时更新 `printHelp()`、命令缺参时的 `Usage:` 提示和 README_ZH。help 中不得出现未实现或已移除的命令。实施 E 的相应项后逐一核对：
   - `switch list [--json] [--app claude|codex]`
   - `switch ps [--json]`、`switch ps kill <pid|index> [--force]`、`switch ps attach <index>`
-  - `switch doctor [--json] [--fix]`
-  - `switch <provider> <cmd> [args...] --dry-run [--diff] [--show-secrets]`
+  - `switch doctor [--json]`
+  - `switch --dry-run [--diff] [--show-secrets] <provider> <cmd> [args...]`
   - `switch completions zsh|bash|fish`（若实施）
 - **README 完整性（硬性要求）**：`README.md` 与 `README_ZH.md` 都必须为**每一个**命令写清楚：用途、完整语法（含所有 flag 与别名）、行为与输出、典型示例、失败/边界场景。新增或修改命令的 PR 必须同步两份 README，且两份内容结构保持一致。README 中不得出现已移除/未实现的命令。
 
-## 7. 不在本文范围
+## 7. 当前状态与剩余待办（2026-10-20）
+
+### 已完成
+
+- **任务 6–11 命令扩展**：PR #58，`v0.25.0`（已合并并发布）。
+  - `list [--json] [--app]`、`ps --json`、`ps kill/attach`、`doctor --json`、`--dry-run [--diff] [--show-secrets]`
+  - help 分组 + 两份 README 全命令说明 + 防漂移测试
+- **第 5 节遗留项**：PR #59，`v0.25.1`（已合并并发布）。
+  - 删除死 API `queryProvider`；v1 history 迁移同名不绑定 + 一次性警告；not-found 输出 `id  name`
+  - CI 矩阵 Node 18.20.8 / 20 / 22 / 24 + Biome lint + coverage（85/79/82）+ publish 门禁
+  - 断开 `stack/state.ts ↔ stack/catalog.ts` 循环（`src/stack/aggregation.ts`）
+  - `main.ts` 抽出 `commands/update.ts` / `commands/args.ts`；`__test` 退场
+
+- **`ps kill` / `ps attach` 真实 tmux 验收**（2026-10-20，tmux 3.8）：在独立验收 session 中确认了 tmux 内 `attach`（`switch-client` + `select-pane`）、表格 tmux 列、交互 kill 的取消与确认、`--force` SIGTERM、非 tmux 非 TTY 报错、tmux 不在 PATH 报错，以及伪造 `lstart` 的会话不会被误杀（只清理会话文件）。tmux server 不存在的分支仍由单测覆盖（当前环境无法在不影响现有 server 的情况下模拟）。
+
+- **P1 增强**（本 PR，`v0.26.0`）：
+  - `doctor --fix` 严格白名单（断链、缺失实例目录、基线缺失；基线仅在实例内容与当前推导完全一致时补记）
+  - 用户可见提示统一为英文（命令模式与 TUI；功能性正则保留）
+  - `smol-toml` 1.7.1 → 1.9.1，并在解析包装层把 null-prototype 结果还原为普通对象
+
+### 流程剩余
+
+无。本地与远端已合并分支已于 2026-10-20 清理。
+
+### E 其他未做
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| shell completion | 延后 | 命令集仍小；动态 provider 补全需限制 DB 调用 |
+| `ps` 批量查询性能 | 不做 | 当前延迟可接受 |
+| Windows 支持 | 不做 | 依赖 `ps` / `sqlite3` / `/bin/sh` 与软链 |
+| catalog 模板跟进 | 按需 | 上游模型更新时同步 |
+
+### 单独立项（第 5 节剩余）
+
+- `noImplicitAny`：464 个错误、25 个文件；一次性修复，不做 `@ts-nocheck` 棘轮。
+- 完整 aggregation 抽取：把 loopback / 签名判定搬入 `aggregation.ts`，`usage.ts` 复用。
+- 剩余循环依赖：`db ↔ state ↔ history`、13 文件 SCC。
+- `main()` 路由进一步拆分（163 行，本次未动）。
+- formatter 未启用（仅 lint）。
+
+## 8. 不在本文范围
 
 - A–D 已完成的正确性/安全/并发/终端修复，不再重复。
 - 与本仓库无关的 cc-switch 桌面端功能。

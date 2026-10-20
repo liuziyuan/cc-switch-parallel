@@ -251,6 +251,6 @@ test("formatSettingsChangeLine: blocked tags distinguish sensitive from virtual 
   const sensitive = formatSettingsChangeLine(ch, "blocked-sensitive");
   assert.match(sensitive, /sensitive — NOT synced/);
   const virtual = formatSettingsChangeLine(ch, "blocked-virtual");
-  assert.match(virtual, /聚合虚拟行/);
+  assert.match(virtual, /aggregation virtual row/);
   assert.doesNotMatch(virtual, /sensitive/);
 });

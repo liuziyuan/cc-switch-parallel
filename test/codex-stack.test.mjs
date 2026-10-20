@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { parse as parseTomlRaw, stringify as stringifyToml } from "smol-toml";
+
+// smol-toml 1.9 returns null-prototype objects; normalize to plain objects so
+// deepStrictEqual against literals keeps working (this file asserts values).
+const parseToml = (text) => JSON.parse(JSON.stringify(parseTomlRaw(text)));
 
 // Fixture home MUST be set before the dynamic import: HOME-derived constants
 // (CC_SWITCH_DIR, INSTANCES_DIR) are evaluated at module load.
@@ -476,13 +480,13 @@ test("codex aggregation: catalog is copied byte-for-byte, degraded copies warn",
   captureStderr(() => { res = copyGlobalCodexCatalogIntoInstance(dir); });
   assert.deepEqual(res, { copied: false });
   assert.equal(readFileSync(join(dir, "cc-switch-model-catalog.json"), "utf8"), CATALOG_FIXTURE, "existing copy kept");
-  assert.ok(stderrBuf.includes("保留现有副本"), "warns about the kept copy");
+  assert.ok(stderrBuf.includes("keeping the instance's existing copy"), "warns about the kept copy");
   // global missing + no copy → no file, warning
   rmSync(join(dir, "cc-switch-model-catalog.json"), { force: true });
   captureStderr(() => { res = copyGlobalCodexCatalogIntoInstance(dir); });
   assert.deepEqual(res, { copied: false });
   assert.equal(existsSync(join(dir, "cc-switch-model-catalog.json")), false);
-  assert.ok(stderrBuf.includes("没有聚合模型列表"));
+  assert.ok(stderrBuf.includes("no aggregation model list"));
   // corrupt / empty models degrade the same way
   for (const bad of ["{corrupt", JSON.stringify({ models: [] }), JSON.stringify({ models: "x" })]) {
     writeGlobalCatalog(bad);
@@ -557,7 +561,7 @@ test("codex aggregation: /model pick carried across prepare; dangling key falls 
     codex.prepare(dir, VIRTUAL_STACK_PROVIDER_ID, { config: GLOBAL_CONFIG_FULL, auth: {} }, {}, null, null, {});
   });
   assert.equal(parseToml(readFileSync(join(dir, "config.toml"), "utf8")).model, "ccs-deepseek/deepseek-flash", "pick survives relaunch");
-  assert.ok(!stderrBuf.includes("已不在当前聚合栈中"));
+  assert.ok(!stderrBuf.includes("is no longer in the current aggregation stack"));
   // C3 parity: computeEffectiveSettings sees the same carried value
   const c3 = codex.computeEffectiveSettings({ config: GLOBAL_CONFIG_FULL, auth: {} }, {}, null, null, VIRTUAL_STACK_PROVIDER_ID, {});
   assert.equal(c3.model, "ccs-deepseek/deepseek-flash", "guard derives the carry identically");
@@ -566,7 +570,7 @@ test("codex aggregation: /model pick carried across prepare; dangling key falls 
   captureStderr(() => {
     mergeCodexRuntimeState('model = "glm-5.3-flash"\n', dir, true);
   });
-  assert.ok(stderrBuf.includes("已不在当前聚合栈中"), "dangling pick warns");
+  assert.ok(stderrBuf.includes("is no longer in the current aggregation stack"), "dangling pick warns");
   // dangling ccs key (member removed) → same
   writeCodexLiveState({ enabled: true, members: ["m-zai"], keys: { zhipu: "m-zai" } }, "m-zai");
   captureStderr(() => {
@@ -601,10 +605,10 @@ test("codex aggregation: buildAggregationGroup labels members / missing / dorman
   cleanCodexState();
   ensureDB();
   mkdirSync(join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
-  // dormant (no live-state): （未激活）
+  // dormant (no live-state): (inactive)
   let group = buildAggregationGroup("codex");
   assert.ok(group);
-  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("未激活"));
+  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("inactive"));
   // live with both members
   insertCodexRow("m-ds", "DeepSeek", DEEPSEEK_CONFIG);
   insertCodexRow("m-zai", "Z.AI GLM", ZHIPU_CONFIG);
@@ -614,7 +618,7 @@ test("codex aggregation: buildAggregationGroup labels members / missing / dorman
   );
   group = buildAggregationGroup("codex");
   const label = group.labels.get(VIRTUAL_STACK_PROVIDER_ID);
-  assert.ok(label.includes("◆ 聚合 · Stack"));
+  assert.ok(label.includes("◆ Aggregation · Stack"));
   assert.ok(label.includes("DeepSeek + Z.AI GLM"));
   // plain member rows are NOT in ids (real upstreams, not aggregation rows) —
   // the member names surface via the label text only
@@ -622,12 +626,12 @@ test("codex aggregation: buildAggregationGroup labels members / missing / dorman
   // missing member row
   sql(`DELETE FROM providers WHERE id = 'm-zai'`);
   group = buildAggregationGroup("codex");
-  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("1 个成员缺失"));
+  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("1 member(s) missing"));
   // a hand-made loopback codex row joins the group too
   insertCodexRow("m-hand", "HandStack", GLOBAL_CONFIG_FULL);
   group = buildAggregationGroup("codex");
   assert.ok(group.ids.has("m-hand"), "hand-made aggregation row labeled");
-  assert.ok(group.labels.get("m-hand").includes("◆ 聚合 · HandStack"));
+  assert.ok(group.labels.get("m-hand").includes("◆ Aggregation · HandStack"));
   cleanCodexState();
 });
 

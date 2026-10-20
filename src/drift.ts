@@ -408,7 +408,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // Virtual Stack entry: provider-target edits have no DB row to land in —
     // shown as blocked above; spell out why so it doesn't read as a bug.
     if (d.virtualBlocked) {
-      lines.push(`\x1b[2m(聚合入口「${VIRTUAL_STACK_PROVIDER_ID}」为运行时虚拟行，不写回数据库——实例配置每次启动由桌面端状态重新生成)\x1b[0m`);
+      lines.push(`\x1b[2m(the aggregation entry "${VIRTUAL_STACK_PROVIDER_ID}" is a runtime virtual row and is not written back to the database — the instance config is regenerated from desktop-app state on every launch)\x1b[0m`);
     }
   }
   for (const d of Object.values(pluginDrifts)) {

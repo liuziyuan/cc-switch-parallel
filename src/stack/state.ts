@@ -339,7 +339,7 @@ const STACK_SETTINGS_DERIVERS = {
 // drop-with-stack-off) apply unchanged. Three states:
 //   stack on + loopback global env        → full live row (contract derived fresh)
 //   stack off + a __stack__ instance dir  → dormant row (fallback base URL, no
-//                                           aliases/picker) — "（未激活）", still
+//                                           aliases/picker) — "(inactive)", still
 //                                           launchable, probe warns
 //   otherwise                             → null (aggregation never used: zero noise)
 // Computed on every call — no cache; the CLI calls it a handful of times per run.
@@ -441,8 +441,8 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
 // so the desktop GUI sees nothing — plus any DB rows matching the loopback +
 // PROXY_MANAGED signature (legacy auto-created rows pending one-time cleanup,
 // and hand-made ones, which today already take the aggregation label). Every
-// loopback provider is labeled with the live member names — "◆ 聚合 ·
-// Stack（DeepSeek + Z.AI GLM）", or "（未激活）" when the desktop app has the
+// loopback provider is labeled with the live member names — "◆ Aggregation ·
+// Stack (DeepSeek + Z.AI GLM)", or "(inactive)" when the desktop app has the
 // stack off (the entry still launches; it just proxies nothing until
 // re-enabled). Returns { ids: Set, labels: Map<id, label> }, or null when no
 // aggregation provider exists at all.
@@ -464,13 +464,13 @@ function buildAggregationGroup(appType) {
   // A member whose provider row is gone renders as a silent short-list
   // today — say so, or the missing usage segment reads as a bug.
   const missingCount = memberIds.length - members.length;
-  const missingText = stack && missingCount > 0 ? `，${missingCount} 个成员缺失` : "";
+  const missingText = stack && missingCount > 0 ? `, ${missingCount} member(s) missing` : "";
   const memberText = members.length
-    ? `（${members.join(" + ")}${missingText}）`
-    : stack ? (missingCount > 0 ? `（${missingCount} 个成员缺失）` : "") : "（未激活）";
+    ? ` (${members.join(" + ")}${missingText})`
+    : stack ? (missingCount > 0 ? ` (${missingCount} member(s) missing)` : "") : " (inactive)";
   return {
     ids: new Set(aggRows.map((r) => r.id)),
-    labels: new Map(aggRows.map((r) => [r.id, `◆ 聚合 · ${r.name}${memberText}`])),
+    labels: new Map(aggRows.map((r) => [r.id, `◆ Aggregation · ${r.name}${memberText}`])),
   };
 }
 
@@ -590,16 +590,16 @@ function cleanupLegacyStackRows() {
 function reportLegacyStackCleanup(result) {
   if (!result) return;
   for (const r of result.removed) {
-    console.error(`◇ 已移除旧版聚合 provider 行「${r.name}」（现由运行时虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID} 承担，桌面端 GUI 不再显示）`);
+    console.error(`◇ Removed legacy aggregation provider row "${r.name}" (now served by runtime virtual entry ${VIRTUAL_STACK_PROVIDER_ID}; no longer shown in the desktop GUI)`);
   }
   if (result.migratedHistory) {
-    console.error(`  启动历史与置顶已迁移到虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID}`);
+    console.error(`  Launch history and pins migrated to virtual entry ${VIRTUAL_STACK_PROVIDER_ID}`);
   }
   if (result.migratedColors) {
-    console.error(`  statusline 颜色偏好已迁移到虚拟入口 ${VIRTUAL_STACK_PROVIDER_ID}`);
+    console.error(`  Statusline color preferences migrated to virtual entry ${VIRTUAL_STACK_PROVIDER_ID}`);
   }
   for (const name of result.skippedCurrent) {
-    console.error(`\x1b[33m⚠ 聚合行「${name}」正被桌面端使用（is_current），已保留 — 在桌面端切走后下次运行会自动清理\x1b[0m`);
+    console.error(`\x1b[33m⚠ Aggregation row "${name}" is in use by the desktop app (is_current) — kept; it will be cleaned up on the next run after you switch away in the desktop app\x1b[0m`);
   }
 }
 

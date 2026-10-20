@@ -98,7 +98,7 @@ function tryReclaim(lockPath: string, staleMs: number): boolean {
 function warnOnce(lockPath: string): void {
   if (warned.has(lockPath)) return;
   warned.add(lockPath);
-  process.stderr.write(`⚠ 状态文件正被其他进程写入（${lockPath}），已跳过本次保存（不影响本次启动）。\n`);
+  process.stderr.write(`⚠ The state file is being written by another process (${lockPath}); this save was skipped (the launch is unaffected).\n`);
 }
 
 /**

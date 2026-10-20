@@ -1,6 +1,6 @@
 {
   "name": "cc-switch-parallel",
-  "version": "0.25.1",
+  "version": "0.26.0",
   "description": "A companion launcher for cc-switch — run Claude Code and Codex with per-provider isolated configs in parallel terminals, no switching required",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "smol-toml": "^1.7.1"
+    "smol-toml": "^1.9.1"
   },
   "engines": {
     "node": ">=18"

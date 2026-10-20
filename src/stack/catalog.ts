@@ -194,8 +194,8 @@ function copyGlobalCodexCatalogIntoInstance(instanceDir) {
   }
   const keptExisting = existsSync(dest);
   console.error(keptExisting
-    ? `⚠ 全局 ${CC_SWITCH_CATALOG_FILENAME} 缺失或损坏 — 实例保留现有副本，/model 列表可能过期（请在桌面端修复后重进实例）`
-    : `⚠ 全局 ${CC_SWITCH_CATALOG_FILENAME} 缺失或损坏 — 实例将没有聚合模型列表（请在桌面端修复后重进实例）`);
+    ? `⚠ Global ${CC_SWITCH_CATALOG_FILENAME} is missing or corrupt — keeping the instance's existing copy; the /model list may be stale (fix it in the desktop app, then re-enter the instance)`
+    : `⚠ Global ${CC_SWITCH_CATALOG_FILENAME} is missing or corrupt — the instance will have no aggregation model list (fix it in the desktop app, then re-enter the instance)`);
   return { copied: false };
 }
 
@@ -383,7 +383,7 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
         const stack = readStackState("codex");
         const key = ccs[1].toLowerCase();
         if (!stack || !(key in stack.keys)) {
-          console.error(`\x1b[2mℹ 聚合模型 "${model}" 已不在当前聚合栈中（栈已关闭或成员被移除）— 本次启动回退默认模型，恢复后请在 /model 重选\x1b[0m`);
+          console.error(`\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`);
           model = null;
         }
       }
