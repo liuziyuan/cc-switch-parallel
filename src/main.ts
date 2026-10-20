@@ -9,6 +9,7 @@ import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshC
 import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
 import { runPs, stackBillingMemberName } from "./commands/ps.js";
 import { runList } from "./commands/list.js";
+import { runDryRun } from "./commands/dry-run.js";
 import { isQuickLaunchKey, runQuickLaunch } from "./commands/quick.js";
 import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
@@ -134,10 +135,16 @@ function parseLaunchArgs(argv: string[]) {
   const rest = [...argv];
   let syncFlag: string | null = null;
   let providerId: string | null = null;
+  let dryRun = false;
+  let diff = false;
+  let showSecrets = false;
   while (rest.length) {
     const a = rest[0];
     if (a === "--sync") { syncFlag = "on"; rest.shift(); continue; }
     if (a === "--no-sync") { syncFlag = "off"; rest.shift(); continue; }
+    if (a === "--dry-run") { dryRun = true; rest.shift(); continue; }
+    if (a === "--diff") { diff = true; rest.shift(); continue; }
+    if (a === "--show-secrets") { showSecrets = true; rest.shift(); continue; }
     if (a === "--id") {
       rest.shift();
       const value = rest.shift();
@@ -154,7 +161,10 @@ function parseLaunchArgs(argv: string[]) {
     }
     break;
   }
-  return { syncFlag, providerId, rest };
+  if ((diff || showSecrets) && !dryRun) {
+    return { error: "--diff and --show-secrets require --dry-run" as const };
+  }
+  return { syncFlag, providerId, dryRun, diff, showSecrets, rest };
 }
 
 async function main() {
@@ -168,7 +178,13 @@ async function main() {
     console.error(`Usage: switch [--sync|--no-sync] [--id <providerId>] <cmd> [args...]`);
     process.exit(1);
   }
-  const { syncFlag, providerId, rest: args } = parsed;
+  const { syncFlag, providerId, dryRun, diff, showSecrets, rest: args } = parsed;
+
+  if (dryRun && args.length === 0) {
+    console.error("✗ --dry-run requires a provider and a command.");
+    console.error("Usage: switch --dry-run [--diff] [--show-secrets] <provider> <cmd> [args...]");
+    process.exit(1);
+  }
 
   if (args.length === 0) {
     try {
@@ -267,7 +283,25 @@ async function main() {
       console.error(`Usage: switch --id <providerId> <cmd> [args...]`);
       process.exit(1);
     }
+    if (dryRun) {
+      await runDryRun(args[0], { id: providerId }, args.slice(1), { diff, showSecrets });
+      return;
+    }
     await launchProvider(args[0], { id: providerId }, args.slice(1), syncFlag);
+    return;
+  }
+
+  if (dryRun) {
+    if (args.length === 1 && isQuickLaunchKey(args[0])) {
+      console.error("✗ --dry-run is not supported for quick slots.");
+      process.exit(1);
+    }
+    if (args.length < 2) {
+      console.error("✗ --dry-run requires a provider and a command.");
+      console.error("Usage: switch --dry-run [--diff] [--show-secrets] <provider> <cmd> [args...]");
+      process.exit(1);
+    }
+    await runDryRun(args[1], { name: args[0] }, args.slice(2), { diff, showSecrets });
     return;
   }
 
