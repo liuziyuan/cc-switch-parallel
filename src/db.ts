@@ -109,6 +109,23 @@ function queryProvidersStrict(appType: string): ProviderRow[] {
   return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
 }
 
+// Full-row listing for `switch list`: same ordering and virtual-row merge as
+// queryProvidersByApp, but keeps every column the inspector needs. `strict`
+// propagates sqlite3 failures (the read-only command must not report an empty
+// provider set on a broken DB) and never lets sqlite3 create a missing DB.
+function queryProviderRowsByApp(appType: string, strict = false): ProviderRow[] {
+  const sql = `SELECT id, name, settings_config, category, meta, is_current, sort_index FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`;
+  if (!strict) return appendVirtualStackRow(queryDB(sql), appType);
+  if (!existsSync(DB_PATH)) throw new Error(`cc-switch DB not found: ${DB_PATH}`);
+  const json = execFileSync("sqlite3", ["-json", DB_PATH, sql], {
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: DB_PROC_TIMEOUT_MS,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
+}
+
 // cc-switch schema generation, read from SQLite's user_version. 4.0.2+ is 20;
 // 3.20.4 and 4.0.0/4.0.1 are 19. Missing DB / sqlite3 failure → null (callers
 // fall back to the legacy common-config source). Guarding on existsSync
@@ -167,4 +184,4 @@ function loadSettings() {
 }
 
 
-export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };
+export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProviderMatches, queryProviderRowsByApp, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };

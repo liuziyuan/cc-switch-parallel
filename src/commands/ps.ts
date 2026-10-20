@@ -72,6 +72,7 @@ function tmuxSessionByTty() {
 // (and later by `ps kill`/`ps attach`, so an index always means the same row).
 // "unknown" (EPERM, unreadable lstart) stays visible and is never deleted.
 type RunningSessionRow = {
+  index: number;
   path: string;
   inst: InstanceInfo;
   session: any;
@@ -107,7 +108,7 @@ function collectRunningSessions(): RunningSessionRow[] {
   const tmuxByTty = tmuxSessionByTty();
   let stackForBilling; // lazy: readStackState once, only when a claude row asks
   const now = Date.now();
-  return running.map(({ path, inst, session, status }) => {
+  const rows = running.map(({ path, inst, session, status }) => {
     const providerId = session.providerId || inst.name;
     let name = providerId;
     let row: ProviderRow | null = null;
@@ -151,8 +152,21 @@ function collectRunningSessions(): RunningSessionRow[] {
       startedAt,
       upMs: startedAt === null ? 0 : Math.max(0, now - startedAt),
       extraArgs: Array.isArray(session.extraArgs) ? session.extraArgs.map((a) => sanitizeText(a)) : [],
+      index: 0,
     };
   });
+  // Stable order so `ps` indices and `ps kill`/`ps attach` targets agree:
+  // oldest first, then the deterministic identity fields.
+  rows.sort((a, b) => {
+    const at = a.startedAt ?? Number.POSITIVE_INFINITY;
+    const bt = b.startedAt ?? Number.POSITIVE_INFINITY;
+    if (at !== bt) return at - bt;
+    if (a.cli !== b.cli) return a.cli < b.cli ? -1 : 1;
+    if (a.providerId !== b.providerId) return a.providerId < b.providerId ? -1 : 1;
+    return (a.pid ?? 0) - (b.pid ?? 0);
+  });
+  rows.forEach((r, i) => { r.index = i + 1; });
+  return rows;
 }
 
 function renderPsTable(rows: RunningSessionRow[]): void {
@@ -163,6 +177,7 @@ function renderPsTable(rows: RunningSessionRow[]): void {
   const home = process.env.HOME;
   const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
   const display = rows.map((r) => ({
+    index: String(r.index),
     cli: r.cli,
     name: r.billingMember ? `${r.name} → ${r.billingMember}` : r.name,
     tmux: r.tmux || r.tty || "-",
@@ -171,6 +186,7 @@ function renderPsTable(rows: RunningSessionRow[]): void {
     args: r.extraArgs.length ? ` ${r.extraArgs.join(" ")}` : "",
   }));
   const w = (xs) => Math.max(...xs.map((x) => displayWidth(x)), 1);
+  const wIndex = w(display.map((r) => r.index));
   const wCli = w(display.map((r) => r.cli));
   const wName = w(display.map((r) => r.name));
   const wTmux = w(display.map((r) => r.tmux));
@@ -179,15 +195,45 @@ function renderPsTable(rows: RunningSessionRow[]): void {
   console.log("");
   for (const r of display) {
     console.log(
-      `  ${padDisplay(r.cli, wCli)}  ${padDisplay(r.name, wName)}  ${padDisplay(r.tmux, wTmux)}  ` +
-      `${padDisplay(r.dir, wDir)}  up ${padDisplay(r.up, wUp)}  ${r.cli}${r.args}`,
+      `  ${padDisplay(r.index, wIndex)}  ${padDisplay(r.cli, wCli)}  ${padDisplay(r.name, wName)}  ` +
+      `${padDisplay(r.tmux, wTmux)}  ${padDisplay(r.dir, wDir)}  up ${padDisplay(r.up, wUp)}  ${r.cli}${r.args}`,
     );
   }
   console.log("");
 }
 
-function runPs(_args: string[] = []): void {
-  renderPsTable(collectRunningSessions());
+function renderPsJson(rows: RunningSessionRow[]): string {
+  return JSON.stringify({
+    version: 1,
+    sessions: rows.map((r) => ({
+      index: r.index,
+      pid: r.pid,
+      cli: r.cli,
+      providerId: r.providerId,
+      name: r.name,
+      tmux: r.tmux,
+      tty: r.tty,
+      cwd: r.cwd,
+      startedAt: r.startedAt,
+      upMs: r.upMs,
+      extraArgs: r.extraArgs,
+      billingMember: r.billingMember,
+      status: r.status,
+    })),
+  }, null, 2);
+}
+
+function runPs(args: string[] = []): void {
+  let json = false;
+  for (const a of args) {
+    if (a === "--json") { json = true; continue; }
+    console.error(`✗ unknown argument: ${a}`);
+    console.error("Usage: switch ps [--json]");
+    process.exit(1);
+  }
+  const rows = collectRunningSessions();
+  if (json) console.log(renderPsJson(rows));
+  else renderPsTable(rows);
 }
 
 // Drop the drift baselines of removed instance dirs, so stale-instance
@@ -212,4 +258,4 @@ function pruneInstanceBaselines(instances) {
 }
 
 
-export { buildRunningSet, collectRunningSessions, formatDuration, pruneInstanceBaselines, renderPsTable, runPs, stackBillingMemberName, tmuxSessionByTty };
+export { buildRunningSet, collectRunningSessions, formatDuration, pruneInstanceBaselines, renderPsJson, renderPsTable, runPs, stackBillingMemberName, tmuxSessionByTty };

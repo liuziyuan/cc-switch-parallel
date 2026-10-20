@@ -8,6 +8,7 @@ import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRunti
 import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.js";
 import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
 import { runPs, stackBillingMemberName } from "./commands/ps.js";
+import { runList } from "./commands/list.js";
 import { isQuickLaunchKey, runQuickLaunch } from "./commands/quick.js";
 import { queryProvider, queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
@@ -219,8 +220,13 @@ async function main() {
     return;
   }
 
+  if (args[0] === "list") {
+    runList(args.slice(1));
+    return;
+  }
+
   if (args[0] === "ps") {
-    runPs();
+    runPs(args.slice(1));
     return;
   }
 
