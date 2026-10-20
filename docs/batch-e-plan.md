@@ -330,10 +330,11 @@
   - 断开 `stack/state.ts ↔ stack/catalog.ts` 循环（`src/stack/aggregation.ts`）
   - `main.ts` 抽出 `commands/update.ts` / `commands/args.ts`；`__test` 退场
 
+- **`ps kill` / `ps attach` 真实 tmux 验收**（2026-10-20，tmux 3.8）：在独立验收 session 中确认了 tmux 内 `attach`（`switch-client` + `select-pane`）、表格 tmux 列、交互 kill 的取消与确认、`--force` SIGTERM、非 tmux 非 TTY 报错、tmux 不在 PATH 报错，以及伪造 `lstart` 的会话不会被误杀（只清理会话文件）。tmux server 不存在的分支仍由单测覆盖（当前环境无法在不影响现有 server 的情况下模拟）。
+
 ### 流程剩余
 
-1. `ps kill` / `ps attach` 在真实 tmux 会话上的手工验收（单测已覆盖，尚未实测）。
-2. 收尾分支清理（本地与远端已合并分支）。
+1. 收尾分支清理（本地与远端已合并分支）。
 
 ### E 其他未做
 
