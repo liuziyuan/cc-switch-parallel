@@ -1,6 +1,6 @@
 # 批次 E：功能增强候选与调查
 
-> 基线：v0.21.6（批次 A–D 已合入 main）。当前 v0.25.1：命令扩展见 PR #58，遗留项修复见 PR #59（均已合并发布，详见第 7 节）。
+> 基线：v0.21.6（批次 A–D 已合入 main）。当前 v0.26.0：命令扩展见 PR #58，遗留项修复见 PR #59（均已合并发布），P1 增强见本 PR（详见第 7 节）。
 > 性质：本文记录的是**功能增强**，不是缺陷修复。A–D 修完后，E 中没有一项是严格必须的；应结合实际使用场景挑选。
 
 ## 1. 背景
@@ -281,11 +281,11 @@
 
 - ✅ **频繁管理并行 tmux 会话** → `ps kill/attach`。
 - ✅ **经常排查实例配置** → `launch --dry-run`（前置 flag，含 `--diff` / `--show-secrets`）。
-- ✅ **CI/自动化** → `doctor --json`；`doctor --fix` 仍未做。
+- ✅ **CI/自动化** → `doctor --json`；`doctor --fix`（严格白名单，见第 7 节）。
 
 ### 建议延后 —— 未做
 
-- shell completion、提示语言统一、ps 性能优化、Windows 支持、catalog 模板跟进。
+- shell completion、ps 性能优化、Windows 支持、catalog 模板跟进。
 
 ### 已放弃
 
@@ -307,7 +307,7 @@
 
 - `list` / `ps --json`：字段稳定、只读、无控制字符；`npm test` 新增对应单测。
 - `ps kill/attach`：只操作本工具记录且 lstart 匹配的会话；二次确认；失败明确报错。
-- `doctor --fix`：未实施；`doctor --json` 可被 `jq` 解析。
+- `doctor --fix`：严格白名单（断链、缺失实例目录、基线缺失）；`doctor --json` 可被 `jq` 解析。
 - `launch --dry-run`：不写实例文件、不启动 CLI、不计入 history；默认脱敏 token。
 - **help 完整性（硬性要求）**：所有 `switch` 命令、子命令与 flag（含 `--json`、`--app`、`--fix`、`--dry-run`、`--id`、`--sync/--no-sync` 等）都必须出现在 `switch --help` 中，含一行用法与简短说明；新增/修改命令的 PR 必须同时更新 `printHelp()`、命令缺参时的 `Usage:` 提示和 README_ZH。help 中不得出现未实现或已移除的命令。实施 E 的相应项后逐一核对：
   - `switch list [--json] [--app claude|codex]`
@@ -332,16 +332,19 @@
 
 - **`ps kill` / `ps attach` 真实 tmux 验收**（2026-10-20，tmux 3.8）：在独立验收 session 中确认了 tmux 内 `attach`（`switch-client` + `select-pane`）、表格 tmux 列、交互 kill 的取消与确认、`--force` SIGTERM、非 tmux 非 TTY 报错、tmux 不在 PATH 报错，以及伪造 `lstart` 的会话不会被误杀（只清理会话文件）。tmux server 不存在的分支仍由单测覆盖（当前环境无法在不影响现有 server 的情况下模拟）。
 
+- **P1 增强**（本 PR，`v0.26.0`）：
+  - `doctor --fix` 严格白名单（断链、缺失实例目录、基线缺失；基线仅在实例内容与当前推导完全一致时补记）
+  - 用户可见提示统一为英文（命令模式与 TUI；功能性正则保留）
+  - `smol-toml` 1.7.1 → 1.9.1，并在解析包装层把 null-prototype 结果还原为普通对象
+
 ### 流程剩余
 
-1. 收尾分支清理（本地与远端已合并分支）。
+无。本地与远端已合并分支已于 2026-10-20 清理。
 
 ### E 其他未做
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 提示语言统一为英文 | **未做** | 建议独立 PR：先命令模式，再 TUI；同 PR 改测试断言 |
-| `doctor --fix` | **未做** | 本期只做 `--json`；`--fix` 保留并明确拒绝 |
 | shell completion | 延后 | 命令集仍小；动态 provider 补全需限制 DB 调用 |
 | `ps` 批量查询性能 | 不做 | 当前延迟可接受 |
 | Windows 支持 | 不做 | 依赖 `ps` / `sqlite3` / `/bin/sh` 与软链 |
@@ -352,7 +355,6 @@
 - `noImplicitAny`：464 个错误、25 个文件；一次性修复，不做 `@ts-nocheck` 棘轮。
 - 完整 aggregation 抽取：把 loopback / 签名判定搬入 `aggregation.ts`，`usage.ts` 复用。
 - 剩余循环依赖：`db ↔ state ↔ history`、13 文件 SCC。
-- `smol-toml` 1.7.1 → 1.9.1（moderate advisory）。
 - `main()` 路由进一步拆分（163 行，本次未动）。
 - formatter 未启用（仅 lint）。
 
