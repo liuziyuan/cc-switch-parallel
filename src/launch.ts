@@ -29,6 +29,19 @@ import {
 // record: optional {hotkey} from the TUI quick/permission selection — the
 //         mode the user actually picked, preferred over inferring it back
 //         out of extraArgs (which quick-launch replays without flags).
+// Shared error path for an unresolvable provider ref (used by the early
+// command-mode resolve and the post-sync resolve).
+function exitProviderRefError(ref: ProviderRef, adapter: any, resolved: any, cmd: string): never {
+  if (resolved.error === "ambiguous") {
+    console.error(formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd));
+  } else {
+    const label = ref?.id ? `id "${ref.id}"` : `"${ref?.name || ""}"`;
+    console.error(`✗ Provider ${label} not found (${adapter.appType})`);
+    console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
+  }
+  process.exit(1);
+}
+
 async function launchProvider(
   cmd: string,
   ref: ProviderRef,
@@ -44,7 +57,34 @@ async function launchProvider(
     process.exit(1);
   }
 
-  const sync = await detectAndPromptSync({ tui: syncFlag === "on", quiet: syncFlag === "off" });
+  // Command-mode launches resolve the provider BEFORE drift detection so the
+  // stale list can annotate the instance this launch is about to refresh.
+  // --sync keeps the old order: its interactive write-back could invalidate a
+  // row resolved beforehand, and the prompt may legitimately list the
+  // launched provider (confirming sync refreshes it too).
+  const resolveBeforeSync = syncFlag !== "on";
+  let resolved: any = null;
+
+  if (resolveBeforeSync) {
+    // One-time migration of pre-virtualization aggregation rows — command
+    // mode never opens the TUI, so the claude launch path carries its own
+    // pass. Runs BEFORE the lookup: a by-name launch of "Stack" must hit the
+    // virtual entry, not a legacy row that is about to be deleted.
+    if (adapter.appType === "claude") {
+      reportLegacyStackCleanup(cleanupLegacyStackRows());
+    }
+    resolved = resolveProviderRef(ref, adapter.appType);
+    if (!resolved.ok) exitProviderRefError(ref, adapter, resolved, cmd);
+  }
+
+  const sync = await detectAndPromptSync({
+    tui: syncFlag === "on",
+    quiet: syncFlag === "off",
+    highlightProvider:
+      resolveBeforeSync && resolved?.ok
+        ? { appType: adapter.appType, id: resolved.row.id, name: resolved.row.name }
+        : null,
+  });
   if (sync.interrupted) process.exit(130);
   if (sync.inputClosed) {
     console.error("✗ Input closed before confirmation — launch aborted.");
@@ -55,26 +95,14 @@ async function launchProvider(
     process.exit(1);
   }
 
-  // One-time migration of pre-virtualization aggregation rows — command mode
-  // never opens the TUI, so the claude launch path carries its own pass.
-  // Runs BEFORE the lookup: a by-name launch of "Stack" must hit the virtual
-  // entry, not a legacy row that is about to be deleted.
-  if (adapter.appType === "claude") {
-    reportLegacyStackCleanup(cleanupLegacyStackRows());
-  }
-
-  const resolved = resolveProviderRef(ref, adapter.appType);
-  if (!resolved.ok) {
-    if (resolved.error === "ambiguous") {
-      console.error(
-        formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd),
-      );
-      process.exit(1);
+  if (!resolveBeforeSync) {
+    // --sync path: migrate and resolve after the write-back, so prepare uses
+    // the row as it exists once the sync has been applied.
+    if (adapter.appType === "claude") {
+      reportLegacyStackCleanup(cleanupLegacyStackRows());
     }
-    const label = ref?.id ? `id "${ref.id}"` : `"${ref?.name || ""}"`;
-    console.error(`✗ Provider ${label} not found (${adapter.appType})`);
-    console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
-    process.exit(1);
+    resolved = resolveProviderRef(ref, adapter.appType);
+    if (!resolved.ok) exitProviderRefError(ref, adapter, resolved, cmd);
   }
   const row = resolved.row;
 
