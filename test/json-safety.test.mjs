@@ -27,7 +27,7 @@ test("jsonDeepMerge: prototype keys are never written through", () => {
   jsonDeepMerge(target, EVIL);
   assertClean();
   assert.equal(target.safe, 3);
-  assert.equal(Object.prototype.hasOwnProperty.call(target, "__proto__"), false);
+  assert.equal(Object.hasOwn(target, "__proto__"), false);
 });
 
 test("applyMergePatch: prototype keys are never written through", () => {

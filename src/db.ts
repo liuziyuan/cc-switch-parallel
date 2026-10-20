@@ -67,13 +67,8 @@ function queryProviderMatches(name: string, appType: string): ProviderRow[] {
   return [];
 }
 
-// Legacy first-wins lookup. Kept for callers that cannot distinguish same-name
-// rows (v1 history migration); the launch/customize paths use
-// queryProviderMatches so ambiguity is surfaced instead of silently picking
-// the lowest id.
-function queryProvider(name: string, appType: string): ProviderRow | null {
-  return queryProviderMatches(name, appType)[0] ?? null;
-}
+// Legacy first-wins lookup has been removed: callers must either use
+// queryProviderMatches (and surface ambiguity) or queryProviderById.
 
 function queryProviderById(id: string, appType: string): ProviderRow | null {
   const rows = queryDB(
@@ -184,4 +179,4 @@ function loadSettings() {
 }
 
 
-export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProvider, queryProviderById, queryProviderMatches, queryProviderRowsByApp, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };
+export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProviderById, queryProviderMatches, queryProviderRowsByApp, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };

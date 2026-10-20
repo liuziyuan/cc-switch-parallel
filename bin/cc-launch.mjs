@@ -15,9 +15,7 @@ if (!isNodeVersionSupported(process.versions.node)) {
   process.exit(1);
 }
 
-const { main, __test } = await import("../src/main.js");
-
-export { __test };
+const { main } = await import("../src/main.js");
 
 // Guarded so test/*.test.mjs can import this file as a plain ESM module:
 // `node --test` imports it with CC_LAUNCH_SKIP_MAIN set, and the top level

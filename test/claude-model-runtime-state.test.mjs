@@ -14,13 +14,8 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-claude-model-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  buildClaudeEffectiveSettings,
-  claudeInstanceSettingsPath,
-  isClaudeRuntimeStatePath,
-  APP_ADAPTERS,
-} = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath } = await import("../src/claude-config.ts");
 
 const CC = join(testHome, ".cc-switch");
 const claude = APP_ADAPTERS.claude;

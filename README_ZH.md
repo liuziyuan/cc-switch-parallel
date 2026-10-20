@@ -333,7 +333,7 @@ const APP_ADAPTERS = {
 - [cc-switch](https://github.com/farion1231/cc-switch) 桌面应用，且已配置至少一个 provider（聚合模式需 cc-switch 4.0+）
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI（`claude`）在 PATH 中
 - [Codex](https://github.com/openai/codex) CLI（`codex`）在 PATH 中（可选，用于 Codex 支持）
-- Node.js ≥ 18（`switch` 启动时会校验，低于 18 直接提示升级并退出——statusline 的用量段依赖 Node 18 才有的全局 `fetch`）
+- Node.js ≥ 18（`switch` 启动时会校验，低于 18 直接提示升级并退出——statusline 的用量段依赖 Node 18 才有的全局 `fetch`）。CI 覆盖 Node 18.20 / 20 / 22 / 24；本地跑测试需要 Node ≥ 18.18（`--import`）。
 - `sqlite3` CLI（macOS 已预装）
 
 ## License

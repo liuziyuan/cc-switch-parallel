@@ -7,7 +7,7 @@ import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
 import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { recordLaunch } from "./history.js";
 import { parseJsonObject } from "./json-utils.js";
-import { formatAmbiguousProvider, resolveProviderRef, type ProviderRef } from "./provider-ref.js";
+import { formatAmbiguousProvider, formatAvailableProviders, resolveProviderRef, type ProviderRef } from "./provider-ref.js";
 import { readSharedConfig } from "./shared-config.js";
 import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.js";
 
@@ -53,8 +53,7 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
     }
     const label = ref?.id ? `id "${ref.id}"` : `"${ref?.name || ""}"`;
     console.error(`✗ Provider ${label} not found (${adapter.appType})`);
-    console.error(`  Available providers:`);
-    queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
+    console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
     process.exit(1);
   }
   const row = resolved.row;

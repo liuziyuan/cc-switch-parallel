@@ -3,13 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  parseCustomizeArgs,
-  buildCodexInstructionsTemplate,
-  refreshCodexInstructionsSnapshot,
-  APP_ADAPTERS,
-} = __test;
+
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { parseCustomizeArgs, buildCodexInstructionsTemplate, refreshCodexInstructionsSnapshot } = await import("../src/commands/customize.ts");
 
 // ─── parseCustomizeArgs ───────────────────────────────────────────────
 

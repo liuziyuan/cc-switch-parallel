@@ -165,6 +165,10 @@ function mutateHistory<T>(fn: (entries: HistoryEntry[], order: (string | null)[]
 // One-time v1→v2: resolve entry names to provider ids via the cc-switch DB.
 // Strict DB access (errors propagate → loadHistory freezes writes) so a
 // locked DB can't downgrade every live entry to a dead row.
+//
+// Names are not unique in the cc-switch DB. A name that matches more than one
+// provider is left unbound (providerId:null) instead of silently picking the
+// first row — those entries surface as missing and can be cleaned with `c`.
 function migrateHistory(data) {
   const entries = (Array.isArray(data?.entries) ? data.entries : [])
     .filter((e) => e && typeof e.cli === "string" && typeof e.provider === "string");
@@ -173,18 +177,36 @@ function migrateHistory(data) {
     const t = APP_ADAPTERS[e.cli]?.appType;
     if (t) appTypes.add(t);
   }
-  const idByName = new Map<string, string>(); // `appType|name` → id, first wins (queryProvider's ORDER BY id semantics)
+  const idsByName = new Map<string, string[]>(); // `appType|name` → every matching id
   for (const appType of appTypes) {
     for (const p of queryProvidersStrict(appType)) {
       const k = `${appType}|${p.name}`;
-      if (!idByName.has(k)) idByName.set(k, p.id);
+      const ids = idsByName.get(k);
+      if (ids) ids.push(p.id);
+      else idsByName.set(k, [p.id]);
     }
   }
+  const ambiguous = new Map<string, { appType: string; name: string; ids: string[] }>();
   const keyMap = new Map(); // old `cli|name` order-slot ids → new entryKey form
   for (const e of entries) {
-    e.providerId = idByName.get(`${APP_ADAPTERS[e.cli]?.appType}|${e.provider}`) ?? null;
+    const appType = APP_ADAPTERS[e.cli]?.appType;
+    const ids = idsByName.get(`${appType}|${e.provider}`) ?? [];
+    if (ids.length === 1) {
+      e.providerId = ids[0];
+    } else {
+      e.providerId = null;
+      if (ids.length > 1) {
+        ambiguous.set(`${appType}|${e.provider}`, { appType, name: e.provider, ids });
+      }
+    }
     if (!Array.isArray(e.extraArgs)) e.extraArgs = [];
     keyMap.set(`${e.cli}|${e.provider}`, entryKey(e));
+  }
+  for (const { appType, name, ids } of ambiguous.values()) {
+    console.error(
+      `⚠ ${ids.length} providers named "${name}" (${appType}) make history entries ambiguous ` +
+      `(${ids.join(", ")}) — left unbound (shown as missing); launch with --id to rebind or rename one provider.`,
+    );
   }
   const order = normalizeOrder(data?.order).map((slot) => (slot && keyMap.has(slot) ? keyMap.get(slot) : null));
   return { entries, order };

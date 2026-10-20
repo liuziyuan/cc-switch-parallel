@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
-const { __test } = await import("../bin/cc-launch.mjs");
-const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson, foldRemovalPatch, diffSettingsLeaves, parseJsonObject, buildClaudeEffectiveSettings } = __test;
+
+const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson, diffSettingsLeaves, parseJsonObject } = await import("../src/json-utils.ts");
+const { foldRemovalPatch } = await import("../src/upward.ts");
+const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
 
 // mergeCommonOverProvider must reproduce the upstream Rust json_deep_merge
 // (services/provider/live.rs@69ff69d^): objects recurse per source key;

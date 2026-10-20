@@ -13,40 +13,17 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-usage-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  buildClaudeEffectiveSettings,
-  buildStatusLineWrapperScript,
-  buildUsageWrapperLines,
-  extractClaudeUsageSource,
-  resolveUsageIdentity,
-  usageEndpointFor,
-  buildUsageQueryConfig,
-  isLoopbackBaseUrl,
-  isAggregationProviderSettings,
-  protectAggregationIdentityEnv,
-  splitChangesByTarget,
-  APP_ADAPTERS,
-  readStackState,
-  readGlobalModelPicker,
-  buildStackSettingsFromGlobal,
-  virtualStackProviderFor,
-  appendVirtualStackRow,
-  VIRTUAL_STACK_PROVIDER_ID,
-  buildStackUsageConfig,
-  queryProvider,
-  queryProviderById,
-  queryProvidersByApp,
-  queryProvidersStrict,
-  snapshotAliveByCli,
-  isDeadEntry,
-  cleanupLegacyStackRows,
-  probeTcpReachable,
-  aggregationDoctorChecks,
-  stackBillingMemberName,
-  buildAggregationGroup,
-  USAGE_CACHE_FILENAME,
-} = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { snapshotAliveByCli, isDeadEntry } = await import("../src/history.ts");
+const { splitChangesByTarget } = await import("../src/upward.ts");
+const { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } = await import("../src/db.ts");
+const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
+const { buildStatusLineWrapperScript, buildUsageWrapperLines } = await import("../src/statusline.ts");
+const { extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor, buildUsageQueryConfig, USAGE_CACHE_FILENAME } = await import("../src/stack/usage.ts");
+const { isLoopbackBaseUrl, isAggregationProviderSettings, protectAggregationIdentityEnv, readStackState, readGlobalModelPicker, buildStackSettingsFromGlobal, virtualStackProviderFor, appendVirtualStackRow, buildStackUsageConfig, cleanupLegacyStackRows, probeTcpReachable, buildAggregationGroup } = await import("../src/stack/state.ts");
+const { aggregationDoctorChecks } = await import("../src/commands/doctor.ts");
+const { stackBillingMemberName } = await import("../src/commands/ps.ts");
+const { VIRTUAL_STACK_PROVIDER_ID } = await import("../src/paths.ts");
 
 const CC = join(testHome, ".cc-switch");
 const INSTANCES = join(CC, "instances", "claude");
@@ -1347,8 +1324,8 @@ test("aggregation: query layer merges the virtual row — DB first, fail-open ex
   // byId for an app without a virtual layer → null even for the magic id
   assert.equal(queryProviderById(VIRTUAL_STACK_PROVIDER_ID, "codex"), null);
   // byName: the derived display name resolves; unknown names stay null
-  assert.equal(queryProvider(v.name, "claude")?.is_virtual, true);
-  assert.equal(queryProvider("no-such-provider", "claude"), null);
+  assert.equal(queryProviderMatches(v.name, "claude")[0]?.is_virtual, true);
+  assert.equal(queryProviderMatches("no-such-provider", "claude").length, 0);
   // byApp: virtual row appended at the tail; a DB row already owning the id wins
   const list = queryProvidersByApp("claude");
   assert.deepEqual(list.map((r) => r.id), ["m-ds", "m-gw", VIRTUAL_STACK_PROVIDER_ID]);
@@ -1378,8 +1355,8 @@ test("aggregation: queryProvider name dodge — a DB row named Stack keeps the n
     ["m-user", "Stack", { ANTHROPIC_BASE_URL: "https://example.com", ANTHROPIC_AUTH_TOKEN: "sk-user" }, {}],
   ]);
   mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
-  assert.equal(queryProvider("Stack", "claude").id, "m-user", "DB-first by name");
-  assert.equal(queryProvider("Stack 2", "claude")?.is_virtual, true, "virtual entry answers under the dodged name");
+  assert.equal(queryProviderMatches("Stack", "claude")[0].id, "m-user", "DB-first by name");
+  assert.equal(queryProviderMatches("Stack 2", "claude")[0]?.is_virtual, true, "virtual entry answers under the dodged name");
   rmSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true, force: true });
   sql(`DELETE FROM providers WHERE id = 'm-user'`);
 });

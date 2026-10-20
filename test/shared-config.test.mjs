@@ -12,12 +12,7 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-shared-config-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  readSharedConfig, detectSharedConfigMode, projectClaudeSharedKeys,
-  projectCodexSharedKeys, sharedConfigHash, claudeFloorTop, claudeFloorEnv,
-  claudeExclusiveEnv, resetSharedConfigWarnings,
-} = __test;
+const { readSharedConfig, detectSharedConfigMode, projectClaudeSharedKeys, projectCodexSharedKeys, sharedConfigHash, claudeFloorTop, claudeFloorEnv, claudeExclusiveEnv, resetSharedConfigWarnings } = await import("../src/shared-config.ts");
 
 const CC = join(testHome, ".cc-switch");
 const DB = join(CC, "cc-switch.db");

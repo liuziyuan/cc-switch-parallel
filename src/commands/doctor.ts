@@ -272,7 +272,7 @@ async function collectDoctorChecks(): Promise<DoctorCheck[]> {
       globalOk,
       globalOk ? globalPath : `${globalPath} not found (instances fall back to empty snapshots)`,
     );
-    let broken: string[] = [];
+    const broken: string[] = [];
     for (const inst of collectInstances().filter((i) => i.appType === adapter.appType)) {
       const p = instanceInstructionsPath(adapter.appType, inst.name);
       const st = lstatSyncSafe(p);

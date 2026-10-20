@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { APP_ADAPTERS } from "../adapters.js";
 import { queryProviderById, queryProviderMatches, queryProvidersByApp } from "../db.js";
-import { formatAmbiguousProvider } from "../provider-ref.js";
+import { formatAmbiguousProvider, formatAvailableProviders } from "../provider-ref.js";
 import { confirmSync } from "../drift.js";
 import { atomicWrite, lstatSyncSafe } from "../fs-utils.js";
 import { INSTANCES_DIR } from "../paths.js";
@@ -69,8 +69,7 @@ function findCustomizeProviderOrExit(cmd, providerId, providerName, usage) {
     const row = queryProviderById(providerId, adapter.appType);
     if (!row) {
       console.error(`✗ Provider id "${providerId}" not found (${adapter.appType})`);
-      console.error(`  Available providers:`);
-      queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
+      console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
       process.exit(1);
     }
     return row;
@@ -83,8 +82,7 @@ function findCustomizeProviderOrExit(cmd, providerId, providerName, usage) {
   if (matches.length === 1) return matches[0];
   if (matches.length === 0) {
     console.error(`✗ Provider "${providerName}" not found (${adapter.appType})`);
-    console.error(`  Available providers:`);
-    queryProvidersByApp(adapter.appType).forEach((p) => console.error(`    ${p.name}`));
+    console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
     process.exit(1);
   }
   console.error(formatAmbiguousProvider(

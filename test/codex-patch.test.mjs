@@ -4,14 +4,9 @@ import assert from "node:assert/strict";
 import { parse as parseToml } from "smol-toml";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  jsonDeepMerge,
-  applyMergePatch,
-  jsonNormalize,
-  applyTomlPatchText,
-  deepEqualJson,
-} = __test;
+
+const { applyTomlPatchText } = await import("../src/toml-utils.ts");
+const { jsonDeepMerge, applyMergePatch, jsonNormalize, deepEqualJson } = await import("../src/json-utils.ts");
 
 // ─── applyMergePatch: true RFC 7396 ───────────────────────────────────
 

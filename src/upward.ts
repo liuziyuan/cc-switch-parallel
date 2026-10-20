@@ -31,8 +31,8 @@ function resolvePathSegmentsDetailed(obj, path): { parts: string[]; resolved: bo
   const parts = String(path).split(".");
   function walk(node, i): string[] | null {
     if (!isPlainObject(node)) return null;
-    if (i === parts.length - 1) return Object.prototype.hasOwnProperty.call(node, parts[i]) ? [parts[i]] : null;
-    const exact = Object.prototype.hasOwnProperty.call(node, parts[i])
+    if (i === parts.length - 1) return  Object.hasOwn(node, parts[i]) ? [parts[i]] : null;
+    const exact = Object.hasOwn(node, parts[i])
       ? walk(node[parts[i]], i + 1) : null;
     if (exact) return [parts[i], ...exact];
     for (const k of Object.keys(node)) {
@@ -78,10 +78,10 @@ function pathExistsInSnippet(snippetObj, path) {
   const parts = resolvePathSegments(snippetObj, path);
   let cur = snippetObj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, parts[i])) return false;
+    if (!isPlainObject(cur) || !Object.hasOwn(cur, parts[i])) return false;
     cur = cur[parts[i]];
   }
-  return isPlainObject(cur) && Object.prototype.hasOwnProperty.call(cur, parts[parts.length - 1]);
+  return isPlainObject(cur) && Object.hasOwn(cur, parts[parts.length - 1]);
 }
 
 // Sensitive-key gate for the smart split's common direction — 1:1 port of
@@ -123,7 +123,7 @@ function isSensitiveConfigPath(path, segments: string[] | null = null) {
 function getPathValue(obj, path) {
   let cur = obj;
   for (const part of resolvePathSegments(obj, path)) {
-    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, part)) return undefined;
+    if (!isPlainObject(cur) || !Object.hasOwn(cur, part)) return undefined;
     cur = cur[part];
   }
   return cur;
@@ -431,7 +431,7 @@ function foldRemovalPatch(patch, target) {
       pvKeys.every((key) => pv[key] === null) &&
       isPlainObject(targetChild) &&
       Object.keys(targetChild).length === pvKeys.length &&
-      pvKeys.every((key) => isSafeObjectKey(key) && Object.prototype.hasOwnProperty.call(targetChild, key))
+      pvKeys.every((key) => isSafeObjectKey(key) && Object.hasOwn(targetChild, key))
     ) {
       patch[k] = null;
     }

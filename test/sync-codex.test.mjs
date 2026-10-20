@@ -18,8 +18,9 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-sync-codex-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const { APP_ADAPTERS, formatSettingsChangeLine, VIRTUAL_STACK_PROVIDER_ID } = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { formatSettingsChangeLine } = await import("../src/guard.ts");
+const { VIRTUAL_STACK_PROVIDER_ID } = await import("../src/paths.ts");
 
 const CC = join(testHome, ".cc-switch");
 const DB = join(CC, "cc-switch.db");

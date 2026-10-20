@@ -1,6 +1,6 @@
 {
   "name": "cc-switch-parallel",
-  "version": "0.25.0",
+  "version": "0.25.1",
   "description": "A companion launcher for cc-switch — run Claude Code and Codex with per-provider isolated configs in parallel terminals, no switching required",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,9 @@
   ],
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --import tsx --test \"test/*.test.mjs\"",
+    "test": "node --import tsx --test",
+    "test:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=85 --test-coverage-branches=79 --test-coverage-functions=82 --test",
+    "lint": "biome lint .",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit"
   },
@@ -38,6 +40,7 @@
     "cli"
   ],
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",

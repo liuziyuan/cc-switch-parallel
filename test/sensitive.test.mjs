@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
-const { __test } = await import("../bin/cc-launch.mjs");
-const { isSensitiveConfigKey, isSensitiveConfigPath, splitChangesByTarget } = __test;
+
+const { isSensitiveConfigKey, isSensitiveConfigPath, splitChangesByTarget } = await import("../src/upward.ts");
 
 // ─── isSensitiveConfigKey ──────────────────────────────────────────────
 // 1:1 port of Rust is_sensitive_config_key — deliberately over-broad.

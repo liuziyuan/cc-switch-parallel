@@ -9,6 +9,10 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -20,6 +24,9 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      # Never publish a commit that does not pass the same gates as CI.
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build
 
       - name: Check if version is new

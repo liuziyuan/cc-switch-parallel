@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
-const { __test } = await import("../bin/cc-launch.mjs");
-const { stripOneShotFlags, healRecordedArgs } = __test;
+
+const { stripOneShotFlags, healRecordedArgs } = await import("../src/history.ts");
 
 // Quick-launch replays the recorded extraArgs verbatim. One-shot informational
 // flags (`--version` etc.) print and exit — replaying them never enters the

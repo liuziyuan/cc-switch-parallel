@@ -12,15 +12,9 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-switch-statusline-display-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  buildStatusLineWrapperScript,
-  loadStatuslineDisplay,
-  saveStatuslineDisplay,
-  detectStatuslineRelay,
-  buildStatuslinePanelLines,
-  STATUSLINE_DISPLAY_ITEMS,
-} = __test;
+const { buildStatuslinePanelLines } = await import("../src/tui.ts");
+const { buildStatusLineWrapperScript } = await import("../src/statusline.ts");
+const { loadStatuslineDisplay, saveStatuslineDisplay, detectStatuslineRelay, STATUSLINE_DISPLAY_ITEMS } = await import("../src/statusline-colors.ts");
 
 const CC = join(testHome, ".cc-switch");
 const PREFS = join(CC, "statusline-preferences.json");
@@ -279,7 +273,7 @@ function panel(relayKind, extra = {}) {
 
 test("panel: claude-hud is highlighted and locked rows say via claude-hud", () => {
   const rows = panel("claude-hud");
-  assert.match(rows[0], /^\x1b\[1m\x1b\[33m  ⚡ claude-hud is active/);
+  assert.match(rows[0], /^\x1b\[1m\x1b\[33m {2}⚡ claude-hud is active/);
 
   const locked = rows.filter((r) => r.includes("via claude-hud"));
   assert.equal(locked.length, 4);

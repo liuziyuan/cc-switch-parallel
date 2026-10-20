@@ -171,7 +171,7 @@ function projectClaudeSharedKeys(live: any): any {
 function deletePath(root: any, segments: string[]): void {
   let cur = root;
   for (let i = 0; i < segments.length - 1; i++) {
-    if (!isPlainObject(cur) || !Object.prototype.hasOwnProperty.call(cur, segments[i])) return;
+    if (!isPlainObject(cur) || !Object.hasOwn(cur, segments[i])) return;
     cur = cur[segments[i]];
   }
   if (!isPlainObject(cur)) return;
