@@ -284,7 +284,8 @@ function setCodexWebSearchField(configObj, disable) {
 const CODEX_STATUS_LINE_ITEMS = ["model-with-reasoning", "current-dir"];
 
 function applyCodexStatusLineInjection(configObj) {
-  const tui = isPlainObject(configObj.tui) ? configObj.tui : (configObj.tui = {});
+  if (!isPlainObject(configObj.tui)) configObj.tui = {};
+  const tui = configObj.tui;
   if (tui.status_line === undefined) tui.status_line = [...CODEX_STATUS_LINE_ITEMS];
   if (tui.status_line_use_colors === undefined) tui.status_line_use_colors = true;
   return configObj;

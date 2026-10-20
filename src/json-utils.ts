@@ -18,7 +18,7 @@ function isSafeObjectKey(key: any): boolean {
   return !UNSAFE_OBJECT_KEYS.has(String(key));
 }
 function hasOwn(obj: any, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key);
+  return  Object.hasOwn(obj, key);
 }
 
 // Parse a DB column that is supposed to hold a JSON object. Missing/empty
@@ -175,7 +175,7 @@ function deepEqualJson(a, b) {
     const bk = Object.keys(b);
     if (ak.length !== bk.length) return false;
     for (const k of ak) {
-      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!Object.hasOwn(b, k)) return false;
       if (!deepEqualJson(a[k], b[k])) return false;
     }
     return true;
@@ -209,8 +209,8 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: 
     // Real key sequence (k may itself contain dots). Carried through add,
     // remove and change so write-back never has to re-split the display path.
     const childSegments = [...segments, k];
-    const inB = Object.prototype.hasOwnProperty.call(b, k);
-    const inC = Object.prototype.hasOwnProperty.call(c, k);
+    const inB = Object.hasOwn(b, k);
+    const inC = Object.hasOwn(c, k);
     if (inB && inC) {
       const bv = b[k];
       const cv = c[k];

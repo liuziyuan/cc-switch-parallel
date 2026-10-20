@@ -8,7 +8,7 @@ import { parseToml, stringifyToml } from "./toml.js";
 function tomlDeepMerge(target, source) {
   for (const [key, sourceValue] of Object.entries(source)) {
     if (!isSafeObjectKey(key)) continue;
-    if (Object.prototype.hasOwnProperty.call(target, key) && isPlainObject(target[key]) && isPlainObject(sourceValue)) {
+    if (Object.hasOwn(target, key) && isPlainObject(target[key]) && isPlainObject(sourceValue)) {
       tomlDeepMerge(target[key], sourceValue);
     } else {
       target[key] = sourceValue;
@@ -20,7 +20,7 @@ function tomlDeepMerge(target, source) {
 function tomlIsSubset(target, source) {
   for (const [key, sourceValue] of Object.entries(source)) {
     if (!isSafeObjectKey(key)) continue;
-    if (!Object.prototype.hasOwnProperty.call(target, key)) return false;
+    if (!Object.hasOwn(target, key)) return false;
     const targetValue = target[key];
     if (isPlainObject(sourceValue)) {
       if (!isPlainObject(targetValue)) return false;

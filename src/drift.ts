@@ -99,7 +99,8 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
       const row = queryProviderById(id, appType);
       if (!row) {
         delete state.instances[appType][id]; // provider gone — drop the ghost baseline
-        (removedIds[appType] ||= []).push(id);
+        removedIds[appType] ||= [];
+        removedIds[appType].push(id);
         continue;
       }
       try {
@@ -119,7 +120,8 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
         state.instances[appType][row.id] = buildInstanceBaselineEntry(
           adapter, instanceDir, shared,
         );
-        (refreshedIds[appType] ||= []).push(row.id);
+        refreshedIds[appType] ||= [];
+        refreshedIds[appType].push(row.id);
         refreshed.push(row.name);
       } catch {
         // best-effort: keep the old baseline so the drift stays visible.
@@ -371,7 +373,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // patches) are shown; mirror-instance noise is already filtered upstream.
     const providerPatchByPath = new Map();
     for (const [pid, patchObj] of Object.entries(d.providerPatches || {})) {
-      collectPatchPaths(patchObj, "").forEach((p) => providerPatchByPath.set(p, pid));
+      collectPatchPaths(patchObj, "").forEach((p) => { providerPatchByPath.set(p, pid); });
     }
     const commonPaths = new Set(collectPatchPaths(d.commonPatch || {}, ""));
     const blockedPaths = new Set(d.rejected || []);

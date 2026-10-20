@@ -59,7 +59,8 @@ function sanitizeClaudeSettings(settings) {
 function applyKimiForCodingContextDefaults(effective, providerSettings) {
   const baseUrl = providerSettings?.env?.ANTHROPIC_BASE_URL;
   if (!baseUrl || baseUrl.trim().replace(/\/$/, "") !== "https://api.kimi.com/coding") return;
-  const env = effective.env || (effective.env = {});
+  effective.env = effective.env || {};
+  const env = effective.env;
   const providerEnv = providerSettings?.env || {};
   const KIMI_TOKENS = "262144";
   for (const key of ["CLAUDE_CODE_MAX_CONTEXT_TOKENS", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"]) {

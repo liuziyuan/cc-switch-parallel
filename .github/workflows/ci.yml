@@ -2,18 +2,30 @@ name: ci
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 18.20.8 is the final 18.x release: --import (used by the test
+        # runner's tsx loader) requires >=18.18.
+        node-version: ["18.20.8", "20", "22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm audit --audit-level=high
@@ -23,3 +35,15 @@ jobs:
       # unit tests never touch: they import bin/, not dist/.
       - run: npm run build
       - run: node dist/cc-launch.mjs --help
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:coverage

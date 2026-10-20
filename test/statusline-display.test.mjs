@@ -279,7 +279,7 @@ function panel(relayKind, extra = {}) {
 
 test("panel: claude-hud is highlighted and locked rows say via claude-hud", () => {
   const rows = panel("claude-hud");
-  assert.match(rows[0], /^\x1b\[1m\x1b\[33m  ⚡ claude-hud is active/);
+  assert.match(rows[0], /^\x1b\[1m\x1b\[33m {2}⚡ claude-hud is active/);
 
   const locked = rows.filter((r) => r.includes("via claude-hud"));
   assert.equal(locked.length, 4);
