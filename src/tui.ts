@@ -1,7 +1,7 @@
 // ─── tui (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS } from "./adapters.js";
+import { APP_ADAPTERS, getAdapter } from "./adapters.js";
 import { buildRunningSet } from "./instances.js";
 import { queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
@@ -75,7 +75,7 @@ import {
 //               shown order/dead/pinned state matches disk. Newly surfaced
 //               natural-filler rows need their dead flag from the caller's
 //               alive snapshot — tuiSelect itself has no DB access.
-function readDisplayPath(obj, path) {
+function readDisplayPath(obj: any, path: any) {
   let cur = obj;
   for (const part of path.split(".")) {
     if (!cur || typeof cur !== "object" || !(part in cur)) return undefined;
@@ -93,10 +93,10 @@ function buildStatuslinePanelLines({
   context = null,
   cursor = 0,
   width = 76,
-}) {
+}: any) {
   const lines: string[] = [];
-  const text = (s) => fitLine(sanitizeText(s), Math.max(1, width - 2));
-  const row = (s, style) => {
+  const text = (s: any) => fitLine(sanitizeText(s), Math.max(1, width - 2));
+  const row = (s: any, style: any) => {
     const body = `  ${text(s)}`;
     if (style === "highlight") return `\x1b[1m\x1b[33m${body}\x1b[0m`;
     if (style === "warning") return `\x1b[33m${body}\x1b[0m`;
@@ -219,7 +219,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     // ANSI redraw counts LINES — a soft-wrapped row would leave ghosts on
     // every repaint. Keep generated text within the terminal width (CJK
     // counted double, matching most terminal renderers).
-    function fit(str, pad) {
+    function fit(str: any, pad: any) {
       const cols = (process.stdout.columns || 80) - pad;
       // sanitizeText strips user-provided ANSI/control characters; fitLine
       // truncates by display width (CJK/emoji) instead of code units.
@@ -229,7 +229,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     // Lines for a given mode (without trailing newline). notice renders one
     // extra dim row below the hints — passed per-render, so it disappears on
     // the next state change without any cleanup bookkeeping.
-    function buildLines(m, notice) {
+    function buildLines(m: any, notice: any) {
       const lines: string[] = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${fit(prompt, 4)}\x1b[0m`);
       lines.push("");
@@ -252,11 +252,11 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         lines.push("");
         const head = paramEdit
           ? `Edit "${paramEdit.q.provider}" · ${permLabel(paramEdit.q.hotkey)} → pick new mode`
-          : hotkeys.map((h) => `${h.key} ${h.label}`).join("   ");
+          : hotkeys.map((h: any) => `${h.key} ${h.label}`).join("   ");
         lines.push(`  \x1b[1m\x1b[36m${fit(head, 4)}\x1b[0m`);
         if (paramEdit) {
           lines.push(
-            `  \x1b[1m\x1b[36m${fit(hotkeys.map((h) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
+            `  \x1b[1m\x1b[36m${fit(hotkeys.map((h: any) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
           );
         }
         lines.push(`  \x1b[90mesc ← back\x1b[0m`);
@@ -303,7 +303,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         if (kind === "launch") {
           // One keypress away from the adapter's full-auto flag — the only
           // confirm in the TUI that guards a launch rather than a deletion.
-          const flag = APP_ADAPTERS[target.cli]?.fullAutoFlag ?? "--dangerously-skip-permissions";
+          const flag = getAdapter(target.cli)?.fullAutoFlag ?? "--dangerously-skip-permissions";
           head = `\x1b[33m⚠ "${provider}" would launch Full-auto (${flag})\x1b[0m — launch?`;
         } else if (kind === "cleanup") {
           head = `Remove ${target.count} dead ${target.count === 1 ? "entry" : "entries"} from Recent?`;
@@ -370,7 +370,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           if (canEditParam && !quickItems[selected - options.length]?.dead) parts.push("e edit");
           if (canRemove) parts.push("x rm");
         }
-        const deadCount = quickItems.filter((q) => q.dead).length;
+        const deadCount = quickItems.filter((q: any) => q.dead).length;
         if (canCleanup && deadCount > 0) parts.push("c clean");
         parts.push("esc exit");
         lines.push(`  \x1b[90m${fit(parts.join("   "), 4)}\x1b[0m`);
@@ -423,7 +423,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
 
     guard = installTerminalGuard({ cleanup });
 
-    function handleData(data) {
+    function handleData(data: any) {
       const key = data.toString();
       if (key === "\x03") {
         cleanup();
@@ -442,7 +442,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           render(mode);
           return;
         }
-        const hit = hotkeys.find((h) => h.key === key);
+        const hit = hotkeys.find((h: any) => h.key === key);
         if (hit || key === "\r" || key === "\n") {
           const hk = hit ? hit.key : undefined; // ⏎ = Default
           if (paramEdit) {
@@ -639,7 +639,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       // explicit confirmation (one keypress = --dangerously-skip-permissions),
       // everything else launches immediately. Dead wins over the Full-auto
       // confirm — that launch is guaranteed to fail anyway.
-      const tryQuick = (q) => {
+      const tryQuick = (q: any) => {
         selected = options.length + Math.max(0, quickItems.indexOf(q));
         if (q.dead) {
           confirmAction = { kind: "remove", target: q };
@@ -679,7 +679,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         return;
       }
       // quick-launch key (top5, CLI layer only)
-      const qHit = quickItems.find((q) => q.key === key);
+      const qHit = quickItems.find((q: any) => q.key === key);
       if (qHit) {
         tryQuick(qHit);
         return;
@@ -718,7 +718,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       }
       // `c`: bulk-remove every dead entry from Recent (confirm follows)
       if (canCleanup && key === "c") {
-        const deadCount = quickItems.filter((q) => q.dead).length;
+        const deadCount = quickItems.filter((q: any) => q.dead).length;
         if (deadCount > 0) {
           confirmAction = { kind: "cleanup", target: { count: deadCount } };
           mode = "confirm";
@@ -811,7 +811,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       }
     }
 
-    const onData = (data) => {
+    const onData = (data: any) => {
       // A throw inside any callback (history write, custom handler, DB read)
       // used to escape the EventEmitter with raw mode still on.
       try {
@@ -929,10 +929,10 @@ async function runTUI() {
         { key: "2", label: "Semi-auto" },
         { key: "3", label: "Full-auto ⚠" },
       ],
-      onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
-      onUnpin: (key) => unpinPair(key, aliveByCli),
-      onEditParam: (q, hotkey) => setEntryHotkey(q.pairKey, hotkey, q.cli, aliveByCli),
-      onRemove: (key) => removeHistoryPair(key, aliveByCli),
+      onPin: (item: any, pos: any) => insertManualOrder(item, pos, aliveByCli),
+      onUnpin: (key: any) => unpinPair(key, aliveByCli),
+      onEditParam: (q: any, hotkey: any) => setEntryHotkey(q.pairKey, hotkey, q.cli, aliveByCli),
+      onRemove: (key: any) => removeHistoryPair(key, aliveByCli),
       onCleanup: () => removeAllDeadPairs(aliveByCli),
       onRefreshQuickItems: buildQuickItems,
     });
@@ -942,12 +942,12 @@ async function runTUI() {
     // for pre-extraArgs entries).
     if (cli.quick) {
       const args =
-        cli.extraArgs.length > 0 ? cli.extraArgs : APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey);
+        cli.extraArgs.length > 0 ? cli.extraArgs : getAdapter(cli.cli)!.permissionArgs(cli.hotkey);
       await launchProvider(cli.cli, launchRefForQuick(cli), args, null, { hotkey: cli.hotkey });
       return;
     }
 
-    const adapter = APP_ADAPTERS[cli.value];
+    const adapter = getAdapter(cli.value);
     if (!adapter) throw new Error(`Unsupported CLI: ${cli.value}`);
 
     const providers = queryProvidersByApp(adapter.appType);
@@ -983,19 +983,20 @@ async function runTUI() {
         ],
         interactive: true,
         pinContext: cli.value,
-        onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
+        onPin: (item: any, pos: any) => insertManualOrder(item, pos, aliveByCli),
         // `o` tag color — both CLIs. claude's color is consumed by the
         // wrapper at prepare time; codex's native status_line has no custom
         // text/color slot (upstream #17827), so the codex color is consumed
         // by the tmuxclihook status bar's provider segment instead (same
         // statusline-preferences.json, per-CLI buckets).
         colorContext: cli.value,
-        onColor: (target, value) => saveStatuslineColor(cli.value, target.providerId, value),
-        getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
+        onColor: (target: any, value: any) =>
+          saveStatuslineColor(cli.value, target.providerId, value),
+        getCurrentColor: (target: any) => statuslineColorFor(cli.value, target.providerId),
         // `s` display settings are global; statuslineContext only drives the
         // Codex notice (Codex has no external statusline command yet).
         statuslineContext: cli.value,
-        onStatusline: (key, value) => saveStatuslineDisplay(key, value),
+        onStatusline: (key: any, value: any) => saveStatuslineDisplay(key, value),
         getStatuslineDisplay: () => loadStatuslineDisplay(),
         getStatuslineRelay: () => detectStatuslineRelay(),
       });

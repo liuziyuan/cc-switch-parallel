@@ -38,7 +38,7 @@ const STATUSLINE_COLOR_CHOICES = [
   { value: "97", label: "bright white", swatch: "\x1b[97m" },
 ];
 
-function isValidStatuslineColor(v) {
+function isValidStatuslineColor(v: any) {
   return typeof v === "string" && (v === "auto" || /^(3[0-7]|9[0-7])$/.test(v));
 }
 
@@ -57,7 +57,7 @@ function loadStatuslinePreferences() {
   }
 }
 
-function statuslineColorFor(cli, providerId) {
+function statuslineColorFor(cli: any, providerId: any) {
   try {
     const v = loadStatuslinePreferences()?.colors?.[cli]?.[providerId];
     return isValidStatuslineColor(v) ? v : "auto";
@@ -66,7 +66,7 @@ function statuslineColorFor(cli, providerId) {
   }
 }
 
-function saveStatuslineColor(cli, providerId, value) {
+function saveStatuslineColor(cli: any, providerId: any, value: any) {
   if (!isValidStatuslineColor(value)) return null;
   try {
     const result = withFileLockSync(STATUSLINE_PREFS_PATH, () => {
@@ -155,15 +155,15 @@ const USAGE_VALUE_MODES = ["percent", "remaining"];
 const MODEL_FORMATS = ["full", "compact", "short"];
 const PATH_LEVELS = [1, 2, 3, "full"];
 
-function boolOr(value, fallback) {
+function boolOr(value: any, fallback: any) {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function oneOf(value, allowed, fallback) {
+function oneOf(value: any, allowed: any, fallback: any) {
   return allowed.includes(value) ? value : fallback;
 }
 
-function normalizeDisplayPreferences(prefs) {
+function normalizeDisplayPreferences(prefs: any) {
   const d = isPlainObject(prefs?.display) ? prefs.display : {};
   const g = isPlainObject(prefs?.gitStatus) ? prefs.gitStatus : {};
   const defaults = DISPLAY_DEFAULTS;
@@ -194,7 +194,7 @@ function loadStatuslineDisplay() {
   return normalizeDisplayPreferences(loadStatuslinePreferences());
 }
 
-function setPath(obj, path, value) {
+function setPath(obj: any, path: any, value: any) {
   const parts = path.split(".");
   let cur = obj;
   for (let i = 0; i < parts.length - 1; i++) {
@@ -204,7 +204,7 @@ function setPath(obj, path, value) {
   cur[parts[parts.length - 1]] = value;
 }
 
-function saveStatuslineDisplay(key, value) {
+function saveStatuslineDisplay(key: any, value: any) {
   if (!DISPLAY_BOOLEAN_KEYS.has(key) || typeof value !== "boolean") return null;
   try {
     const result = withFileLockSync(STATUSLINE_PREFS_PATH, () => {
