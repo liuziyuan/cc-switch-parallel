@@ -21,7 +21,8 @@ process.env.CC_SWITCH_TEST_HOME = testHome;
 
 const { APP_ADAPTERS } = await import("../src/adapters.ts");
 const { deepEqualJson } = await import("../src/json-utils.ts");
-const { guardInstanceConfigBeforeOverwrite } = await import("../src/guard.ts");
+const { classifyOverwrite, guardInstanceConfigBeforeOverwrite } = await import("../src/guard.ts");
+const { STATUSLINE_WRAPPER_FILENAME } = await import("../src/statusline.ts");
 
 const CC = join(testHome, ".cc-switch");
 const BACKUPS = join(CC, "backups");
@@ -249,4 +250,174 @@ test("guard codex: unsynced config.toml edit — warning names the file + TOML b
   assert.equal(stderrBuf.includes("approval_policy"), true);
   const files = backupsFor("codex", id).filter((n) => n.startsWith("config.toml."));
   assert.equal(files.length, 1);
+});
+
+// ─── target-aware classification (baseline vs prepare target) ─────────
+
+function claudeTarget(settingsConfig, id) {
+  return claude.computeEffectiveSettings(
+    settingsConfig,
+    {},
+    "custom",
+    "",
+    id,
+    {},
+    { writeWrapper: false },
+  );
+}
+
+test("guard claude: edit already equal to the target — one dim line, no warning, no backup", () => {
+  const id = "p-preserved";
+  const dir = join(CC, "instances", "claude", id);
+  mkdirSync(dir, { recursive: true });
+  const settingsConfig = {
+    hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "true" }] }] },
+  };
+  const target = claudeTarget(settingsConfig, id);
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(target));
+  // The session added the hooks after the last prepare; the target (which
+  // reads the shared/provider config) already carries the same hooks.
+  const baseline = JSON.parse(JSON.stringify(target));
+  delete baseline.hooks;
+  writeState("claude", id, baselineOf(baseline));
+  const row = {
+    id,
+    name: "Preserved",
+    settings_config: JSON.stringify(settingsConfig),
+    meta: "{}",
+    category: "custom",
+  };
+  captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
+  assert.equal(stderrBuf.includes("⚠"), false);
+  assert.equal(
+    stderrBuf.includes("already matches the config about to be written — no unsynced edits"),
+    true,
+  );
+  assert.equal(stderrBuf.includes("switch sync"), false);
+  assert.deepEqual(backupsFor("claude", id), []);
+  assert.equal(existsSync(join(dir, STATUSLINE_WRAPPER_FILENAME)), false);
+});
+
+test("guard claude: untouched stale mirror — silent, no target computation, no backup", () => {
+  const id = "p-stale";
+  const dir = join(CC, "instances", "claude", id);
+  mkdirSync(dir, { recursive: true });
+  const doc = { env: { A: "1" } };
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(doc));
+  writeState("claude", id, baselineOf(doc));
+  const row = {
+    id,
+    name: "Stale",
+    settings_config: JSON.stringify({ env: { A: "2" } }),
+    meta: "{}",
+    category: "custom",
+  };
+  captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
+  assert.equal(stderrBuf, "");
+  assert.deepEqual(backupsFor("claude", id), []);
+});
+
+test("guard claude: mixed edits — only the genuinely lost path is warned", () => {
+  const id = "p-mixed";
+  const dir = join(CC, "instances", "claude", id);
+  mkdirSync(dir, { recursive: true });
+  const settingsConfig = { env: { A: "2" } };
+  const target = claudeTarget(settingsConfig, id);
+  const current = JSON.parse(JSON.stringify(target));
+  current.env = { ...current.env, A: "2", B: "3" };
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(current));
+  // env.A was already 1 in the last prepare: that part is a stale mirror and
+  // the target refreshes it. env.B is a real session edit the target drops.
+  writeState("claude", id, baselineOf({ env: { A: "1" } }));
+  const row = {
+    id,
+    name: "Mixed",
+    settings_config: JSON.stringify(settingsConfig),
+    meta: "{}",
+    category: "custom",
+  };
+  captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
+  assert.equal(stderrBuf.includes("⚠"), true);
+  assert.equal(stderrBuf.includes("env.B"), true);
+  assert.equal(stderrBuf.includes("env.A"), false);
+  assert.equal(stderrBuf.includes("switch sync"), true);
+  assert.equal(backupsFor("claude", id).length, 1);
+});
+
+test("guard claude: preserved edit + shared refresh — dim line, silent backup", () => {
+  const id = "p-pickup";
+  const dir = join(CC, "instances", "claude", id);
+  mkdirSync(dir, { recursive: true });
+  const settingsConfig = {
+    env: { A: "2" },
+    hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] },
+  };
+  const target = claudeTarget(settingsConfig, id);
+  const current = JSON.parse(JSON.stringify(target));
+  current.env.A = "1"; // still the old shared value on disk
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(current));
+  writeState("claude", id, baselineOf({ env: { A: "1" } }));
+  const row = {
+    id,
+    name: "Pickup",
+    settings_config: JSON.stringify(settingsConfig),
+    meta: "{}",
+    category: "custom",
+  };
+  captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
+  assert.equal(stderrBuf.includes("⚠"), false);
+  assert.equal(stderrBuf.includes("will pick up 1 field(s)"), true);
+  assert.equal(stderrBuf.includes("switch sync"), false);
+  assert.equal(backupsFor("claude", id).length, 1);
+});
+
+test("classifyOverwrite: parent/child segments overlap, arrays stay atomic", () => {
+  const userChanges = [{ path: "hooks", op: "add", segments: ["hooks"], to: { X: 1 } }];
+  const current = { hooks: { X: 1 }, env: { A: "1" } };
+  const target = { hooks: { X: 2 }, env: { A: "1" } };
+  const lossy = classifyOverwrite(claude, "p-cc", userChanges, current, target);
+  assert.equal(lossy.kind, "lossy");
+  assert.equal(lossy.changes[0].path, "hooks");
+
+  const staleOnly = classifyOverwrite(
+    claude,
+    "p-cc",
+    userChanges,
+    { hooks: { X: 1 }, env: { A: "1" } },
+    { hooks: { X: 1 }, env: { A: "2" } },
+  );
+  assert.equal(staleOnly.kind, "preserved");
+  assert.deepEqual(staleOnly.changes, []);
+  assert.equal(staleOnly.targetChanges[0].path, "env.A");
+
+  const arrays = classifyOverwrite(
+    claude,
+    "p-cc",
+    [{ path: "permissions.allow", op: "change", segments: ["permissions", "allow"] }],
+    { permissions: { allow: ["Read"] } },
+    { permissions: { allow: ["Read", "Bash"] } },
+  );
+  assert.equal(arrays.kind, "lossy");
+});
+
+test("guard codex: unparsable target falls back to the baseline-diff warning", () => {
+  const id = "cx-unknown";
+  const dir = join(CC, "instances", "codex", id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "config.toml"),
+    stringifyToml({ model: "gpt-5", approval_policy: "never" }),
+  );
+  writeState("codex", id, baselineOf({ model: "gpt-5" }));
+  const row = {
+    id,
+    name: "CxUnknown",
+    settings_config: JSON.stringify({ config: "[[[" }),
+    meta: "{}",
+    category: "custom",
+  };
+  captureStderr(() => guardInstanceConfigBeforeOverwrite(codex, row, dir, "", {}));
+  assert.equal(stderrBuf.includes("⚠ Instance config.toml"), true);
+  assert.equal(stderrBuf.includes("approval_policy"), true);
+  assert.equal(backupsFor("codex", id).filter((n) => n.startsWith("config.toml.")).length, 1);
 });

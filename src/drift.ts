@@ -325,7 +325,20 @@ function confirmSync(
 // scripted callers that only care about the return value). Returns
 // { synced, drifted, refreshed? } — on a confirmed sync, `refreshed` lists the
 // provider names whose stale live configs were just regenerated in place.
-async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
+// `highlightProvider` only affects the displayed stale list: the provider
+// being launched stays in it (it IS stale until this launch regenerates it)
+// with an extra dim line so it doesn't read like it needs a manual restart.
+type HighlightProvider = { appType: string; id: string; name: string };
+
+async function detectAndPromptSync({
+  tui = false,
+  quiet = false,
+  highlightProvider = null,
+}: {
+  tui?: boolean;
+  quiet?: boolean;
+  highlightProvider?: HighlightProvider | null;
+} = {}) {
   let state = loadSyncState();
 
   // First run: no plugin baseline yet — establish it silently so subsequent
@@ -352,6 +365,13 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   }
 
   const commonDrift = detectCommonConfigDrift(state);
+  // Only needed for the annotation line; skip the extra shared-config read on
+  // the common path (mostly scripted `switch sync`).
+  const highlightStale =
+    highlightProvider != null &&
+    (collectStaleInstanceIds(state)[highlightProvider.appType] || []).includes(
+      highlightProvider.id,
+    );
 
   const pluginDrifts: Record<string, any> = {};
   for (const [cmd, adapter] of Object.entries(APP_ADAPTERS)) {
@@ -384,6 +404,11 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     lines.push(
       `\x1b[33m${source} (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`,
     );
+    if (highlightStale && highlightProvider?.appType === appType) {
+      lines.push(
+        `\x1b[2m(this launch will refresh "${highlightProvider.name}"; other running sessions still need a restart)\x1b[0m`,
+      );
+    }
   }
   for (const [cmd, d] of Object.entries(settingsDrifts)) {
     // Per-instance settings lines, target-tagged so the user knows where each
@@ -459,7 +484,7 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     process.stderr.write(`\x1b[33m⚠ Config drift detected:\x1b[0m\n`);
     for (const line of lines) process.stderr.write(`  ${line}\n`);
     process.stderr.write(
-      `  Run \x1b[1mswitch sync\x1b[0m (or \x1b[1mswitch --sync\x1b[0m) to review and sync.\n`,
+      `  Run \x1b[1mswitch sync\x1b[0m (or \x1b[1mswitch --sync\x1b[0m / \x1b[1mswitch --sync <slot>\x1b[0m) to review and sync.\n`,
     );
     return { synced: false, drifted: true };
   }
