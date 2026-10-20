@@ -3,13 +3,21 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { collectInstances } from "./doctor.js";
+import { buildRunningSet, collectInstances, pruneInstanceBaselines } from "../instances.js";
+import { ccsClaudeKeyFromModel } from "../stack/aggregation.js";
 import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
 import { confirmSync } from "../drift.js";
 import { HOME } from "../paths.js";
-import { readSessions, removeSessionFile, saveSyncState, sessionIsAlive, sessionLiveness, withSyncStateLock } from "../sessions.js";
-import { displayWidth, padDisplay, parseTmuxPaneInfo, parseTmuxPanes, sanitizeText, type TmuxPaneInfo } from "../terminal-utils.js";
+import { readSessions, removeSessionFile, sessionLiveness } from "../sessions.js";
+import {
+  displayWidth,
+  padDisplay,
+  parseTmuxPaneInfo,
+  parseTmuxPanes,
+  sanitizeText,
+  type TmuxPaneInfo,
+} from "../terminal-utils.js";
 import { isAggregationProviderSettings, readStackState } from "../stack/state.js";
 
 // ─── switch ps ────────────────────────────────────────────────────────
@@ -19,16 +27,19 @@ import { isAggregationProviderSettings, readStackState } from "../stack/state.js
 // as the statusline wrapper). null when the pick is not attributable (no
 // ccs prefix, stack off, or the key no longer live) — the plain provider
 // name is shown then. Pure given (model, stack); DB lookup inside.
-function stackBillingMemberName(model, stack) {
-  if (typeof model !== "string" || !model) return null;
-  const ccs = model.match(/^ccs-claude-([a-z0-9-]+?)--/i);
-  if (!ccs) return null;
-  const pid = stack?.keys?.[ccs[1].toLowerCase()];
+function stackBillingMemberName(model: any, stack: any) {
+  const key = ccsClaudeKeyFromModel(model);
+  if (!key) return null;
+  const pid = stack?.keys?.[key];
   if (!pid) return null;
-  try { return queryProviderById(pid, "claude")?.name || null; } catch { return null; }
+  try {
+    return queryProviderById(pid, "claude")?.name || null;
+  } catch {
+    return null;
+  }
 }
 
-function formatDuration(ms) {
+function formatDuration(ms: any) {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -42,16 +53,6 @@ function formatDuration(ms) {
 // Live providerIds across all instances — feeds the TUI ● live marker.
 // Same per-iteration-snapshot pattern as snapshotAliveByCli. Read-only: any
 // session alive marks the provider; cleanup is `runPs`'s job.
-function buildRunningSet() {
-  const running = new Set();
-  for (const inst of collectInstances()) {
-    for (const { session } of readSessions(inst.path)) {
-      if (sessionIsAlive(session)) { running.add(inst.name); break; }
-    }
-  }
-  return running;
-}
-
 // tty → tmux session name, one lookup for the whole `ps` run. Empty map when
 // tmux is absent, hangs (bounded at 2s) or errors — caller then falls back to
 // the raw tty. Session names are sanitized by the parser.
@@ -92,14 +93,17 @@ type RunningSessionRow = {
 };
 
 function collectRunningSessions(): RunningSessionRow[] {
-  const running: { path: string; inst: InstanceInfo; session: any; status: "alive" | "unknown" }[] = [];
+  const running: { path: string; inst: InstanceInfo; session: any; status: "alive" | "unknown" }[] =
+    [];
   for (const inst of collectInstances()) {
     for (const { path, session } of readSessions(inst.path)) {
       const status = sessionLiveness(session);
       if (status === "dead") {
         // A crashed parent (kill -9) leaves no exit event behind — clean up
         // here. Only the dead session's own file, never its siblings.
-        try { unlinkSync(path); } catch {}
+        try {
+          unlinkSync(path);
+        } catch {}
         continue;
       }
       running.push({ path, inst, session, status });
@@ -133,9 +137,10 @@ function collectRunningSessions(): RunningSessionRow[] {
         }
       } catch {} // unreadable row/settings → plain name stands
     }
-    const startedAt = typeof session.startedAt === "number" && Number.isFinite(session.startedAt)
-      ? session.startedAt
-      : null;
+    const startedAt =
+      typeof session.startedAt === "number" && Number.isFinite(session.startedAt)
+        ? session.startedAt
+        : null;
     const tmux = session.tty && tmuxByTty.get(session.tty) ? tmuxByTty.get(session.tty) : null;
     return {
       path,
@@ -152,7 +157,9 @@ function collectRunningSessions(): RunningSessionRow[] {
       cwd: session.cwd ? sanitizeText(session.cwd) : null,
       startedAt,
       upMs: startedAt === null ? 0 : Math.max(0, now - startedAt),
-      extraArgs: Array.isArray(session.extraArgs) ? session.extraArgs.map((a) => sanitizeText(a)) : [],
+      extraArgs: Array.isArray(session.extraArgs)
+        ? session.extraArgs.map((a: any) => sanitizeText(a))
+        : [],
       index: 0,
     };
   });
@@ -166,7 +173,9 @@ function collectRunningSessions(): RunningSessionRow[] {
     if (a.providerId !== b.providerId) return a.providerId < b.providerId ? -1 : 1;
     return (a.pid ?? 0) - (b.pid ?? 0);
   });
-  rows.forEach((r, i) => { r.index = i + 1; });
+  rows.forEach((r, i) => {
+    r.index = i + 1;
+  });
   return rows;
 }
 
@@ -176,7 +185,8 @@ function renderPsTable(rows: RunningSessionRow[]): void {
     return;
   }
   const home = process.env.HOME;
-  const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
+  const shorten = (p: any) =>
+    home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
   const display = rows.map((r) => ({
     index: String(r.index),
     cli: r.cli,
@@ -186,7 +196,7 @@ function renderPsTable(rows: RunningSessionRow[]): void {
     up: formatDuration(r.upMs),
     args: r.extraArgs.length ? ` ${r.extraArgs.join(" ")}` : "",
   }));
-  const w = (xs) => Math.max(...xs.map((x) => displayWidth(x)), 1);
+  const w = (xs: any) => Math.max(...xs.map((x: any) => displayWidth(x)), 1);
   const wIndex = w(display.map((r) => r.index));
   const wCli = w(display.map((r) => r.cli));
   const wName = w(display.map((r) => r.name));
@@ -197,31 +207,35 @@ function renderPsTable(rows: RunningSessionRow[]): void {
   for (const r of display) {
     console.log(
       `  ${padDisplay(r.index, wIndex)}  ${padDisplay(r.cli, wCli)}  ${padDisplay(r.name, wName)}  ` +
-      `${padDisplay(r.tmux, wTmux)}  ${padDisplay(r.dir, wDir)}  up ${padDisplay(r.up, wUp)}  ${r.cli}${r.args}`,
+        `${padDisplay(r.tmux, wTmux)}  ${padDisplay(r.dir, wDir)}  up ${padDisplay(r.up, wUp)}  ${r.cli}${r.args}`,
     );
   }
   console.log("");
 }
 
 function renderPsJson(rows: RunningSessionRow[]): string {
-  return JSON.stringify({
-    version: 1,
-    sessions: rows.map((r) => ({
-      index: r.index,
-      pid: r.pid,
-      cli: r.cli,
-      providerId: r.providerId,
-      name: r.name,
-      tmux: r.tmux,
-      tty: r.tty,
-      cwd: r.cwd,
-      startedAt: r.startedAt,
-      upMs: r.upMs,
-      extraArgs: r.extraArgs,
-      billingMember: r.billingMember,
-      status: r.status,
-    })),
-  }, null, 2);
+  return JSON.stringify(
+    {
+      version: 1,
+      sessions: rows.map((r) => ({
+        index: r.index,
+        pid: r.pid,
+        cli: r.cli,
+        providerId: r.providerId,
+        name: r.name,
+        tmux: r.tmux,
+        tty: r.tty,
+        cwd: r.cwd,
+        startedAt: r.startedAt,
+        upMs: r.upMs,
+        extraArgs: r.extraArgs,
+        billingMember: r.billingMember,
+        status: r.status,
+      })),
+    },
+    null,
+    2,
+  );
 }
 
 type PsArgs =
@@ -242,22 +256,29 @@ function parsePsArgs(args: string[]): PsArgs {
       else rest.push(a);
     }
     if (rest.length !== 1) {
-      return { error: "kill requires exactly one target", usage: "Usage: switch ps kill <pid|index> [--force]" };
+      return {
+        error: "kill requires exactly one target",
+        usage: "Usage: switch ps kill <pid|index> [--force]",
+      };
     }
     return { mode: "kill", target: rest[0], force };
   }
   if (args[0] === "attach") {
     if (args.length !== 2) {
-      return { error: "attach requires exactly one index", usage: "Usage: switch ps attach <index>" };
+      return {
+        error: "attach requires exactly one index",
+        usage: "Usage: switch ps attach <index>",
+      };
     }
     return { mode: "attach", target: args[1] };
   }
-  return { error: `unknown argument: ${args[0]}`, usage: "Usage: switch ps [--json | kill <pid|index> [--force] | attach <index>]" };
+  return {
+    error: `unknown argument: ${args[0]}`,
+    usage: "Usage: switch ps [--json | kill <pid|index> [--force] | attach <index>]",
+  };
 }
 
-type SessionTarget =
-  | { ok: true; row: RunningSessionRow }
-  | { ok: false; error: string };
+type SessionTarget = { ok: true; row: RunningSessionRow } | { ok: false; error: string };
 
 function resolveSessionTarget(rows: RunningSessionRow[], token: string): SessionTarget {
   const raw = String(token ?? "");
@@ -270,13 +291,18 @@ function resolveSessionTarget(rows: RunningSessionRow[], token: string): Session
     mode = "pid";
     value = raw.slice(4);
   } else if (!/^\d+$/.test(raw)) {
-    return { ok: false, error: `invalid target "${raw}" — use an index (1..${rows.length}) or pid:<pid>` };
+    return {
+      ok: false,
+      error: `invalid target "${raw}" — use an index (1..${rows.length}) or pid:<pid>`,
+    };
   }
   if (!rows.length) return { ok: false, error: "no running sessions" };
   const n = Number(value);
   if (mode === "index" || (mode === "auto" && n >= 1 && n <= rows.length)) {
     const row = rows.find((r) => r.index === n);
-    return row ? { ok: true, row } : { ok: false, error: `index ${n} is out of range (1..${rows.length})` };
+    return row
+      ? { ok: true, row }
+      : { ok: false, error: `index ${n} is out of range (1..${rows.length})` };
   }
   const row = rows.find((r) => r.pid === n);
   return row ? { ok: true, row } : { ok: false, error: `no session matches "${raw}"` };
@@ -316,10 +342,13 @@ function signalPid(pid: number, signal: NodeJS.Signals): "ok" | "gone" | "eperm"
 }
 
 async function confirmKill(row: RunningSessionRow): Promise<boolean> {
-  const result = await confirmSync([
-    `  #${row.index}  ${row.cli}  ${row.name}  pid ${row.pid}`,
-    `  tmux: ${row.tmux ?? "-"}  dir: ${row.cwd ?? "-"}`,
-  ], "Kill this session?");
+  const result = await confirmSync(
+    [
+      `  #${row.index}  ${row.cli}  ${row.name}  pid ${row.pid}`,
+      `  tmux: ${row.tmux ?? "-"}  dir: ${row.cwd ?? "-"}`,
+    ],
+    "Kill this session?",
+  );
   if (result === "interrupt") process.exit(130);
   return result === "yes";
 }
@@ -340,7 +369,10 @@ type ActionResult = { ok: boolean; detail: string; exitCode?: number };
 async function killSession(row: RunningSessionRow, opts: KillOptions = {}): Promise<ActionResult> {
   const pid = row.pid;
   if (pid === null || !Number.isInteger(pid) || pid <= 1 || pid === process.pid) {
-    return { ok: false, detail: `refusing to signal pid ${row.pid ?? "?"} (not a valid session pid)` };
+    return {
+      ok: false,
+      detail: `refusing to signal pid ${row.pid ?? "?"} (not a valid session pid)`,
+    };
   }
   const liveness = sessionLiveness(row.session);
   if (liveness === "dead") {
@@ -368,7 +400,10 @@ async function killSession(row: RunningSessionRow, opts: KillOptions = {}): Prom
     const killed = signalPid(pid, "SIGKILL");
     if (killed === "eperm") return { ok: false, detail: `permission denied signaling pid ${pid}` };
     if (killed !== "gone" && !(await waitForPidExit(pid, killTimeoutMs))) {
-      return { ok: false, detail: `session #${row.index} (pid ${pid}) is still running after SIGKILL` };
+      return {
+        ok: false,
+        detail: `session #${row.index} (pid ${pid}) is still running after SIGKILL`,
+      };
     }
   } else {
     const term = signalPid(pid, "SIGTERM");
@@ -376,11 +411,15 @@ async function killSession(row: RunningSessionRow, opts: KillOptions = {}): Prom
     let exited = term === "gone" || (await waitForPidExit(pid, termTimeoutMs));
     if (!exited) {
       const killed = signalPid(pid, "SIGKILL");
-      if (killed === "eperm") return { ok: false, detail: `permission denied signaling pid ${pid}` };
+      if (killed === "eperm")
+        return { ok: false, detail: `permission denied signaling pid ${pid}` };
       exited = killed === "gone" || (await waitForPidExit(pid, killTimeoutMs));
     }
     if (!exited) {
-      return { ok: false, detail: `session #${row.index} (pid ${pid}) is still running after SIGKILL` };
+      return {
+        ok: false,
+        detail: `session #${row.index} (pid ${pid}) is still running after SIGKILL`,
+      };
     }
   }
   removeSessionFile(row.path);
@@ -393,11 +432,18 @@ type TmuxLookup =
 
 function tmuxPaneInfoByTty(): TmuxLookup {
   try {
-    const r = spawnSync("tmux", [
-      "list-panes", "-a", "-F",
-      "#{pane_tty}\t#{session_name}\t#{pane_id}\t#{window_index}\t#{pane_index}",
-    ], { encoding: "utf8", timeout: 2000, maxBuffer: 1 << 20 });
-    if (r.error) return { ok: false, reason: (r.error as any).code === "ENOENT" ? "notFound" : "unavailable" };
+    const r = spawnSync(
+      "tmux",
+      [
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_tty}\t#{session_name}\t#{pane_id}\t#{window_index}\t#{pane_index}",
+      ],
+      { encoding: "utf8", timeout: 2000, maxBuffer: 1 << 20 },
+    );
+    if (r.error)
+      return { ok: false, reason: (r.error as any).code === "ENOENT" ? "notFound" : "unavailable" };
     if (r.status !== 0) return { ok: false, reason: "unavailable" };
     return { ok: true, panes: parseTmuxPaneInfo(r.stdout || "") };
   } catch {
@@ -417,16 +463,22 @@ function attachSession(row: RunningSessionRow, opts: AttachOptions = {}): Action
   if (!lookup.ok) {
     return {
       ok: false,
-      detail: lookup.reason === "notFound"
-        ? "tmux not found on PATH — attach requires tmux."
-        : "tmux is not available (is a server running?)",
+      detail:
+        lookup.reason === "notFound"
+          ? "tmux not found on PATH — attach requires tmux."
+          : "tmux is not available (is a server running?)",
     };
   }
   const pane = row.tty ? lookup.panes.get(row.tty) : null;
   if (!pane) {
-    return { ok: false, detail: `session #${row.index} is not running inside tmux (tty: ${row.tty ?? "-"})` };
+    return {
+      ok: false,
+      detail: `session #${row.index} is not running inside tmux (tty: ${row.tty ?? "-"})`,
+    };
   }
-  const run = opts.runTmux ?? ((argv: string[], o: any = {}) => spawnSync("tmux", argv, { encoding: "utf8", ...o }));
+  const run =
+    opts.runTmux ??
+    ((argv: string[], o: any = {}) => spawnSync("tmux", argv, { encoding: "utf8", ...o }));
   const failed = (what: string, r: any): ActionResult => ({
     ok: false,
     detail: `${what} failed${r?.stderr ? `: ${sanitizeText(String(r.stderr)).trim()}` : ""}`,
@@ -447,7 +499,8 @@ function attachSession(row: RunningSessionRow, opts: AttachOptions = {}): Action
   r = run(["select-pane", "-t", pane.paneId]);
   if (r.error || r.status !== 0) return failed("tmux select-pane", r);
   r = run(["attach-session", "-t", pane.session], { stdio: "inherit" });
-  if (r.error) return { ok: false, detail: `tmux attach-session failed: ${r.error.message || r.error}` };
+  if (r.error)
+    return { ok: false, detail: `tmux attach-session failed: ${r.error.message || r.error}` };
   if (typeof r.status === "number" && r.status !== 0) {
     return { ok: false, detail: "tmux attach-session failed", exitCode: r.status };
   }
@@ -475,9 +528,10 @@ async function runPs(args: string[] = []): Promise<void> {
     console.error(`✗ ${target.error}`);
     process.exit(1);
   }
-  const result = parsed.mode === "kill"
-    ? await killSession(target.row, { force: parsed.force })
-    : attachSession(target.row);
+  const result =
+    parsed.mode === "kill"
+      ? await killSession(target.row, { force: parsed.force })
+      : attachSession(target.row);
   if (!result.ok) {
     console.error(`✗ ${result.detail}`);
     process.exit(result.exitCode ?? 1);
@@ -485,26 +539,19 @@ async function runPs(args: string[] = []): Promise<void> {
   console.log(`✓ ${result.detail}`);
 }
 
-// Drop the drift baselines of removed instance dirs, so stale-instance
-// prompts stop naming providers whose directories are gone (the dir name IS
-// the providerId — see setupInstance). Best-effort: a state-file hiccup must
-// not fail the clean itself.
-function pruneInstanceBaselines(instances) {
-  try {
-    withSyncStateLock((state) => {
-      let changed = false;
-      for (const { name, appType } of instances) {
-        if (state.instances?.[appType]?.[name] !== undefined) {
-          delete state.instances[appType][name];
-          changed = true;
-        }
-      }
-      if (changed) saveSyncState(state);
-    });
-  } catch {
-    // best-effort: unreadable state — the ghost entry stays, harmless.
-  }
-}
-
-
-export { attachSession, buildRunningSet, collectRunningSessions, formatDuration, killSession, parsePsArgs, pruneInstanceBaselines, renderPsJson, renderPsTable, resolveSessionTarget, runPs, stackBillingMemberName, tmuxPaneInfoByTty, tmuxSessionByTty };
+export {
+  attachSession,
+  buildRunningSet,
+  collectRunningSessions,
+  formatDuration,
+  killSession,
+  parsePsArgs,
+  pruneInstanceBaselines,
+  renderPsJson,
+  renderPsTable,
+  resolveSessionTarget,
+  runPs,
+  stackBillingMemberName,
+  tmuxPaneInfoByTty,
+  tmuxSessionByTty,
+};

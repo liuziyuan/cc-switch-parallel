@@ -1,6 +1,6 @@
 # 批次 E：功能增强候选与调查
 
-> 基线：v0.21.6（批次 A–D 已合入 main）。当前 v0.26.0：命令扩展见 PR #58，遗留项修复见 PR #59（均已合并发布），P1 增强见本 PR（详见第 7 节）。
+> 基线：v0.21.6（批次 A–D 已合入 main）。当前 v0.26.1：命令扩展见 PR #58，遗留项修复见 PR #59（均已合并发布），P1 增强见 PR #60，P3 工程债见本 PR（详见第 7 节）。
 > 性质：本文记录的是**功能增强**，不是缺陷修复。A–D 修完后，E 中没有一项是严格必须的；应结合实际使用场景挑选。
 
 ## 1. 背景
@@ -298,7 +298,7 @@
 |---|---|---|
 | 同名 provider 静默取第一个 | **已过时 / 已修复** | 文档原说法不成立：`queryProvider` 已不再执行 `ORDER BY id LIMIT 1`，且生产代码无调用（已删除）。launch / dry-run / customize 均走 `queryProviderMatches` + `resolveProviderRef` 并报歧义。v1 history 迁移已改为“同名不绑定 + 一次性警告”，not-found 提示改为输出 `id  name`。 |
 | CI 仅 Ubuntu + Node 22 | 工程 / **已修复** | CI 矩阵改为 Node 18.20.8 / 20 / 22 / 24（`push main` 也触发）；新增 Biome lint 与原生 test coverage（85/79/82）；publish 前执行 typecheck/test/build。测试脚本改为 `node --import tsx --test`，Node 18/20 可运行（本地需 ≥18.18）。 |
-| `noImplicitAny: false` | 工程 / **未做** | 开启后 464 个错误、25 个文件（前 5 文件占 54%）；单独立项，采用一次性修复，不做 `@ts-nocheck` 棘轮。 |
+| `noImplicitAny: false` | 工程 / **已修复** | 开启后 464 个错误、26 个文件（前 5 文件占 53%）；本 PR 按 B1–B6 六批修复后删除开关，无 `@ts-nocheck`。 |
 | `stack/state.ts ↔ stack/catalog.ts` 循环导入 | 工程 / **已修复（最小）** | 抽出 `src/stack/aggregation.ts`，state 不再 import catalog，公开面不变。剩余 `db ↔ state ↔ history` 与 13 文件 SCC 记录为后续独立项。 |
 | `main.ts` 的 update/__test 面 | 工程 / **已修复** | 实际 `runUpdate` 为 46 行（连同 helper 89 行），`__test` 为 108 项且 107 项只是转出口。已抽出 `commands/update.ts` 与 `commands/args.ts`，20 个测试改为直接 import 源模块，`__test` 已删除。 |
 | catalog 模板字段跟进 | 维护 | 上游模型更新时手动同步。 |
@@ -332,10 +332,17 @@
 
 - **`ps kill` / `ps attach` 真实 tmux 验收**（2026-10-20，tmux 3.8）：在独立验收 session 中确认了 tmux 内 `attach`（`switch-client` + `select-pane`）、表格 tmux 列、交互 kill 的取消与确认、`--force` SIGTERM、非 tmux 非 TTY 报错、tmux 不在 PATH 报错，以及伪造 `lstart` 的会话不会被误杀（只清理会话文件）。tmux server 不存在的分支仍由单测覆盖（当前环境无法在不影响现有 server 的情况下模拟）。
 
-- **P1 增强**（本 PR，`v0.26.0`）：
+- **P1 增强**（PR #60，`v0.26.0`）：
   - `doctor --fix` 严格白名单（断链、缺失实例目录、基线缺失；基线仅在实例内容与当前推导完全一致时补记）
   - 用户可见提示统一为英文（命令模式与 TUI；功能性正则保留）
   - `smol-toml` 1.7.1 → 1.9.1，并在解析包装层把 null-prototype 结果还原为普通对象
+
+- **P3 工程债**（本 PR，`v0.26.1`）：
+  - formatter 启用（Biome 2 空格 / 100 列，`format:check` 进入 CI）
+  - aggregation 原语抽取 + 6 个新模块拆分；import 图零 SCC
+  - `main()` 路由拆分（`dispatch` / `launch-route` / `sync` / `version`）
+  - `noImplicitAny` 开启（464 → 0）
+  - 新增 `test/architecture.test.mjs` 架构守卫
 
 ### 流程剩余
 
@@ -350,13 +357,13 @@
 | Windows 支持 | 不做 | 依赖 `ps` / `sqlite3` / `/bin/sh` 与软链 |
 | catalog 模板跟进 | 按需 | 上游模型更新时同步 |
 
-### 单独立项（第 5 节剩余）
+### 工程债（本 PR，v0.26.1，已全部完成）
 
-- `noImplicitAny`：464 个错误、25 个文件；一次性修复，不做 `@ts-nocheck` 棘轮。
-- 完整 aggregation 抽取：把 loopback / 签名判定搬入 `aggregation.ts`，`usage.ts` 复用。
-- 剩余循环依赖：`db ↔ state ↔ history`、13 文件 SCC。
-- `main()` 路由进一步拆分（163 行，本次未动）。
-- formatter 未启用（仅 lint）。
+- ✅ `noImplicitAny`：464 个错误、26 个文件，B1–B6 六批修复后翻开关；不保留 `@ts-nocheck`，不清理显式 `any`。
+- ✅ 完整 aggregation 抽取：loopback / 签名判定 / 身份 env 白名单 / ccs 模型 id 解析迁入 `stack/aggregation.ts`，`usage.ts` 复用。
+- ✅ 剩余循环依赖：拆分 `stack/live-state.ts`、`stack/virtual-row.ts`、`stack/legacy-cleanup.ts`、`cli-meta.ts`、`codex-instructions.ts`、`instances.ts`；import 图为**零 SCC**，并由 `test/architecture.test.mjs` 守卫。
+- ✅ `main()` 路由拆分：新增 `commands/dispatch.ts` / `launch-route.ts` / `sync.ts` / `version.ts`，`main.ts` 降至 16 行。
+- ✅ formatter 启用：Biome 2 空格 / 100 列，`format:check` 进入 CI quality job。
 
 ## 8. 不在本文范围
 

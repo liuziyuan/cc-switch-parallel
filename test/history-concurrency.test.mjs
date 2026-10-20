@@ -29,12 +29,17 @@ function spawnRecorder(providerId, times) {
 }
 
 function runAll(children) {
-  return Promise.all(children.map((child) => new Promise((resolve, reject) => {
-    let stderr = "";
-    child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", reject);
-    child.on("exit", (code) => resolve({ code, stderr }));
-  })));
+  return Promise.all(
+    children.map(
+      (child) =>
+        new Promise((resolve, reject) => {
+          let stderr = "";
+          child.stderr.on("data", (d) => (stderr += d));
+          child.on("error", reject);
+          child.on("exit", (code) => resolve({ code, stderr }));
+        }),
+    ),
+  );
 }
 
 test("concurrent recordLaunch: every increment survives", async () => {
@@ -50,7 +55,9 @@ test("concurrent recordLaunch: every increment survives", async () => {
 });
 
 test("concurrent recordLaunch: different providers all survive", async () => {
-  const results = await runAll(Array.from({ length: 8 }, (_, i) => spawnRecorder(`provider-${i}`, 1)));
+  const results = await runAll(
+    Array.from({ length: 8 }, (_, i) => spawnRecorder(`provider-${i}`, 1)),
+  );
   for (const r of results) assert.equal(r.code, 0, r.stderr);
   const data = JSON.parse(readFileSync(HISTORY_PATH, "utf8"));
   for (let i = 0; i < 8; i++) {

@@ -4,11 +4,16 @@
 // overwrite backup, no prepare, no baseline/history recording, no spawn.
 
 import { join } from "node:path";
-import { APP_ADAPTERS } from "../adapters.js";
+import { APP_ADAPTERS, getAdapter } from "../adapters.js";
 import { loadSettings, queryProvidersByApp } from "../db.js";
 import { diffSettingsLeaves, jsonNormalize, parseJsonObject } from "../json-utils.js";
 import { INSTANCES_DIR } from "../paths.js";
-import { formatAmbiguousProvider, formatAvailableProviders, resolveProviderRef, type ProviderRef } from "../provider-ref.js";
+import {
+  formatAmbiguousProvider,
+  formatAvailableProviders,
+  resolveProviderRef,
+  type ProviderRef,
+} from "../provider-ref.js";
 import { redactArgv, redactAtPath, redactSecrets } from "../redact.js";
 import { buildLaunchExtraEnv } from "../sessions.js";
 import { readSharedConfig } from "../shared-config.js";
@@ -41,14 +46,18 @@ async function buildDryRunPlan(
   extraArgs: string[],
   opts: DryRunOptions,
 ): Promise<DryRunPlan | { error: string }> {
-  const adapter = APP_ADAPTERS[cmd];
+  const adapter = getAdapter(cmd);
   if (!adapter) {
-    return { error: `Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}` };
+    return {
+      error: `Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`,
+    };
   }
   const resolved = resolveProviderRef(ref, adapter.appType);
   if (!resolved.ok) {
     if (resolved.error === "ambiguous") {
-      return { error: formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd) };
+      return {
+        error: formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd),
+      };
     }
     const label = ref?.id ? `id "${ref.id}"` : `"${ref?.name || ""}"`;
     return { error: `Provider ${label} not found (${adapter.appType})` };
@@ -58,7 +67,9 @@ async function buildDryRunPlan(
   const parsedSettingsConfig = parseJsonObject(row.settings_config);
   const parsedMeta = parseJsonObject(row.meta);
   if (!parsedSettingsConfig) {
-    warnings.push(`Provider "${row.name}" has malformed settings_config JSON — an empty config is shown.`);
+    warnings.push(
+      `Provider "${row.name}" has malformed settings_config JSON — an empty config is shown.`,
+    );
   }
   if (!parsedMeta) {
     warnings.push(`Provider "${row.name}" has malformed meta JSON — empty meta is shown.`);
@@ -68,25 +79,34 @@ async function buildDryRunPlan(
   const shared = readSharedConfig(adapter.appType);
   const settings = loadSettings();
   const instanceDir = join(INSTANCES_DIR, adapter.appType, row.id);
-  const effective = adapter.computeEffectiveSettings(
-    settingsConfig, meta, row.category, shared, row.id, settings, { writeWrapper: false },
+  const effective = adapter.computeEffectiveSettings!(
+    settingsConfig,
+    meta,
+    row.category,
+    shared,
+    row.id,
+    settings,
+    { writeWrapper: false },
   );
   if (!effective) return { error: `Could not derive an effective config for "${row.name}".` };
 
-  const configFileName = adapter.instanceSettingsFileName;
-  const configText = configFileName === "config.toml"
-    ? stringifyToml(effective)
-    : JSON.stringify(effective, null, 2);
+  const configFileName = adapter.instanceSettingsFileName!;
+  const configText =
+    configFileName === "config.toml"
+      ? stringifyToml(effective)
+      : JSON.stringify(effective, null, 2);
 
   const aggBaseUrl = aggregationBaseUrlFor(adapter.appType, settingsConfig);
   if (aggBaseUrl && !(await probeTcpReachable(aggBaseUrl))) {
-    warnings.push(`aggregation proxy ${aggBaseUrl} is unreachable — open the cc-switch desktop app with aggregation on.`);
+    warnings.push(
+      `aggregation proxy ${aggBaseUrl} is unreachable — open the cc-switch desktop app with aggregation on.`,
+    );
   }
 
   let current: any | null = null;
   let changes: SettingsChange[] | null = null;
   if (opts.diff) {
-    current = adapter.readInstanceSettingsSnapshot(instanceDir);
+    current = adapter.readInstanceSettingsSnapshot!(instanceDir);
     if (current !== null) {
       changes = diffSettingsLeaves(jsonNormalize(current), jsonNormalize(effective));
     }
@@ -122,18 +142,24 @@ function renderDryRunPlan(plan: DryRunPlan, opts: DryRunOptions): string {
     `Instance:  ${plan.instanceDir}`,
   ];
   const argv = redactArgv(plan.extraArgs, opts);
-  lines.push(`Command:   ${plan.envVar}=${plan.instanceDir} ${plan.bin}${argv.map((a) => ` ${a}`).join("")}`);
+  lines.push(
+    `Command:   ${plan.envVar}=${plan.instanceDir} ${plan.bin}${argv.map((a) => ` ${a}`).join("")}`,
+  );
   lines.push("Env:");
   for (const [key, value] of Object.entries(plan.env)) lines.push(`  ${key}=${value}`);
 
   lines.push("");
-  lines.push(opts.showSecrets
-    ? `Effective ${plan.configFileName}:`
-    : `Effective ${plan.configFileName} (redacted; use --show-secrets to reveal):`);
+  lines.push(
+    opts.showSecrets
+      ? `Effective ${plan.configFileName}:`
+      : `Effective ${plan.configFileName} (redacted; use --show-secrets to reveal):`,
+  );
   const redacted = redactSecrets(plan.effective, opts);
-  lines.push(plan.configFileName === "config.toml"
-    ? stringifyToml(redacted).trimEnd()
-    : JSON.stringify(redacted, null, 2));
+  lines.push(
+    plan.configFileName === "config.toml"
+      ? stringifyToml(redacted).trimEnd()
+      : JSON.stringify(redacted, null, 2),
+  );
 
   if (opts.diff) {
     lines.push("");
@@ -171,7 +197,7 @@ async function runDryRun(
   const plan = await buildDryRunPlan(cmd, ref, extraArgs, opts);
   if ("error" in plan) {
     console.error(`✗ ${plan.error}`);
-    const adapter = APP_ADAPTERS[cmd];
+    const adapter = getAdapter(cmd);
     if (adapter && plan.error.startsWith("Provider ")) {
       try {
         console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
@@ -181,6 +207,5 @@ async function runDryRun(
   }
   console.log(renderDryRunPlan(plan, opts));
 }
-
 
 export { buildDryRunPlan, renderDryRunPlan, runDryRun };

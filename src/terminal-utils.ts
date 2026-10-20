@@ -22,40 +22,53 @@ export function sanitizeText(value: any): string {
 
 /** Remove escape/control chars but KEEP SGR (…m) color sequences. */
 export function sanitizeAnsiLine(value: any): string {
-  return String(value ?? "")
-    .replace(OSC_RE, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, (seq) => (seq.endsWith("m") ? seq : ""))
-    .replace(/[\r\n\t]/g, " ")
-    .replace(CONTROL_RE, "")
-    // Stray ESC sequences that did not survive as SGR.
-    .replace(/\x1b(?!\[[0-9;]*m)/g, "");
+  return (
+    String(value ?? "")
+      .replace(OSC_RE, "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, (seq) => (seq.endsWith("m") ? seq : ""))
+      .replace(/[\r\n\t]/g, " ")
+      .replace(CONTROL_RE, "")
+      // Stray ESC sequences that did not survive as SGR.
+      .replace(/\x1b(?!\[[0-9;]*m)/g, "")
+  );
 }
 
 function charWidth(cp: number): number {
   // Combining marks, ZWJ, variation selectors, skin-tone modifiers: no width.
-  if (cp === 0x200d || (cp >= 0x0300 && cp <= 0x036f) ||
-      (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x1f3fb && cp <= 0x1f3ff)) return 0;
+  if (
+    cp === 0x200d ||
+    (cp >= 0x0300 && cp <= 0x036f) ||
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||
+    (cp >= 0x1f3fb && cp <= 0x1f3ff)
+  )
+    return 0;
   // East Asian wide / fullwidth and emoji blocks (approximation, stable).
-  if (cp >= 0x1100 && (
-    cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
-    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
-    (cp >= 0xac00 && cp <= 0xd7a3) ||
-    (cp >= 0xf900 && cp <= 0xfaff) ||
-    (cp >= 0xfe10 && cp <= 0xfe19) ||
-    (cp >= 0xfe30 && cp <= 0xfe6f) ||
-    (cp >= 0xff00 && cp <= 0xff60) ||
-    (cp >= 0xffe0 && cp <= 0xffe6) ||
-    (cp >= 0x1f1e6 && cp <= 0x1f1ff) ||
-    (cp >= 0x1f300 && cp <= 0x1f64f) ||
-    (cp >= 0x1f680 && cp <= 0x1f6ff) ||
-    (cp >= 0x1f900 && cp <= 0x1f9ff)
-  )) return 2;
+  if (
+    cp >= 0x1100 &&
+    (cp <= 0x115f ||
+      cp === 0x2329 ||
+      cp === 0x232a ||
+      (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe10 && cp <= 0xfe19) ||
+      (cp >= 0xfe30 && cp <= 0xfe6f) ||
+      (cp >= 0xff00 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x1f1e6 && cp <= 0x1f1ff) ||
+      (cp >= 0x1f300 && cp <= 0x1f64f) ||
+      (cp >= 0x1f680 && cp <= 0x1f6ff) ||
+      (cp >= 0x1f900 && cp <= 0x1f9ff))
+  )
+    return 2;
   return 1;
 }
 
 /** Display width of the VISIBLE text (ANSI codes count 0). */
 export function displayWidth(value: any): number {
-  const s = String(value ?? "").replace(OSC_RE, "").replace(CSI_RE, "");
+  const s = String(value ?? "")
+    .replace(OSC_RE, "")
+    .replace(CSI_RE, "");
   let width = 0;
   for (const ch of s) {
     const cp = ch.codePointAt(0) as number;
@@ -72,10 +85,14 @@ export function fitLine(value: any, maxWidth: number): string {
   if (limit === 0) return "";
   let width = 0;
   let out = "";
-  for (let i = 0; i < s.length;) {
+  for (let i = 0; i < s.length; ) {
     if (s[i] === "\x1b") {
       const m = /^\x1b\[[0-9;]*m/.exec(s.slice(i));
-      if (m) { out += m[0]; i += m[0].length; continue; }
+      if (m) {
+        out += m[0];
+        i += m[0].length;
+        continue;
+      }
       i++;
       continue;
     }
@@ -199,10 +216,16 @@ type GuardOptions = {
  * `dispose()` removes every listener: leaving a SIGINT handler behind would
  * hijack the CLI launched right after the TUI exits.
  */
-export function installTerminalGuard({ cleanup, exit = (code) => process.exit(code), stderr = process.stderr }: GuardOptions) {
+export function installTerminalGuard({
+  cleanup,
+  exit = (code) => process.exit(code),
+  stderr = process.stderr,
+}: GuardOptions) {
   let active = true;
   let disposed = false;
-  const onExit = () => { if (active) cleanup(); };
+  const onExit = () => {
+    if (active) cleanup();
+  };
   const signal = (code: number) => () => {
     if (!active) return;
     active = false;

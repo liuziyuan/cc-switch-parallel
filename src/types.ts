@@ -75,6 +75,50 @@ export interface DoctorFixResult {
   detail: string;
 }
 
+/** App keys supported by the adapter table. */
+export type AppKey = "claude" | "codex";
+
+// The adapter capability surface. Method parameters are deliberately `any`
+// while the noImplicitAny pass is in progress: the point of this interface is
+// to give the APP_ADAPTERS object literal a context type (killing TS7006)
+// without pretending the per-app config shapes are uniform yet.
+export interface AppAdapter {
+  appType: string;
+  label: string;
+  displayName: string;
+  bin: string;
+  envVar: string;
+  commonConfigKey: string;
+  instanceSettingsFileName?: string;
+  fullAutoFlag: string;
+  setupInstance(providerId: any): any;
+  prepare(...args: any[]): any;
+  launch(...args: any[]): any;
+  permissionArgs(hotkey: any): any;
+  inferHotkeyFromArgs(args: any): any;
+  readInstancePluginState?(instanceDir: any): any;
+  readInstanceSettingsSnapshot?(instanceDir: any): any;
+  computeEffectiveSettings?(...args: any[]): any;
+  parseCommonSnippet?(text: any): any;
+  providerDocFromSettingsConfig?(settingsConfigObj: any): any;
+  channelOwnedPath?(...args: any[]): any;
+  runtimeStatePath?(...args: any[]): any;
+  instructions?: {
+    fileName: string;
+    globalPath(): string;
+    missingGlobalWarn(...args: any[]): any;
+    buildTemplate(...args: any[]): any;
+    refreshSnapshot?(...args: any[]): any;
+    [key: string]: any;
+  };
+  detectPluginDrift?(state: any): any;
+  detectSettingsDrift?(...args: any[]): any;
+  syncSettingsBack?(...args: any[]): any;
+  syncPluginsBack?(...args: any[]): any;
+  rewritesCommonOnSync?: boolean;
+  [key: string]: any;
+}
+
 /** One instance directory on disk. */
 export interface InstanceInfo {
   name: string;

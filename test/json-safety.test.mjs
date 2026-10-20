@@ -6,7 +6,9 @@ import { join } from "node:path";
 
 process.env.CC_SWITCH_TEST_HOME = mkdtempSync(join(tmpdir(), "cc-switch-json-safety-"));
 
-const { jsonDeepMerge, applyMergePatch, mergeCommonOverProvider } = await import("../src/json-utils.ts");
+const { jsonDeepMerge, applyMergePatch, mergeCommonOverProvider } = await import(
+  "../src/json-utils.ts"
+);
 const { tomlDeepMerge } = await import("../src/toml-utils.ts");
 const { buildNestedAssign, splitChangesByTarget } = await import("../src/upward.ts");
 
@@ -17,9 +19,9 @@ const { buildNestedAssign, splitChangesByTarget } = await import("../src/upward.
 const EVIL = JSON.parse('{"__proto__":{"pwned":1},"constructor":{"prototype":{"x":2}},"safe":3}');
 
 function assertClean() {
-  assert.equal(({}).pwned, undefined, "Object.prototype must not gain pwned");
+  assert.equal({}.pwned, undefined, "Object.prototype must not gain pwned");
   assert.equal(Object.prototype.pwned, undefined);
-  assert.equal(({}).x, undefined, "constructor.prototype must not gain x");
+  assert.equal({}.x, undefined, "constructor.prototype must not gain x");
 }
 
 test("jsonDeepMerge: prototype keys are never written through", () => {
@@ -54,7 +56,7 @@ test("buildNestedAssign: refuses to build a patch through prototype segments", (
   const patch = {};
   buildNestedAssign(patch, "__proto__.polluted", 1, {}, ["__proto__", "polluted"]);
   assert.deepEqual(patch, {});
-  assert.equal(({}).polluted, undefined);
+  assert.equal({}.polluted, undefined);
   assert.equal(Object.prototype.polluted, undefined);
 });
 

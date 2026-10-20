@@ -6,8 +6,17 @@ import { queryProviderById } from "./db.js";
 import { atomicWrite, ensurePrivateDir } from "./fs-utils.js";
 import { isPlainObject } from "./json-utils.js";
 import { HOME, INSTANCES_DIR, STATUSLINE_PREFS_PATH } from "./paths.js";
-import { buildStackUsageConfig, isAggregationProviderSettings, readStackState } from "./stack/state.js";
-import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, resolveUsageIdentity } from "./stack/usage.js";
+import { CCS_CLAUDE_MODEL_ID_SOURCE } from "./stack/aggregation.js";
+import {
+  buildStackUsageConfig,
+  isAggregationProviderSettings,
+  readStackState,
+} from "./stack/state.js";
+import {
+  USAGE_CACHE_FILENAME,
+  buildUsageQueryConfig,
+  resolveUsageIdentity,
+} from "./stack/usage.js";
 import { isValidStatuslineColor, statuslineColorFor } from "./statusline-colors.js";
 
 // ─── Instance statusline (claude) ──────────────────────────────────────
@@ -30,11 +39,11 @@ const STATUSLINE_WRAPPER_FILENAME = "statusline-wrapper.mjs";
 
 // [C6 for the statusline channel] — the settings-field sync and the
 // overwrite guard must neither report nor vote on this subtree.
-function isStatusLineChannelPath(path) {
+function isStatusLineChannelPath(path: any) {
   return path === "statusLine" || path.startsWith("statusLine.");
 }
 
-function claudeProviderName(providerId) {
+function claudeProviderName(providerId: any) {
   try {
     return queryProviderById(providerId, "claude")?.name || providerId;
   } catch {
@@ -43,7 +52,7 @@ function claudeProviderName(providerId) {
 }
 
 // Single-quote for /bin/sh; paths only ever get safer under this.
-function shQuote(path) {
+function shQuote(path: any) {
   return `'${path.replace(/'/g, "'\\''")}'`;
 }
 
@@ -77,14 +86,16 @@ function buildSelfDrawLines(stackAware = false) {
     `  const m = STDIN.model || {};`,
     `  let name = sdSanitize(m.display_name || m.id || "");`,
     `  if (!name) return "";`,
-    ...(stackAware ? [
-      `  // Aggregated ids use the ccs prefix; the key never contains "--",`,
-      `  // so the first separator ends it (same rule as the tag).`,
-      `  if (/^ccs-claude-/i.test(name)) {`,
-      `    const i = name.indexOf("--");`,
-      `    if (i > 0) name = name.slice(i + 2);`,
-      `  }`,
-    ] : []),
+    ...(stackAware
+      ? [
+          `  // Aggregated ids use the ccs prefix; the key never contains "--",`,
+          `  // so the first separator ends it (same rule as the tag).`,
+          `  if (/^ccs-claude-/i.test(name)) {`,
+          `    const i = name.indexOf("--");`,
+          `    if (i > 0) name = name.slice(i + 2);`,
+          `  }`,
+        ]
+      : []),
     `  return "\\x1b[36m[" + name + "]\\x1b[0m";`,
     `}`,
     `function sdGit() {`,
@@ -164,27 +175,34 @@ function buildSelfDrawLines(stackAware = false) {
   ];
 }
 
-function buildStatusLineWrapperScript(providerName, globalSettingsPath, relayCommand, colorCode = "auto", usageConfig = null, stackConfig = null) {
+function buildStatusLineWrapperScript(
+  providerName: any,
+  globalSettingsPath: any,
+  relayCommand: any,
+  colorCode = "auto",
+  usageConfig = null,
+  stackConfig = null,
+) {
   // Aggregation instances retarget the tag at runtime (ccs key → member
   // name), so their tag is a function of the live model id; the single-
   // provider shape below stays a constant expression — byte-identical to the
   // pre-aggregation wrapper, a guarantee the regression tests assert on.
   const tagLines = stackConfig
     ? [
-      `function makeTag(name) {`,
-      `  let h = 2166136261;`,
-      `  for (const ch of name) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }`,
-      `  const c = COLOR === "auto" ? PALETTE[h % PALETTE.length] : parseInt(COLOR, 10);`,
-      `  return "\\x1b[1m\\x1b[" + c + "m[" + name + "]\\x1b[0m";`,
-      `}`,
-      `let tag = makeTag(PROVIDER);`,
-    ]
+        `function makeTag(name) {`,
+        `  let h = 2166136261;`,
+        `  for (const ch of name) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }`,
+        `  const c = COLOR === "auto" ? PALETTE[h % PALETTE.length] : parseInt(COLOR, 10);`,
+        `  return "\\x1b[1m\\x1b[" + c + "m[" + name + "]\\x1b[0m";`,
+        `}`,
+        `let tag = makeTag(PROVIDER);`,
+      ]
     : [
-      `let hash = 2166136261;`,
-      `for (const ch of PROVIDER) { hash ^= ch.codePointAt(0); hash = Math.imul(hash, 16777619) >>> 0; }`,
-      `const code = COLOR === "auto" ? PALETTE[hash % PALETTE.length] : parseInt(COLOR, 10);`,
-      `const tag = "\\x1b[1m\\x1b[" + code + "m[" + PROVIDER + "]\\x1b[0m";`,
-    ];
+        `let hash = 2166136261;`,
+        `for (const ch of PROVIDER) { hash ^= ch.codePointAt(0); hash = Math.imul(hash, 16777619) >>> 0; }`,
+        `const code = COLOR === "auto" ? PALETTE[hash % PALETTE.length] : parseInt(COLOR, 10);`,
+        `const tag = "\\x1b[1m\\x1b[" + code + "m[" + PROVIDER + "]\\x1b[0m";`,
+      ];
   return [
     `#!/usr/bin/env node`,
     `// Generated by cc-switch-parallel — do not edit; regenerated on every launch.`,
@@ -298,15 +316,15 @@ function buildStatusLineWrapperScript(providerName, globalSettingsPath, relayCom
       : usageConfig
         ? buildUsageWrapperLines(usageConfig)
         : [
-          `if (!HAS_RELAY) {`,
-          `  process.stdout.write(selfDraw("") + "\\n");`,
-          `} else {`,
-          `  const first = glue`,
-          `    ? tag + line0.replace(/^\\s+/, "") // drop the relay's leading indent`,
-          `    : tag + (line0 ? " " + line0 : "");`,
-          `  process.stdout.write([first].concat(lines.slice(1)).join("\\n") + "\\n");`,
-          `}`,
-        ]),
+            `if (!HAS_RELAY) {`,
+            `  process.stdout.write(selfDraw("") + "\\n");`,
+            `} else {`,
+            `  const first = glue`,
+            `    ? tag + line0.replace(/^\\s+/, "") // drop the relay's leading indent`,
+            `    : tag + (line0 ? " " + line0 : "");`,
+            `  process.stdout.write([first].concat(lines.slice(1)).join("\\n") + "\\n");`,
+            `}`,
+          ]),
   ].join("\n");
 }
 
@@ -318,7 +336,7 @@ function buildStatusLineWrapperScript(providerName, globalSettingsPath, relayCom
 // detached self-spawn refreshes in the background, and only the very first
 // render (no cache at all) pays one short sync fetch — failures stay silent
 // and leave the statusline byte-identical to the no-usage shape.
-function buildUsageWrapperLines(usageConfig) {
+function buildUsageWrapperLines(usageConfig: any) {
   return [
     `// ─── Provider usage segment (generated by cc-switch-parallel) ────────`,
     `import { spawn } from "node:child_process";`,
@@ -553,7 +571,7 @@ function buildUsageWrapperLines(usageConfig) {
 // them in the background. Cache/SWR semantics per member mirror the
 // single-provider tail (fresh hit = zero network, stale = last-known +
 // detached refresh, no cache = one sync fetch), each in its own cache file.
-function buildStackUsageWrapperLines(stackConfig) {
+function buildStackUsageWrapperLines(stackConfig: any) {
   return [
     `// ─── Aggregation usage segment (cc-switch Stack) ────────────────────`,
     `import { spawn } from "node:child_process";`,
@@ -680,7 +698,7 @@ function buildStackUsageWrapperLines(stackConfig) {
     `// model part may freely contain further dashes or slashes.`,
     `let modelId = "";`,
     `try { const m = JSON.parse(input)?.model; modelId = String((m && (m.id || m.display_name)) || ""); } catch {}`,
-    `const ccsMatch = modelId.match(/^ccs-claude-([a-z0-9-]+?)--/i);`,
+    `const ccsMatch = modelId.match(/${CCS_CLAUDE_MODEL_ID_SOURCE}/i);`,
     `let activeKey = null;`,
     `if (ccsMatch) {`,
     `  const k = ccsMatch[1].toLowerCase();`,
@@ -834,7 +852,14 @@ function buildStackUsageWrapperLines(stackConfig) {
 // meta feed the usage identity the same way: both call sites pass the
 // provider's own values, so the generated wrapper stays identical on both
 // paths, and settings.json itself stays usage-blind.
-function applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta, opts: { writeWrapper?: boolean } = {}) {
+function applyStatusLineInjection(
+  effective: any,
+  providerName: any,
+  providerId: any,
+  settingsConfig: any,
+  meta: any,
+  opts: { writeWrapper?: boolean } = {},
+) {
   try {
     const instanceDir = join(INSTANCES_DIR, "claude", providerId);
     const wrapperPath = join(instanceDir, STATUSLINE_WRAPPER_FILENAME);
@@ -847,9 +872,11 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
     let relayCommand: string | null = null;
     if (
       isPlainObject(existing) &&
-      typeof existing.command === "string" && existing.command.trim() &&
+      typeof existing.command === "string" &&
+      existing.command.trim() &&
       !existing.command.includes(STATUSLINE_WRAPPER_FILENAME)
-    ) relayCommand = existing.command;
+    )
+      relayCommand = existing.command;
     // dry-run derives the same effective config but must not touch the
     // instance directory; the wrapper path is still computed so the
     // statusLine command shown matches what a real launch would write.
@@ -868,7 +895,9 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
       let usageConfig: any = null;
       let stackConfig: any = null;
       try {
-        const stack = isAggregationProviderSettings(settingsConfig) ? readStackState("claude") : null;
+        const stack = isAggregationProviderSettings(settingsConfig)
+          ? readStackState("claude")
+          : null;
         if (stack) stackConfig = buildStackUsageConfig(stack, instanceDir, wrapperPath);
         if (!stackConfig) {
           usageConfig = buildUsageQueryConfig(
@@ -878,7 +907,17 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
           );
         }
       } catch {}
-      atomicWrite(wrapperPath, buildStatusLineWrapperScript(providerName, join(HOME, ".claude", "settings.json"), relayCommand, colorCode, usageConfig, stackConfig) + "\n");
+      atomicWrite(
+        wrapperPath,
+        buildStatusLineWrapperScript(
+          providerName,
+          join(HOME, ".claude", "settings.json"),
+          relayCommand,
+          colorCode,
+          usageConfig,
+          stackConfig,
+        ) + "\n",
+      );
     }
     // No chmod 0755: the statusLine command runs `node <path>`, so the wrapper
     // only needs to be READABLE by the owner. atomicWrite lands it at 0600 —
@@ -900,14 +939,23 @@ function applyStatusLineInjection(effective, providerName, providerId, settingsC
 // true/false both propagate (so /plugin enable AND disable survive the next
 // launch); absent keys are omitted (json_patch leaves them untouched), so a
 // stale instance can't delete a key another provider added.
-function collectEnabledPluginsPatch(ep) {
+function collectEnabledPluginsPatch(ep: any) {
   if (!isPlainObject(ep)) return null;
-  const patch = {};
+  const patch: Record<string, boolean> = {};
   for (const [k, v] of Object.entries(ep)) {
     if (v === true || v === false) patch[k] = v;
   }
   return Object.keys(patch).length ? patch : null;
 }
 
-
-export { STATUSLINE_WRAPPER_FILENAME, applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineWrapperScript, buildUsageWrapperLines, claudeProviderName, collectEnabledPluginsPatch, isStatusLineChannelPath, shQuote };
+export {
+  STATUSLINE_WRAPPER_FILENAME,
+  applyStatusLineInjection,
+  buildStackUsageWrapperLines,
+  buildStatusLineWrapperScript,
+  buildUsageWrapperLines,
+  claudeProviderName,
+  collectEnabledPluginsPatch,
+  isStatusLineChannelPath,
+  shQuote,
+};

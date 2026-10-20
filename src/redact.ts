@@ -23,15 +23,21 @@ function redactSecrets(value: any, opts: RedactOptions = {}): any {
 // segment names a credential (same rule the smart split uses).
 function redactAtPath(value: any, segments: string[] | null, opts: RedactOptions = {}): any {
   if (opts.showSecrets) return value;
-  const sensitive = Array.isArray(segments) && segments.length
-    ? isSensitiveConfigPath("", segments)
-    : false;
+  const sensitive =
+    Array.isArray(segments) && segments.length ? isSensitiveConfigPath("", segments) : false;
   return sensitive ? "***" : value;
 }
 
 const SECRET_ARG_FLAGS = [
-  "--api-key", "--apikey", "--access-key", "--token", "--secret",
-  "--password", "--passwd", "--auth", "--bearer",
+  "--api-key",
+  "--apikey",
+  "--access-key",
+  "--token",
+  "--secret",
+  "--password",
+  "--passwd",
+  "--auth",
+  "--bearer",
 ];
 
 function redactArgv(args: string[], opts: RedactOptions = {}): string[] {
@@ -56,6 +62,5 @@ function redactArgv(args: string[], opts: RedactOptions = {}): string[] {
   }
   return out;
 }
-
 
 export { redactArgv, redactAtPath, redactSecrets };

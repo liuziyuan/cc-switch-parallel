@@ -22,7 +22,7 @@ const GENERATED = [
   'trust_level = "generated-only"',
   '[hooks.state."/a:hooks.json:pre_tool_use:0:0"]',
   'trusted_hash = "sha256:STALE"',
-  '[tui]',
+  "[tui]",
   'model_availability_nux = { "gpt-5" = "old", "gpt-6" = "keep" }',
 ].join("\n");
 
@@ -31,7 +31,7 @@ const CURRENT = [
   'trust_level = "live"',
   '[hooks.state."/a:hooks.json:pre_tool_use:0:0"]',
   'trusted_hash = "sha256:LIVE"',
-  '[tui]',
+  "[tui]",
   'model_availability_nux = { "gpt-5" = "new" }',
 ].join("\n");
 

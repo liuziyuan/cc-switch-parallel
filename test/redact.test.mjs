@@ -32,13 +32,23 @@ test("redactAtPath: masks whole leaves on sensitive key segments", () => {
   assert.equal(redactAtPath("value", ["env", "ANTHROPIC_AUTH_TOKEN"]), "***");
   assert.equal(redactAtPath("value", ["env", "ANTHROPIC_BASE_URL"]), "value");
   assert.equal(redactAtPath("value", null), "value");
-  assert.equal(redactAtPath("value", ["env", "ANTHROPIC_AUTH_TOKEN"], { showSecrets: true }), "value");
+  assert.equal(
+    redactAtPath("value", ["env", "ANTHROPIC_AUTH_TOKEN"], { showSecrets: true }),
+    "value",
+  );
 });
 
 test("redactArgv: masks flag values and --flag=value forms", () => {
-  assert.deepEqual(redactArgv(["--api-key", "secret", "--continue"]), ["--api-key", "***", "--continue"]);
+  assert.deepEqual(redactArgv(["--api-key", "secret", "--continue"]), [
+    "--api-key",
+    "***",
+    "--continue",
+  ]);
   assert.deepEqual(redactArgv(["--token=abc", "--verbose"]), ["--token=***", "--verbose"]);
   assert.deepEqual(redactArgv(["--api-key=abc"]), ["--api-key=***"]);
   assert.deepEqual(redactArgv(["--continue"]), ["--continue"]);
-  assert.deepEqual(redactArgv(["--api-key", "secret"], { showSecrets: true }), ["--api-key", "secret"]);
+  assert.deepEqual(redactArgv(["--api-key", "secret"], { showSecrets: true }), [
+    "--api-key",
+    "secret",
+  ]);
 });

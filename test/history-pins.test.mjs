@@ -13,23 +13,41 @@ mkdirSync(STATE_DIR, { recursive: true });
 const { normalizeOrder, mergeTop5, insertManualOrder } = await import("../src/history.ts");
 
 test("normalizeOrder: repeated keys are dropped, the first slot wins", () => {
-  assert.deepEqual(
-    normalizeOrder(["claude|a", "claude|a", "claude|b", null, "claude|b"]),
-    ["claude|a", null, "claude|b", null, null],
-  );
+  assert.deepEqual(normalizeOrder(["claude|a", "claude|a", "claude|b", null, "claude|b"]), [
+    "claude|a",
+    null,
+    "claude|b",
+    null,
+    null,
+  ]);
 });
 
 test("mergeTop5: the same entry key never renders twice", () => {
   const entries = [
-    { cli: "claude", providerId: "a", provider: "A", hotkey: null, extraArgs: [], count: 5, lastUsed: 1 },
-    { cli: "claude", providerId: "b", provider: "B", hotkey: null, extraArgs: [], count: 1, lastUsed: 1 },
+    {
+      cli: "claude",
+      providerId: "a",
+      provider: "A",
+      hotkey: null,
+      extraArgs: [],
+      count: 5,
+      lastUsed: 1,
+    },
+    {
+      cli: "claude",
+      providerId: "b",
+      provider: "B",
+      hotkey: null,
+      extraArgs: [],
+      count: 1,
+      lastUsed: 1,
+    },
   ];
-  const rows = mergeTop5(
-    entries,
-    ["claude|a", "claude|a", "claude|b", null, null],
-    new Map(),
+  const rows = mergeTop5(entries, ["claude|a", "claude|a", "claude|b", null, null], new Map());
+  assert.deepEqual(
+    rows.map((e) => e.providerId),
+    ["a", "b"],
   );
-  assert.deepEqual(rows.map((e) => e.providerId), ["a", "b"]);
 });
 
 test("insertManualOrder: re-pinning moves the row instead of duplicating the slot", () => {

@@ -27,12 +27,17 @@ function spawnSave(providerId, color) {
 
 test("concurrent color saves keep every provider's entry", async () => {
   const children = [spawnSave("p-a", "31"), spawnSave("p-b", "32")];
-  const results = await Promise.all(children.map((child) => new Promise((resolve, reject) => {
-    let stderr = "";
-    child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", reject);
-    child.on("exit", (code) => resolve({ code, stderr }));
-  })));
+  const results = await Promise.all(
+    children.map(
+      (child) =>
+        new Promise((resolve, reject) => {
+          let stderr = "";
+          child.stderr.on("data", (d) => (stderr += d));
+          child.on("error", reject);
+          child.on("exit", (code) => resolve({ code, stderr }));
+        }),
+    ),
+  );
   for (const r of results) assert.equal(r.code, 0, r.stderr);
 
   const prefs = JSON.parse(readFileSync(PREFS_PATH, "utf8"));

@@ -1,16 +1,39 @@
 // ─── tui (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join, resolve } from "node:path";
-import { APP_ADAPTERS } from "./adapters.js";
-import { buildRunningSet } from "./commands/ps.js";
+import { APP_ADAPTERS, getAdapter } from "./adapters.js";
+import { buildRunningSet } from "./instances.js";
 import { queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
-import { QUICK_KEYS, insertManualOrder, loadHistory, permLabel, quickItemsFor, removeAllDeadPairs, removeHistoryPair, setEntryHotkey, snapshotAliveByCli, unpinPair } from "./history.js";
+import {
+  QUICK_KEYS,
+  insertManualOrder,
+  loadHistory,
+  permLabel,
+  quickItemsFor,
+  removeAllDeadPairs,
+  removeHistoryPair,
+  setEntryHotkey,
+  snapshotAliveByCli,
+  unpinPair,
+} from "./history.js";
 import { launchProvider } from "./launch.js";
 import { VIRTUAL_STACK_APPS } from "./paths.js";
-import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.js";
+import {
+  buildAggregationGroup,
+  cleanupLegacyStackRows,
+  reportLegacyStackCleanup,
+} from "./stack/state.js";
 import { clipFrame, fitLine, installTerminalGuard, sanitizeText } from "./terminal-utils.js";
-import { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRelay, loadStatuslineDisplay, saveStatuslineColor, saveStatuslineDisplay, statuslineColorFor } from "./statusline-colors.js";
+import {
+  STATUSLINE_COLOR_CHOICES,
+  STATUSLINE_DISPLAY_ITEMS,
+  detectStatuslineRelay,
+  loadStatuslineDisplay,
+  saveStatuslineColor,
+  saveStatuslineDisplay,
+  statuslineColorFor,
+} from "./statusline-colors.js";
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
 
@@ -52,7 +75,7 @@ import { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRel
 //               shown order/dead/pinned state matches disk. Newly surfaced
 //               natural-filler rows need their dead flag from the caller's
 //               alive snapshot — tuiSelect itself has no DB access.
-function readDisplayPath(obj, path) {
+function readDisplayPath(obj: any, path: any) {
   let cur = obj;
   for (const part of path.split(".")) {
     if (!cur || typeof cur !== "object" || !(part in cur)) return undefined;
@@ -64,10 +87,16 @@ function readDisplayPath(obj, path) {
 // Rows for the `s` statusline panel. Pure (no terminal access) so the layout
 // and the claude-hud annotation are unit-testable; `width` is the usable
 // column count after the panel's 4-column outer padding.
-function buildStatuslinePanelLines({ display, relayKind = "none", context = null, cursor = 0, width = 76 }) {
+function buildStatuslinePanelLines({
+  display,
+  relayKind = "none",
+  context = null,
+  cursor = 0,
+  width = 76,
+}: any) {
   const lines: string[] = [];
-  const text = (s) => fitLine(sanitizeText(s), Math.max(1, width - 2));
-  const row = (s, style) => {
+  const text = (s: any) => fitLine(sanitizeText(s), Math.max(1, width - 2));
+  const row = (s: any, style: any) => {
     const body = `  ${text(s)}`;
     if (style === "highlight") return `\x1b[1m\x1b[33m${body}\x1b[0m`;
     if (style === "warning") return `\x1b[33m${body}\x1b[0m`;
@@ -79,26 +108,39 @@ function buildStatuslinePanelLines({ display, relayKind = "none", context = null
   // The relay owns the model/project/git/context rows; say so loudly, then
   // annotate each locked switch with who actually supplies it.
   if (relayKind === "claude-hud") {
-    lines.push(row("⚡ claude-hud is active — model / project / git / context are rendered by claude-hud", "highlight"));
+    lines.push(
+      row(
+        "⚡ claude-hud is active — model / project / git / context are rendered by claude-hud",
+        "highlight",
+      ),
+    );
   } else if (relayKind === "other") {
     lines.push(row("⚡ A custom statusLine is active — new items are not stacked", "highlight"));
   } else {
     lines.push(row("Self-drawn statusline — all switches apply (effective immediately)", "dim"));
   }
   if (context === "codex") {
-    lines.push(row("Codex has no external statusline yet — these switches apply to Claude instances only", "warning"));
+    lines.push(
+      row(
+        "Codex has no external statusline yet — these switches apply to Claude instances only",
+        "warning",
+      ),
+    );
   }
   lines.push("");
   if (relayKind !== "none") {
-    lines.push(row(
-      relayKind === "claude-hud"
-        ? "Locked rows are supplied by claude-hud; turn it off to use the built-in renderer"
-        : "Locked rows are supplied by the custom statusLine; remove it to use the built-in renderer",
-      "dim",
-    ));
+    lines.push(
+      row(
+        relayKind === "claude-hud"
+          ? "Locked rows are supplied by claude-hud; turn it off to use the built-in renderer"
+          : "Locked rows are supplied by the custom statusLine; remove it to use the built-in renderer",
+        "dim",
+      ),
+    );
   }
 
-  const sourceLabel = relayKind === "claude-hud" ? "claude-hud" : relayKind === "other" ? "statusLine" : null;
+  const sourceLabel =
+    relayKind === "claude-hud" ? "claude-hud" : relayKind === "other" ? "statusLine" : null;
   const relayLocked = relayKind !== "none";
   for (let i = 0; i < STATUSLINE_DISPLAY_ITEMS.length; i++) {
     const item = STATUSLINE_DISPLAY_ITEMS[i];
@@ -117,7 +159,7 @@ function buildStatuslinePanelLines({ display, relayKind = "none", context = null
 
 function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
-  const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
+  const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : optsArg || {};
   const hotkeys = opts.hotkeys || [];
   const interactive = !!opts.interactive;
   let quickItems = opts.quickItems || []; // mutable: refreshed after mutations
@@ -128,12 +170,18 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
   const pinOptions = !!opts.pinContext && typeof opts.onPin === "function"; // provider layer
   const pinQuick = !!opts.quickPin && typeof opts.onPin === "function"; // CLI layer
   const canColor = typeof opts.onColor === "function" && typeof opts.getCurrentColor === "function"; // provider layer `o`
-  const canStatusline = typeof opts.onStatusline === "function" && typeof opts.getStatuslineDisplay === "function"; // provider layer `s`
-  const refreshQuick = typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
+  const canStatusline =
+    typeof opts.onStatusline === "function" && typeof opts.getStatuslineDisplay === "function"; // provider layer `s`
+  const refreshQuick =
+    typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
 
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      reject(new Error("TUI mode requires an interactive terminal. Use command mode: switch <provider> <cmd>"));
+      reject(
+        new Error(
+          "TUI mode requires an interactive terminal. Use command mode: switch <provider> <cmd>",
+        ),
+      );
       return;
     }
 
@@ -171,7 +219,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     // ANSI redraw counts LINES — a soft-wrapped row would leave ghosts on
     // every repaint. Keep generated text within the terminal width (CJK
     // counted double, matching most terminal renderers).
-    function fit(str, pad) {
+    function fit(str: any, pad: any) {
       const cols = (process.stdout.columns || 80) - pad;
       // sanitizeText strips user-provided ANSI/control characters; fitLine
       // truncates by display width (CJK/emoji) instead of code units.
@@ -181,11 +229,12 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     // Lines for a given mode (without trailing newline). notice renders one
     // extra dim row below the hints — passed per-render, so it disappears on
     // the next state change without any cleanup bookkeeping.
-    function buildLines(m, notice) {
+    function buildLines(m: any, notice: any) {
       const lines: string[] = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${fit(prompt, 4)}\x1b[0m`);
       lines.push("");
-      const locked = m === "param" || m === "pin" || m === "confirm" || m === "color" || m === "statusline";
+      const locked =
+        m === "param" || m === "pin" || m === "confirm" || m === "color" || m === "statusline";
       // unified navigation space: [0..options.length-1] = options,
       // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
@@ -203,11 +252,11 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         lines.push("");
         const head = paramEdit
           ? `Edit "${paramEdit.q.provider}" · ${permLabel(paramEdit.q.hotkey)} → pick new mode`
-          : hotkeys.map((h) => `${h.key} ${h.label}`).join("   ");
+          : hotkeys.map((h: any) => `${h.key} ${h.label}`).join("   ");
         lines.push(`  \x1b[1m\x1b[36m${fit(head, 4)}\x1b[0m`);
         if (paramEdit) {
           lines.push(
-            `  \x1b[1m\x1b[36m${fit(hotkeys.map((h) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
+            `  \x1b[1m\x1b[36m${fit(hotkeys.map((h: any) => `${h.key} ${h.label}`).join("   "), 4)}\x1b[0m`,
           );
         }
         lines.push(`  \x1b[90mesc ← back\x1b[0m`);
@@ -254,7 +303,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         if (kind === "launch") {
           // One keypress away from the adapter's full-auto flag — the only
           // confirm in the TUI that guards a launch rather than a deletion.
-          const flag = APP_ADAPTERS[target.cli]?.fullAutoFlag ?? "--dangerously-skip-permissions";
+          const flag = getAdapter(target.cli)?.fullAutoFlag ?? "--dangerously-skip-permissions";
           head = `\x1b[33m⚠ "${provider}" would launch Full-auto (${flag})\x1b[0m — launch?`;
         } else if (kind === "cleanup") {
           head = `Remove ${target.count} dead ${target.count === 1 ? "entry" : "entries"} from Recent?`;
@@ -263,13 +312,17 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         } else {
           head = `Remove "${provider}" from Recent?`;
         }
-        lines.push(`  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`);
+        lines.push(
+          `  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`,
+        );
       } else if (interactive) {
         lines.push("");
         const pinHint = pinOptions ? `   t pin top5` : "";
         const colorHint = canColor ? `   o tag color` : "";
         const statuslineHint = canStatusline ? `   s statusline` : "";
-        lines.push(`  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}${colorHint}${statuslineHint}   esc ← back to CLI`, 4)}\x1b[0m`);
+        lines.push(
+          `  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}${colorHint}${statuslineHint}   esc ← back to CLI`, 4)}\x1b[0m`,
+        );
       } else {
         // CLI layer select mode: optionally show top5 quick-launch region
         if (quickItems.length > 0) {
@@ -282,7 +335,11 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
             // still be wanted) but flag it red and make it non-launchable.
             // A pinned row keeps its manual slot — marked `*` so a persistent
             // pin never reads as "the ranking is broken".
-            const flag = q.dead ? `\x1b[31m ✗ missing\x1b[0m` : q.running ? `\x1b[32m ● live\x1b[0m` : "";
+            const flag = q.dead
+              ? `\x1b[31m ✗ missing\x1b[0m`
+              : q.running
+                ? `\x1b[32m ● live\x1b[0m`
+                : "";
             const pin = q.pinned ? "*" : " ";
             const text = fit(`${q.key} ${pin}${q.label}`, 6);
             if (locked) {
@@ -291,7 +348,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
             } else if (isSel) {
               lines.push(`\x1b[36m❯ ${text}\x1b[0m${flag}`);
             } else {
-              lines.push(`  \x1b[36m${text.slice(0, 1)}\x1b[0m \x1b[90m${text.slice(2)}\x1b[0m${flag}`);
+              lines.push(
+                `  \x1b[36m${text.slice(0, 1)}\x1b[0m \x1b[90m${text.slice(2)}\x1b[0m${flag}`,
+              );
             }
           }
         }
@@ -303,14 +362,15 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         if (quickItems.length === 0 || selected < options.length) {
           parts.push(`⏎/1-${options.length} sel`);
         }
-        if (quickItems.length > 0) parts.push(`${QUICK_KEYS[0]}-${QUICK_KEYS[quickItems.length - 1]} quick`);
+        if (quickItems.length > 0)
+          parts.push(`${QUICK_KEYS[0]}-${QUICK_KEYS[quickItems.length - 1]} quick`);
         if (quickItems.length > 0 && selected >= options.length) {
           if (pinQuick) parts.push("t pin");
           if (canUnpin && quickItems[selected - options.length]?.pinned) parts.push("u unpin");
           if (canEditParam && !quickItems[selected - options.length]?.dead) parts.push("e edit");
           if (canRemove) parts.push("x rm");
         }
-        const deadCount = quickItems.filter((q) => q.dead).length;
+        const deadCount = quickItems.filter((q: any) => q.dead).length;
         if (canCleanup && deadCount > 0) parts.push("c clean");
         parts.push("esc exit");
         lines.push(`  \x1b[90m${fit(parts.join("   "), 4)}\x1b[0m`);
@@ -363,7 +423,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
 
     guard = installTerminalGuard({ cleanup });
 
-    function handleData(data) {
+    function handleData(data: any) {
       const key = data.toString();
       if (key === "\x03") {
         cleanup();
@@ -382,7 +442,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           render(mode);
           return;
         }
-        const hit = hotkeys.find((h) => h.key === key);
+        const hit = hotkeys.find((h: any) => h.key === key);
         if (hit || key === "\r" || key === "\n") {
           const hk = hit ? hit.key : undefined; // ⏎ = Default
           if (paramEdit) {
@@ -432,9 +492,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           render(
             mode,
             slot
-              ? (interactive
+              ? interactive
                 ? `✓ Pinned "${pinTarget.label}" to Recent #${slot} — esc back to CLI to see it`
-                : `✓ Pinned "${pinTarget.label}" to Recent #${slot}`)
+                : `✓ Pinned "${pinTarget.label}" to Recent #${slot}`
               : `✗ Pin failed (history write error)`,
           );
           return;
@@ -447,7 +507,8 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         // cancels. Never launches; every other key is ignored (same stance
         // as pinning) so stray input can't mutate state.
         if (key === "\x1b[A" || key === "k") {
-          colorIndex = (colorIndex - 1 + STATUSLINE_COLOR_CHOICES.length) % STATUSLINE_COLOR_CHOICES.length;
+          colorIndex =
+            (colorIndex - 1 + STATUSLINE_COLOR_CHOICES.length) % STATUSLINE_COLOR_CHOICES.length;
           render(mode);
           return;
         }
@@ -481,7 +542,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         // esc returns. Rows owned by a relay are locked (dimmed) but still
         // navigable, so the user can read what is and is not in effect.
         if (key === "\x1b[A" || key === "k") {
-          statuslineIndex = (statuslineIndex - 1 + STATUSLINE_DISPLAY_ITEMS.length) % STATUSLINE_DISPLAY_ITEMS.length;
+          statuslineIndex =
+            (statuslineIndex - 1 + STATUSLINE_DISPLAY_ITEMS.length) %
+            STATUSLINE_DISPLAY_ITEMS.length;
           render(mode);
           return;
         }
@@ -522,7 +585,13 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           mode = "select";
           if (kind === "launch") {
             cleanup();
-            resolve({ quick: true, cli: target.cli, provider: target.provider, hotkey: target.hotkey, extraArgs: target.extraArgs });
+            resolve({
+              quick: true,
+              cli: target.cli,
+              provider: target.provider,
+              hotkey: target.hotkey,
+              extraArgs: target.extraArgs,
+            });
             return;
           }
           if (kind === "cleanup") {
@@ -538,7 +607,12 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           }
           const ok = opts.onRemove(target.pairKey) !== null;
           if (ok) refreshQuickItems();
-          render(mode, ok ? `✓ Removed "${target.provider}" from Recent` : `✗ Remove failed (history write error)`);
+          render(
+            mode,
+            ok
+              ? `✓ Removed "${target.provider}" from Recent`
+              : `✗ Remove failed (history write error)`,
+          );
           return;
         }
         confirmAction = null;
@@ -565,7 +639,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       // explicit confirmation (one keypress = --dangerously-skip-permissions),
       // everything else launches immediately. Dead wins over the Full-auto
       // confirm — that launch is guaranteed to fail anyway.
-      const tryQuick = (q) => {
+      const tryQuick = (q: any) => {
         selected = options.length + Math.max(0, quickItems.indexOf(q));
         if (q.dead) {
           confirmAction = { kind: "remove", target: q };
@@ -580,7 +654,13 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           return;
         }
         cleanup();
-        resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey, extraArgs: q.extraArgs });
+        resolve({
+          quick: true,
+          cli: q.cli,
+          provider: q.provider,
+          hotkey: q.hotkey,
+          extraArgs: q.extraArgs,
+        });
       };
       if (key === "\r" || key === "\n") {
         // If selection is on a quick item, resolve it as quick-launch —
@@ -599,7 +679,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         return;
       }
       // quick-launch key (top5, CLI layer only)
-      const qHit = quickItems.find((q) => q.key === key);
+      const qHit = quickItems.find((q: any) => q.key === key);
       if (qHit) {
         tryQuick(qHit);
         return;
@@ -628,12 +708,17 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         const q = quickItems[selected - options.length];
         const ok = opts.onUnpin(q.pairKey) !== null;
         if (ok) refreshQuickItems();
-        render(mode, ok ? `✓ Unpinned "${q.provider}" — back to natural ranking` : `✗ Unpin failed (history write error)`);
+        render(
+          mode,
+          ok
+            ? `✓ Unpinned "${q.provider}" — back to natural ranking`
+            : `✗ Unpin failed (history write error)`,
+        );
         return;
       }
       // `c`: bulk-remove every dead entry from Recent (confirm follows)
       if (canCleanup && key === "c") {
-        const deadCount = quickItems.filter((q) => q.dead).length;
+        const deadCount = quickItems.filter((q: any) => q.dead).length;
         if (deadCount > 0) {
           confirmAction = { kind: "cleanup", target: { count: deadCount } };
           mode = "confirm";
@@ -646,9 +731,10 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       // only supplies the Codex notice.
       if (interactive && canStatusline && key === "s" && selected < options.length) {
         statuslineDisplay = opts.getStatuslineDisplay();
-        statuslineRelay = typeof opts.getStatuslineRelay === "function"
-          ? opts.getStatuslineRelay()
-          : { kind: "none", command: null };
+        statuslineRelay =
+          typeof opts.getStatuslineRelay === "function"
+            ? opts.getStatuslineRelay()
+            : { kind: "none", command: null };
         statuslineIndex = 0;
         mode = "statusline";
         render(mode);
@@ -688,7 +774,12 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       }
       if (pinQuick && key === "t" && quickItems.length > 0 && selected >= options.length) {
         const q = quickItems[selected - options.length];
-        pinTarget = { cli: q.cli, providerId: q.providerId, provider: q.provider, label: q.provider };
+        pinTarget = {
+          cli: q.cli,
+          providerId: q.providerId,
+          provider: q.provider,
+          label: q.provider,
+        };
         mode = "pin";
         render(mode);
         return;
@@ -720,7 +811,7 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       }
     }
 
-    const onData = (data) => {
+    const onData = (data: any) => {
       // A throw inside any callback (history write, custom handler, DB read)
       // used to escape the EventEmitter with raw mode still on.
       try {
@@ -734,22 +825,40 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     function cleanup() {
       if (cleaned) return;
       cleaned = true;
-      try { process.stdin.setRawMode(false); } catch {}
-      try { process.stdin.removeListener("data", onData); } catch {}
-      try { process.stdin.removeListener("end", onInputClosed); } catch {}
-      try { process.stdin.removeListener("close", onInputClosed); } catch {}
-      try { process.stdin.removeListener("error", onInputClosed); } catch {}
-      try { process.stdout.removeListener("resize", onResize); } catch {}
+      try {
+        process.stdin.setRawMode(false);
+      } catch {}
+      try {
+        process.stdin.removeListener("data", onData);
+      } catch {}
+      try {
+        process.stdin.removeListener("end", onInputClosed);
+      } catch {}
+      try {
+        process.stdin.removeListener("close", onInputClosed);
+      } catch {}
+      try {
+        process.stdin.removeListener("error", onInputClosed);
+      } catch {}
+      try {
+        process.stdout.removeListener("resize", onResize);
+      } catch {}
       // pause() is required, not just removeListener: stdin is still in
       // flowing mode from the resume() at entry, and a flowing stream with no
       // data listeners keeps READING tty bytes (discarding them) — the spawned
       // CLI would lose keystrokes. Masked for years by spawnSync freezing the
       // event loop; surfaced when launch switched to async spawn.
-      try { process.stdin.pause(); } catch {}
+      try {
+        process.stdin.pause();
+      } catch {}
       if (lastDrawnLines > 0) {
-        try { process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`); } catch {}
+        try {
+          process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
+        } catch {}
       }
-      try { guard?.dispose(); } catch {}
+      try {
+        guard?.dispose();
+      } catch {}
     }
 
     process.stdin.on("data", onData);
@@ -803,8 +912,10 @@ async function runTUI() {
       const { entries, order } = loadHistory();
       // Shared projection with command mode's `switch a|s|d|f|g` — only the
       // ● live marker is TUI-specific.
-      return quickItemsFor(entries, order, aliveByCli)
-        .map((q) => ({ ...q, running: runningSet.has(q.providerId) }));
+      return quickItemsFor(entries, order, aliveByCli).map((q) => ({
+        ...q,
+        running: runningSet.has(q.providerId),
+      }));
     };
 
     const cli = await tuiSelect("Select CLI tool", cliOptions, {
@@ -818,10 +929,10 @@ async function runTUI() {
         { key: "2", label: "Semi-auto" },
         { key: "3", label: "Full-auto ⚠" },
       ],
-      onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
-      onUnpin: (key) => unpinPair(key, aliveByCli),
-      onEditParam: (q, hotkey) => setEntryHotkey(q.pairKey, hotkey, q.cli, aliveByCli),
-      onRemove: (key) => removeHistoryPair(key, aliveByCli),
+      onPin: (item: any, pos: any) => insertManualOrder(item, pos, aliveByCli),
+      onUnpin: (key: any) => unpinPair(key, aliveByCli),
+      onEditParam: (q: any, hotkey: any) => setEntryHotkey(q.pairKey, hotkey, q.cli, aliveByCli),
+      onRemove: (key: any) => removeHistoryPair(key, aliveByCli),
       onCleanup: () => removeAllDeadPairs(aliveByCli),
       onRefreshQuickItems: buildQuickItems,
     });
@@ -830,17 +941,20 @@ async function runTUI() {
     // and replays the recorded argv (falling back to the bare permission flags
     // for pre-extraArgs entries).
     if (cli.quick) {
-      const args = cli.extraArgs.length > 0 ? cli.extraArgs : APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey);
+      const args =
+        cli.extraArgs.length > 0 ? cli.extraArgs : getAdapter(cli.cli)!.permissionArgs(cli.hotkey);
       await launchProvider(cli.cli, launchRefForQuick(cli), args, null, { hotkey: cli.hotkey });
       return;
     }
 
-    const adapter = APP_ADAPTERS[cli.value];
+    const adapter = getAdapter(cli.value);
     if (!adapter) throw new Error(`Unsupported CLI: ${cli.value}`);
 
     const providers = queryProvidersByApp(adapter.appType);
     if (providers.length === 0) {
-      console.error(`✗ No provider config found for ${adapter.appType}. Please configure one in cc-switch first.`);
+      console.error(
+        `✗ No provider config found for ${adapter.appType}. Please configure one in cc-switch first.`,
+      );
       process.exit(1);
     }
     let providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
@@ -861,43 +975,45 @@ async function runTUI() {
     }
     let selected;
     try {
-      selected = await tuiSelect(
-        `Select provider (${adapter.displayName})`,
-        providerOptions,
-        {
-          hotkeys: [
-            { key: "⏎", label: "Default" },
-            { key: "2", label: "Semi-auto" },
-            { key: "3", label: "Full-auto ⚠" },
-          ],
-          interactive: true,
-          pinContext: cli.value,
-          onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
-          // `o` tag color — both CLIs. claude's color is consumed by the
-          // wrapper at prepare time; codex's native status_line has no custom
-          // text/color slot (upstream #17827), so the codex color is consumed
-          // by the tmuxclihook status bar's provider segment instead (same
-          // statusline-preferences.json, per-CLI buckets).
-          colorContext: cli.value,
-          onColor: (target, value) => saveStatuslineColor(cli.value, target.providerId, value),
-          getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
-          // `s` display settings are global; statuslineContext only drives the
-          // Codex notice (Codex has no external statusline command yet).
-          statuslineContext: cli.value,
-          onStatusline: (key, value) => saveStatuslineDisplay(key, value),
-          getStatuslineDisplay: () => loadStatuslineDisplay(),
-          getStatuslineRelay: () => detectStatuslineRelay(),
-        },
-      );
+      selected = await tuiSelect(`Select provider (${adapter.displayName})`, providerOptions, {
+        hotkeys: [
+          { key: "⏎", label: "Default" },
+          { key: "2", label: "Semi-auto" },
+          { key: "3", label: "Full-auto ⚠" },
+        ],
+        interactive: true,
+        pinContext: cli.value,
+        onPin: (item: any, pos: any) => insertManualOrder(item, pos, aliveByCli),
+        // `o` tag color — both CLIs. claude's color is consumed by the
+        // wrapper at prepare time; codex's native status_line has no custom
+        // text/color slot (upstream #17827), so the codex color is consumed
+        // by the tmuxclihook status bar's provider segment instead (same
+        // statusline-preferences.json, per-CLI buckets).
+        colorContext: cli.value,
+        onColor: (target: any, value: any) =>
+          saveStatuslineColor(cli.value, target.providerId, value),
+        getCurrentColor: (target: any) => statuslineColorFor(cli.value, target.providerId),
+        // `s` display settings are global; statuslineContext only drives the
+        // Codex notice (Codex has no external statusline command yet).
+        statuslineContext: cli.value,
+        onStatusline: (key: any, value: any) => saveStatuslineDisplay(key, value),
+        getStatuslineDisplay: () => loadStatuslineDisplay(),
+        getStatuslineRelay: () => detectStatuslineRelay(),
+      });
     } catch (e: any) {
       if (e.message === "BACK_TO_CLI") continue; // esc on provider → back to CLI
       throw e; // Ctrl+C → propagate to main()
     }
     const provider = providers.find((p) => p.id === selected.value);
-    await launchProvider(cli.value, launchRefForRow(provider), adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
+    await launchProvider(
+      cli.value,
+      launchRefForRow(provider),
+      adapter.permissionArgs(selected.hotkey),
+      null,
+      { hotkey: selected.hotkey },
+    );
     return;
   }
 }
-
 
 export { buildStatuslinePanelLines, launchRefForQuick, launchRefForRow, runTUI, tuiSelect };

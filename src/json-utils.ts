@@ -1,6 +1,5 @@
 // ─── json-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-
 // ─── JSON utils (port of Rust json_deep_merge / json_is_subset) ────────
 
 import type { SettingsChange } from "./types.js";
@@ -18,7 +17,7 @@ function isSafeObjectKey(key: any): boolean {
   return !UNSAFE_OBJECT_KEYS.has(String(key));
 }
 function hasOwn(obj: any, key: string): boolean {
-  return  Object.hasOwn(obj, key);
+  return Object.hasOwn(obj, key);
 }
 
 // Parse a DB column that is supposed to hold a JSON object. Missing/empty
@@ -39,11 +38,11 @@ function parseJsonObject(value: any): Record<string, any> | null {
   }
 }
 
-function jsonDeepClone(obj) {
+function jsonDeepClone(obj: any) {
   return JSON.parse(JSON.stringify(obj));
 }
 
-function jsonDeepMerge(target, source) {
+function jsonDeepMerge(target: any, source: any) {
   if (isPlainObject(target) && isPlainObject(source)) {
     for (const [key, sourceValue] of Object.entries(source)) {
       if (!isSafeObjectKey(key)) continue;
@@ -65,7 +64,7 @@ function jsonDeepMerge(target, source) {
 // makes equality deterministic: Date → ISO string, NaN/Infinity → null,
 // top-level undefined → null. Circular structures throw → null (a corrupt
 // document is "no snapshot", never a drift report).
-function jsonNormalize(value) {
+function jsonNormalize(value: any) {
   try {
     return JSON.parse(JSON.stringify(value ?? null));
   } catch {
@@ -82,7 +81,7 @@ function jsonNormalize(value) {
 // Used by the TOML write-back path; jsonDeepMerge keeps its own
 // target-wins contract for providerPatches accumulation — two functions,
 // two contracts, kept separate on purpose.
-function applyMergePatch(target, patch) {
+function applyMergePatch(target: any, patch: any) {
   if (!isPlainObject(patch)) return jsonDeepClone(patch ?? null);
   if (!isPlainObject(target)) target = {};
   for (const [key, value] of Object.entries(patch)) {
@@ -112,7 +111,7 @@ function applyMergePatch(target, patch) {
 // (`x = mergeCommonOverProvider(x, src)`) because the scalar-overwrite
 // branch cannot mutate the caller's binding. source is always a JSON.parse
 // result, so jsonDeepClone (JSON round-trip) is safe on every branch.
-function mergeCommonOverProvider(target, source) {
+function mergeCommonOverProvider(target: any, source: any) {
   if (!isPlainObject(target) || !isPlainObject(source)) {
     return jsonDeepClone(source);
   }
@@ -127,7 +126,7 @@ function mergeCommonOverProvider(target, source) {
   return target;
 }
 
-function jsonIsSubset(target, source) {
+function jsonIsSubset(target: any, source: any): boolean {
   if (isPlainObject(source)) {
     if (!isPlainObject(target)) return false;
     for (const [key, sourceValue] of Object.entries(source)) {
@@ -139,9 +138,7 @@ function jsonIsSubset(target, source) {
   }
   if (Array.isArray(source)) {
     if (!Array.isArray(target)) return false;
-    return source.every((srcItem) =>
-      target.some((tgtItem) => jsonIsSubset(tgtItem, srcItem)),
-    );
+    return source.every((srcItem) => target.some((tgtItem) => jsonIsSubset(tgtItem, srcItem)));
   }
   return target === source;
 }
@@ -155,7 +152,7 @@ function jsonIsSubset(target, source) {
 // (every source item matches SOME target item) would call different arrays
 // equal, which is exactly the false negative the overwrite guard must never
 // produce.
-function deepEqualJson(a, b) {
+function deepEqualJson(a: any, b: any) {
   if (a === b) return true;
   // Arrays: still atomic leaves for DIFF purposes (a changed array is one
   // whole-block change), but equality is CONTENT equality, element-wise —
@@ -198,7 +195,12 @@ function deepEqualJson(a, b) {
 // build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
-function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: string[] = []): SettingsChange[] {
+function diffSettingsLeaves(
+  baseline: any,
+  current: any,
+  prefix = "",
+  segments: string[] = [],
+): SettingsChange[] {
   const changes: SettingsChange[] = [];
   const b = isPlainObject(baseline) ? baseline : {};
   const c = isPlainObject(current) ? current : {};
@@ -230,5 +232,16 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: 
   return changes;
 }
 
-
-export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, isSafeObjectKey, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider, parseJsonObject };
+export {
+  applyMergePatch,
+  deepEqualJson,
+  diffSettingsLeaves,
+  isPlainObject,
+  isSafeObjectKey,
+  jsonDeepClone,
+  jsonDeepMerge,
+  jsonIsSubset,
+  jsonNormalize,
+  mergeCommonOverProvider,
+  parseJsonObject,
+};

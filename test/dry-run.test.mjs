@@ -58,7 +58,11 @@ test("dry-run claude: derives config without touching disk", async () => {
   assert.ok(shown.includes("secret-token"));
 
   assert.equal(existsSync(plan.instanceDir), false, "instance dir not created");
-  assert.equal(existsSync(join(plan.instanceDir, "statusline-wrapper.mjs")), false, "wrapper not written");
+  assert.equal(
+    existsSync(join(plan.instanceDir, "statusline-wrapper.mjs")),
+    false,
+    "wrapper not written",
+  );
   assert.equal(existsSync(HISTORY_PATH), false, "history not written");
   assert.equal(existsSync(SYNC_STATE_PATH), false, "sync state not written");
 });
@@ -77,7 +81,10 @@ test("dry-run --diff: reports changes without modifying the instance file", asyn
   const dir = join(INSTANCES_DIR, "claude", "p1");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "settings.json");
-  writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "old-token", KEEP: "yes" } }, null, 2));
+  writeFileSync(
+    file,
+    JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "old-token", KEEP: "yes" } }, null, 2),
+  );
   const before = readFileSync(file, "utf8");
 
   const plan = await buildDryRunPlan("claude", { name: "Alpha" }, [], { diff: true });

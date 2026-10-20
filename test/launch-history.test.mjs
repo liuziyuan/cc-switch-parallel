@@ -27,10 +27,7 @@ test("keeps session-worthy flags untouched", () => {
 });
 
 test("strips one-shot flags out of a mixed argv", () => {
-  assert.deepEqual(
-    stripOneShotFlags(["--version", "--continue", "--help"]),
-    ["--continue"],
-  );
+  assert.deepEqual(stripOneShotFlags(["--version", "--continue", "--help"]), ["--continue"]);
 });
 
 test("prompt text is an argv element, not a flag — survives", () => {

@@ -1,9 +1,7 @@
 import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  mkdtempSync, mkdirSync, writeFileSync, rmSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -15,7 +13,8 @@ process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
 const { APP_ADAPTERS } = await import("../src/adapters.ts");
-const { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath } = await import("../src/claude-config.ts");
+const { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath } =
+  await import("../src/claude-config.ts");
 
 const CC = join(testHome, ".cc-switch");
 const claude = APP_ADAPTERS.claude;
@@ -34,7 +33,11 @@ function seedInstance(id, doc, raw) {
 // carry only needs providerId, matching its production guard.
 function buildFor(id, settingsConfig, commonSnippet) {
   return buildClaudeEffectiveSettings(
-    settingsConfig, { commonConfigEnabled: true }, commonSnippet, undefined, id,
+    settingsConfig,
+    { commonConfigEnabled: true },
+    commonSnippet,
+    undefined,
+    id,
   );
 }
 
@@ -84,9 +87,7 @@ test("claude model carry: fail-safe when file missing / corrupt / model non-stri
 });
 
 test("claude model carry: providerId undefined skips the carry entirely", () => {
-  const effective = buildClaudeEffectiveSettings(
-    { model: "base" }, {}, "", undefined, undefined,
-  );
+  const effective = buildClaudeEffectiveSettings({ model: "base" }, {}, "", undefined, undefined);
   assert.equal(effective.model, "base");
 });
 
@@ -98,10 +99,13 @@ test("claude model carry: providerId undefined skips the carry entirely", () => 
 const LIVE_STATE_PATH_T = join(CC, "live-state.json");
 function writeLiveState(stack) {
   mkdirSync(CC, { recursive: true });
-  writeFileSync(LIVE_STATE_PATH_T, JSON.stringify({
-    version: 1,
-    apps: { claude: { mode: "proxy", stack } },
-  }));
+  writeFileSync(
+    LIVE_STATE_PATH_T,
+    JSON.stringify({
+      version: 1,
+      apps: { claude: { mode: "proxy", stack } },
+    }),
+  );
 }
 function removeLiveState() {
   rmSync(LIVE_STATE_PATH_T, { force: true });
@@ -112,8 +116,15 @@ function removeLiveState() {
 function captureStderr(fn) {
   const orig = process.stderr.write;
   let buf = "";
-  process.stderr.write = (s) => { buf += s; return true; };
-  try { return { value: fn(), buf }; } finally { process.stderr.write = orig; }
+  process.stderr.write = (s) => {
+    buf += s;
+    return true;
+  };
+  try {
+    return { value: fn(), buf };
+  } finally {
+    process.stderr.write = orig;
+  }
 }
 
 test("claude model carry: dangling ccs model drops when its stack key is gone", () => {
@@ -125,7 +136,10 @@ test("claude model carry: dangling ccs model drops when its stack key is gone", 
   removeLiveState();
   const off = captureStderr(() => buildFor("p-ccs", base, "{}"));
   assert.equal(off.value.model, "fallback-model");
-  assert.ok(off.buf.includes("is no longer in the current aggregation stack"), "fallback note printed");
+  assert.ok(
+    off.buf.includes("is no longer in the current aggregation stack"),
+    "fallback note printed",
+  );
 
   // stack live + key present → the pick holds (no note)
   writeLiveState({ enabled: true, members: ["m1"], keys: { zhipu: "m1" } });
@@ -159,7 +173,8 @@ test("isClaudeRuntimeStatePath: exact model only, modelPicker untouched", () => 
     "env",
     "models",
     "model_x",
-  ]) assert.equal(isClaudeRuntimeStatePath(p), false, p);
+  ])
+    assert.equal(isClaudeRuntimeStatePath(p), false, p);
 });
 
 // ─── upward drift: model is filtered, real config edits still surface ───

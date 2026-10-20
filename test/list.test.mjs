@@ -36,9 +36,15 @@ function setupDB() {
   insert("p1", "claude", "Alpha", { env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" } }, 1);
   insert("p2", "claude", "Dup", { env: {} }, 2);
   insert("p3", "claude", "Dup", { env: {} }, 3, 1);
-  insert("agg", "claude", "Stacky", {
-    env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" },
-  }, 4);
+  insert(
+    "agg",
+    "claude",
+    "Stacky",
+    {
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" },
+    },
+    4,
+  );
   insert("bad", "claude", "Bad", "not-json", 5);
   insert("c1", "codex", "Codex One", { config: 'model = "gpt-5"\n' }, 1);
   insert("c2", "codex", "Codex Bad", { config: "[[[" }, 2);
@@ -47,7 +53,10 @@ function setupDB() {
 test("listProviders: rows, aggregation, availability and ambiguity", () => {
   setupDB();
   const claude = listProviders(["claude"]);
-  assert.deepEqual(claude.map((r) => r.id), ["p1", "p2", "p3", "agg", "bad"]);
+  assert.deepEqual(
+    claude.map((r) => r.id),
+    ["p1", "p2", "p3", "agg", "bad"],
+  );
 
   const alpha = claude.find((r) => r.id === "p1");
   assert.equal(alpha.name, "Alpha");
@@ -85,8 +94,14 @@ test("listProviders: rows, aggregation, availability and ambiguity", () => {
 test("parseListArgs: flags, defaults and errors", () => {
   assert.deepEqual(parseListArgs([]), { json: false, apps: ["claude", "codex"] });
   assert.deepEqual(parseListArgs(["--json", "--app", "codex"]), { json: true, apps: ["codex"] });
-  assert.deepEqual(parseListArgs(["--app=claude", "--app", "codex"]), { json: false, apps: ["claude", "codex"] });
-  assert.deepEqual(parseListArgs(["--app", "claude", "--app", "claude"]), { json: false, apps: ["claude"] });
+  assert.deepEqual(parseListArgs(["--app=claude", "--app", "codex"]), {
+    json: false,
+    apps: ["claude", "codex"],
+  });
+  assert.deepEqual(parseListArgs(["--app", "claude", "--app", "claude"]), {
+    json: false,
+    apps: ["claude"],
+  });
   assert.match(parseListArgs(["--app", "nope"]).error, /unknown app/);
   assert.match(parseListArgs(["--app"]).error, /missing --app value/);
   assert.match(parseListArgs(["--app="]).error, /missing --app value/);
@@ -99,9 +114,18 @@ test("renderListJson: stable envelope", () => {
   const parsed = JSON.parse(renderListJson(rows));
   assert.equal(parsed.version, 1);
   assert.equal(parsed.providers.length, rows.length);
-  assert.deepEqual(
-    Object.keys(parsed.providers[0]),
-    ["app", "id", "name", "kind", "aggregation", "virtual", "current", "members", "available", "issues", "nameAmbiguous"],
-  );
+  assert.deepEqual(Object.keys(parsed.providers[0]), [
+    "app",
+    "id",
+    "name",
+    "kind",
+    "aggregation",
+    "virtual",
+    "current",
+    "members",
+    "available",
+    "issues",
+    "nameAmbiguous",
+  ]);
   rmSync(join(testHome, ".cc-switch"), { recursive: true, force: true });
 });

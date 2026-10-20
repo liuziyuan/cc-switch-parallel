@@ -38,9 +38,15 @@ test("reentrant: an inner call must not release the outer lock", () => {
 
 test("stale: a lock whose owner pid is gone is reclaimed", () => {
   const target = tmpTarget();
-  writeFileSync(`${target}.lock`, JSON.stringify({
-    pid: 999999, host: hostname(), createdAt: Date.now(), nonce: "dead",
-  }));
+  writeFileSync(
+    `${target}.lock`,
+    JSON.stringify({
+      pid: 999999,
+      host: hostname(),
+      createdAt: Date.now(),
+      nonce: "dead",
+    }),
+  );
   const r = withFileLockSync(target, () => "ok");
   assert.deepEqual(r, { acquired: true, value: "ok" });
   assert.equal(existsSync(`${target}.lock`), false);
@@ -49,9 +55,15 @@ test("stale: a lock whose owner pid is gone is reclaimed", () => {
 test("stale: an mtime-expired lock is reclaimed even if the pid is alive", () => {
   const target = tmpTarget();
   const lock = `${target}.lock`;
-  writeFileSync(lock, JSON.stringify({
-    pid: process.pid, host: hostname(), createdAt: 0, nonce: "old",
-  }));
+  writeFileSync(
+    lock,
+    JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      createdAt: 0,
+      nonce: "old",
+    }),
+  );
   const past = new Date(Date.now() - 31_000);
   utimesSync(lock, past, past);
   const r = withFileLockSync(target, () => "ok", { staleMs: 30_000 });
@@ -90,9 +102,15 @@ test("release: a lock replaced by another owner is not deleted", () => {
   const lock = `${target}.lock`;
   withFileLockSync(target, () => {
     unlinkSync(lock);
-    writeFileSync(lock, JSON.stringify({
-      pid: process.pid, host: hostname(), createdAt: Date.now(), nonce: "other-owner",
-    }));
+    writeFileSync(
+      lock,
+      JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        createdAt: Date.now(),
+        nonce: "other-owner",
+      }),
+    );
   });
   assert.equal(existsSync(lock), true, "nonce mismatch preserves the new owner's lock");
   unlinkSync(lock);

@@ -1,6 +1,7 @@
 // ─── stack/usage (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { isPlainObject } from "../json-utils.js";
+import { isLoopbackHost } from "./aggregation.js";
 
 // ─── Provider usage snapshot (app-agnostic, statusline) ───────────────
 // Optional usage segment for the instance statusline wrapper: zhipu/zai
@@ -39,27 +40,27 @@ const USAGE_HOST_MATCHERS = [
 // Authorization with HTTP 200 + {"code":401,"success":false} and only accepts
 // Bearer — verified against a live coding-plan key. bigmodel.cn untested; if
 // it ever needs bare, move authStyle into USAGE_HOST_MATCHERS per host.
-const USAGE_AUTH_STYLE = { zhipu: "bearer", deepseek: "bearer" };
+const USAGE_AUTH_STYLE: Record<string, string> = { zhipu: "bearer", deepseek: "bearer" };
 
 // {baseUrl, token} out of a Claude provider settings_config; null when
 // either is missing (no creds → no usage segment).
-function extractClaudeUsageSource(settingsConfig) {
-  const env = isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
+function extractClaudeUsageSource(settingsConfig: any) {
+  const env =
+    isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
   if (!env) return null;
   const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL.trim() : "";
-  const token = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim()
-    ? env.ANTHROPIC_AUTH_TOKEN.trim()
-    : typeof env.ANTHROPIC_API_KEY === "string" ? env.ANTHROPIC_API_KEY.trim() : "";
+  const token =
+    typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim()
+      ? env.ANTHROPIC_AUTH_TOKEN.trim()
+      : typeof env.ANTHROPIC_API_KEY === "string"
+        ? env.ANTHROPIC_API_KEY.trim()
+        : "";
   if (!baseUrl || !token) return null;
   return { baseUrl, token };
 }
 
-// Loopback check kept local on purpose: importing isLoopbackBaseUrl from
-// stack/state.ts would create a state → usage → state cycle. Same host set.
-function isLoopbackHost(hostname) {
-  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
-  return host === "127.0.0.1" || host === "localhost" || host === "::1";
-}
+// Loopback check shared with the aggregation primitives (aggregation.ts is a
+// leaf module, so this no longer needs a local copy to avoid a cycle).
 
 // Query endpoint for a kind, derived from the provider's own base-url
 // origin (https://api.z.ai/api/anthropic → https://api.z.ai/api/monitor/…;
@@ -68,10 +69,15 @@ function isLoopbackHost(hostname) {
 // than https is rejected — except plain http to a loopback host, which is
 // the local-proxy case. URL.origin is the string "null" for non-special
 // schemes (file:, ftp: …); the protocol check below rejects those.
-function usageEndpointFor(kind, baseUrl) {
+function usageEndpointFor(kind: any, baseUrl: any) {
   let url;
-  try { url = new URL(baseUrl); } catch { return null; }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHost(url.hostname))) return null;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHost(url.hostname)))
+    return null;
   const origin = url.origin;
   if (kind === "zhipu") return origin + "/api/monitor/usage/quota/limit";
   if (kind === "deepseek") return origin + "/user/balance";
@@ -84,7 +90,7 @@ function usageEndpointFor(kind, baseUrl) {
 // never guesses — it falls through to host matching. meta.usage_script with
 // enabled === false is an explicit opt-out; a non-empty custom `code` means
 // the desktop app runs user JS we cannot replicate, so we stay out.
-function resolveUsageIdentity(settingsConfig, meta) {
+function resolveUsageIdentity(settingsConfig: any, meta: any) {
   const usage = isPlainObject(meta) && isPlainObject(meta.usage_script) ? meta.usage_script : null;
   if (usage) {
     if (usage.enabled === false) return null;
@@ -93,23 +99,41 @@ function resolveUsageIdentity(settingsConfig, meta) {
   const source = extractClaudeUsageSource(settingsConfig);
   if (!source) return null;
   let host = "";
-  try { host = new URL(source.baseUrl).hostname.toLowerCase(); } catch { return null; }
-  const matched = USAGE_HOST_MATCHERS.find((m) => host === m.suffix || host.endsWith("." + m.suffix));
-  const explicit = usage && typeof usage.codingPlanProvider === "string" ? usage.codingPlanProvider.trim().toLowerCase() : "";
-  const kind = (explicit && USAGE_AUTH_STYLE[explicit] ? explicit : "") || (matched ? matched.kind : "");
+  try {
+    host = new URL(source.baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const matched = USAGE_HOST_MATCHERS.find(
+    (m) => host === m.suffix || host.endsWith("." + m.suffix),
+  );
+  const explicit =
+    usage && typeof usage.codingPlanProvider === "string"
+      ? usage.codingPlanProvider.trim().toLowerCase()
+      : "";
+  const kind =
+    (explicit && USAGE_AUTH_STYLE[explicit] ? explicit : "") || (matched ? matched.kind : "");
   if (!kind) return null;
   const endpoint = usageEndpointFor(kind, source.baseUrl);
   if (!endpoint) return null;
   const intervalRaw = Number(usage && usage.autoQueryInterval);
-  const intervalMin = Number.isFinite(intervalRaw) && intervalRaw >= 1 ? Math.min(Math.round(intervalRaw), 60) : 5;
-  return { kind, baseUrl: source.baseUrl, token: source.token, authStyle: USAGE_AUTH_STYLE[kind], intervalMin, endpoint };
+  const intervalMin =
+    Number.isFinite(intervalRaw) && intervalRaw >= 1 ? Math.min(Math.round(intervalRaw), 60) : 5;
+  return {
+    kind,
+    baseUrl: source.baseUrl,
+    token: source.token,
+    authStyle: USAGE_AUTH_STYLE[kind],
+    intervalMin,
+    endpoint,
+  };
 }
 
 // Serializable runtime config inlined into the wrapper. Deterministic in
 // (identity, cachePath, selfPath) — prepare and the guard's
 // computeEffectiveSettings get the same inputs, so the generated wrapper is
 // identical on both paths [C3].
-function buildUsageQueryConfig(identity, cachePath, selfPath) {
+function buildUsageQueryConfig(identity: any, cachePath: any, selfPath: any) {
   if (!identity) return null;
   return {
     kind: identity.kind,
@@ -126,5 +150,12 @@ function buildUsageQueryConfig(identity, cachePath, selfPath) {
   };
 }
 
-
-export { USAGE_AUTH_STYLE, USAGE_CACHE_FILENAME, USAGE_HOST_MATCHERS, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor };
+export {
+  USAGE_AUTH_STYLE,
+  USAGE_CACHE_FILENAME,
+  USAGE_HOST_MATCHERS,
+  buildUsageQueryConfig,
+  extractClaudeUsageSource,
+  resolveUsageIdentity,
+  usageEndpointFor,
+};

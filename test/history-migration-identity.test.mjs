@@ -24,18 +24,29 @@ function setup() {
     settings_config TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '{}',
     is_current BOOLEAN NOT NULL DEFAULT 0, created_at INTEGER, sort_index INTEGER,
     PRIMARY KEY (id, app_type));`);
-  for (const [id, name] of [["a-dup", "Dup"], ["z-dup", "Dup"], ["solo", "Solo"]]) {
+  for (const [id, name] of [
+    ["a-dup", "Dup"],
+    ["z-dup", "Dup"],
+    ["solo", "Solo"],
+  ]) {
     sql(`INSERT OR REPLACE INTO providers (id, app_type, name, settings_config, created_at)
       VALUES ('${id}', 'claude', '${name}', '{}', 1);`);
   }
-  writeFileSync(HISTORY_PATH, JSON.stringify({
-    version: 1,
-    entries: [
-      { cli: "claude", provider: "Dup", extraArgs: [], count: 3, lastUsed: 1 },
-      { cli: "claude", provider: "Solo", extraArgs: [], count: 2, lastUsed: 2 },
-    ],
-    order: ["claude|Dup", null, null, null, null],
-  }, null, 2));
+  writeFileSync(
+    HISTORY_PATH,
+    JSON.stringify(
+      {
+        version: 1,
+        entries: [
+          { cli: "claude", provider: "Dup", extraArgs: [], count: 3, lastUsed: 1 },
+          { cli: "claude", provider: "Solo", extraArgs: [], count: 2, lastUsed: 2 },
+        ],
+        order: ["claude|Dup", null, null, null, null],
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 test("v1 migration: unique names bind, duplicate names stay unbound + warn once", () => {

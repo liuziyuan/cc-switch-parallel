@@ -4,7 +4,11 @@ import { readFileSync } from "node:fs";
 import { withFileLockSync } from "./file-lock.js";
 import { atomicWrite } from "./fs-utils.js";
 import { isPlainObject } from "./json-utils.js";
-import { GLOBAL_CLAUDE_SETTINGS_PATH, STATUSLINE_PREFS_PATH, STATUSLINE_PREFS_VERSION } from "./paths.js";
+import {
+  GLOBAL_CLAUDE_SETTINGS_PATH,
+  STATUSLINE_PREFS_PATH,
+  STATUSLINE_PREFS_VERSION,
+} from "./paths.js";
 
 // ─── Statusline tag colors (TUI preference) ────────────────────────────
 // The wrapper's provider tag color: "auto" (FNV-1a by name, the default) or
@@ -34,9 +38,8 @@ const STATUSLINE_COLOR_CHOICES = [
   { value: "97", label: "bright white", swatch: "\x1b[97m" },
 ];
 
-function isValidStatuslineColor(v) {
-  return typeof v === "string"
-    && (v === "auto" || /^(3[0-7]|9[0-7])$/.test(v));
+function isValidStatuslineColor(v: any) {
+  return typeof v === "string" && (v === "auto" || /^(3[0-7]|9[0-7])$/.test(v));
 }
 
 function loadStatuslinePreferences() {
@@ -54,7 +57,7 @@ function loadStatuslinePreferences() {
   }
 }
 
-function statuslineColorFor(cli, providerId) {
+function statuslineColorFor(cli: any, providerId: any) {
   try {
     const v = loadStatuslinePreferences()?.colors?.[cli]?.[providerId];
     return isValidStatuslineColor(v) ? v : "auto";
@@ -63,13 +66,16 @@ function statuslineColorFor(cli, providerId) {
   }
 }
 
-function saveStatuslineColor(cli, providerId, value) {
+function saveStatuslineColor(cli: any, providerId: any, value: any) {
   if (!isValidStatuslineColor(value)) return null;
   try {
     const result = withFileLockSync(STATUSLINE_PREFS_PATH, () => {
       // Re-read inside the lock: another TUI may have saved a different
       // provider's color since this process's last load.
-      const prefs = loadStatuslinePreferences() || { version: STATUSLINE_PREFS_VERSION, colors: {} };
+      const prefs = loadStatuslinePreferences() || {
+        version: STATUSLINE_PREFS_VERSION,
+        colors: {},
+      };
       prefs.version = STATUSLINE_PREFS_VERSION;
       prefs.colors = isPlainObject(prefs.colors) ? prefs.colors : {};
       prefs.colors[cli] = isPlainObject(prefs.colors[cli]) ? prefs.colors[cli] : {};
@@ -131,10 +137,17 @@ const STATUSLINE_DISPLAY_ITEMS = [
 // The full boolean surface of the schema (the TUI exposes a subset; the rest
 // are settable by hand once written).
 const DISPLAY_BOOLEAN_KEYS = new Set([
-  "display.showModel", "display.showProject", "display.showContext",
-  "display.showContextBar", "display.showUsage", "display.usageBarEnabled",
-  "display.showTokenBreakdown", "gitStatus.enabled", "gitStatus.showDirty",
-  "gitStatus.showAheadBehind", "gitStatus.showFileStats",
+  "display.showModel",
+  "display.showProject",
+  "display.showContext",
+  "display.showContextBar",
+  "display.showUsage",
+  "display.usageBarEnabled",
+  "display.showTokenBreakdown",
+  "gitStatus.enabled",
+  "gitStatus.showDirty",
+  "gitStatus.showAheadBehind",
+  "gitStatus.showFileStats",
 ]);
 
 const CONTEXT_VALUE_MODES = ["percent", "tokens", "remaining", "both"];
@@ -142,15 +155,15 @@ const USAGE_VALUE_MODES = ["percent", "remaining"];
 const MODEL_FORMATS = ["full", "compact", "short"];
 const PATH_LEVELS = [1, 2, 3, "full"];
 
-function boolOr(value, fallback) {
+function boolOr(value: any, fallback: any) {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function oneOf(value, allowed, fallback) {
+function oneOf(value: any, allowed: any, fallback: any) {
   return allowed.includes(value) ? value : fallback;
 }
 
-function normalizeDisplayPreferences(prefs) {
+function normalizeDisplayPreferences(prefs: any) {
   const d = isPlainObject(prefs?.display) ? prefs.display : {};
   const g = isPlainObject(prefs?.gitStatus) ? prefs.gitStatus : {};
   const defaults = DISPLAY_DEFAULTS;
@@ -181,7 +194,7 @@ function loadStatuslineDisplay() {
   return normalizeDisplayPreferences(loadStatuslinePreferences());
 }
 
-function setPath(obj, path, value) {
+function setPath(obj: any, path: any, value: any) {
   const parts = path.split(".");
   let cur = obj;
   for (let i = 0; i < parts.length - 1; i++) {
@@ -191,12 +204,15 @@ function setPath(obj, path, value) {
   cur[parts[parts.length - 1]] = value;
 }
 
-function saveStatuslineDisplay(key, value) {
+function saveStatuslineDisplay(key: any, value: any) {
   if (!DISPLAY_BOOLEAN_KEYS.has(key) || typeof value !== "boolean") return null;
   try {
     const result = withFileLockSync(STATUSLINE_PREFS_PATH, () => {
       // Re-read inside the lock so a concurrent color save is never lost.
-      const prefs = loadStatuslinePreferences() || { version: STATUSLINE_PREFS_VERSION, colors: {} };
+      const prefs = loadStatuslinePreferences() || {
+        version: STATUSLINE_PREFS_VERSION,
+        colors: {},
+      };
       prefs.version = STATUSLINE_PREFS_VERSION;
       setPath(prefs, key, value);
       atomicWrite(STATUSLINE_PREFS_PATH, JSON.stringify(prefs, null, 2));
@@ -216,9 +232,10 @@ function detectStatuslineRelay() {
   try {
     const settings = JSON.parse(readFileSync(GLOBAL_CLAUDE_SETTINGS_PATH, "utf8"));
     const sl = settings?.statusLine;
-    const cmd = isPlainObject(sl) && sl.type === "command" && typeof sl.command === "string"
-      ? sl.command.trim()
-      : "";
+    const cmd =
+      isPlainObject(sl) && sl.type === "command" && typeof sl.command === "string"
+        ? sl.command.trim()
+        : "";
     if (!cmd || cmd.includes("statusline-wrapper.mjs")) return { kind: "none", command: null };
     return {
       kind: cmd.toLowerCase().includes("claude-hud") ? "claude-hud" : "other",
@@ -235,4 +252,15 @@ function detectStatuslineRelay() {
 // resolve). A missing snapshot (cli unknown or DB unavailable) means "all
 // alive" — fail open, same stance as the old existingProviders.
 
-export { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRelay, isValidStatuslineColor, loadStatuslineDisplay, loadStatuslinePreferences, normalizeDisplayPreferences, saveStatuslineColor, saveStatuslineDisplay, statuslineColorFor };
+export {
+  STATUSLINE_COLOR_CHOICES,
+  STATUSLINE_DISPLAY_ITEMS,
+  detectStatuslineRelay,
+  isValidStatuslineColor,
+  loadStatuslineDisplay,
+  loadStatuslinePreferences,
+  normalizeDisplayPreferences,
+  saveStatuslineColor,
+  saveStatuslineDisplay,
+  statuslineColorFor,
+};

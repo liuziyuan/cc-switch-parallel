@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { DB_PATH, SETTINGS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
-import { appendVirtualStackRow, virtualStackProviderFor } from "./stack/state.js";
+import { appendVirtualStackRowCore, virtualStackProviderForCore } from "./stack/virtual-row.js";
 import type { ProviderRow } from "./types.js";
 
 // ─── DB queries ───────────────────────────────────────────────────────
@@ -47,6 +47,26 @@ function sqlQuote(str: string): string {
   return "'" + String(str).replace(/'/g, "''") + "'";
 }
 
+// Provider names already in the DB for this app — injected into the virtual
+// row derivation so this module does not have to import stack/state.
+function takenProviderNames(appType: string): string[] {
+  try {
+    return queryDB(`SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`).map(
+      (r) => r.name,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function virtualProvider(appType: string) {
+  return virtualStackProviderForCore(appType, takenProviderNames(appType));
+}
+
+function appendVirtualStackRow(rows: any[], appType: string) {
+  return appendVirtualStackRowCore(rows, appType, takenProviderNames(appType));
+}
+
 // All DB providers matching a name, ordered by id. Names are NOT unique in
 // the cc-switch DB, so launch/customize must use this instead of taking the
 // first row blindly. The virtual aggregation entry answers only when the DB
@@ -60,10 +80,12 @@ function queryProviderMatches(name: string, appType: string): ProviderRow[] {
   // under its own (collision-dodged) display name. Fail-open on derive trouble.
   try {
     if (VIRTUAL_STACK_APPS.has(appType)) {
-      const v = virtualStackProviderFor(appType);
+      const v = virtualProvider(appType);
       if (v && v.name === name) return [v];
     }
-  } catch { /* fall through to [] */ }
+  } catch {
+    /* fall through to [] */
+  }
   return [];
 }
 
@@ -77,9 +99,11 @@ function queryProviderById(id: string, appType: string): ProviderRow | null {
   if (rows[0]) return rows[0];
   try {
     if (id === VIRTUAL_STACK_PROVIDER_ID && VIRTUAL_STACK_APPS.has(appType)) {
-      return virtualStackProviderFor(appType);
+      return virtualProvider(appType);
     }
-  } catch { /* fall through to null */ }
+  } catch {
+    /* fall through to null */
+  }
   return null;
 }
 
@@ -96,9 +120,15 @@ function queryProvidersByApp(appType: string): ProviderRow[] {
 // (every live entry would be marked dead) and the TUI's alive snapshot
 // (every Recent row would be flagged ✗ missing).
 function queryProvidersStrict(appType: string): ProviderRow[] {
-  const json = execFileSync("sqlite3", ["-json", DB_PATH,
-    `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
-  ], { encoding: "utf8", timeout: DB_PROC_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
+  const json = execFileSync(
+    "sqlite3",
+    [
+      "-json",
+      DB_PATH,
+      `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
+    ],
+    { encoding: "utf8", timeout: DB_PROC_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] },
+  );
   // Virtual row merges ONLY onto a successful read — a DB failure must
   // propagate untouched so history migration / alive snapshots stay honest.
   return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
@@ -136,7 +166,7 @@ function readSchemaUserVersion(): number | null {
   }
 }
 
-function queryCommonConfig(appType) {
+function queryCommonConfig(appType: any) {
   const key = `common_config_${appType}`;
   const rows = queryDB(`SELECT value FROM settings WHERE key = ${sqlQuote(key)}`);
   return rows[0]?.value || null;
@@ -147,7 +177,7 @@ function queryCommonConfig(appType) {
 // are left untouched). A single UPDATE is atomic, so concurrent launches can't
 // lose updates on disjoint keys. Only updates an existing row — never creates
 // the common config if absent.
-function patchCommonConfigClaude(patchObj) {
+function patchCommonConfigClaude(patchObj: any) {
   const key = "common_config_claude";
   const patchLit = sqlQuote(JSON.stringify(patchObj));
   execDB(
@@ -160,11 +190,11 @@ function patchCommonConfigClaude(patchObj) {
 // target is providers.settings_config, a TEXT column holding JSON). A single
 // UPDATE is atomic, so concurrent launches can't lose updates on disjoint
 // keys. Only updates an existing row — never INSERTs a provider.
-function patchProviderSettingsConfig(providerId, appType, patchObj) {
+function patchProviderSettingsConfig(providerId: any, appType: any, patchObj: any) {
   const patchLit = sqlQuote(JSON.stringify(patchObj));
   execDB(
     `UPDATE providers SET settings_config = json_patch(settings_config, json(${patchLit})) ` +
-    `WHERE id = ${sqlQuote(providerId)} AND app_type = ${sqlQuote(appType)}`,
+      `WHERE id = ${sqlQuote(providerId)} AND app_type = ${sqlQuote(appType)}`,
   );
 }
 
@@ -178,5 +208,20 @@ function loadSettings() {
   }
 }
 
-
-export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProviderById, queryProviderMatches, queryProviderRowsByApp, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };
+export {
+  DB_BUSY_TIMEOUT_MS,
+  DB_PROC_TIMEOUT_MS,
+  execDB,
+  loadSettings,
+  patchCommonConfigClaude,
+  patchProviderSettingsConfig,
+  queryCommonConfig,
+  queryDB,
+  queryProviderById,
+  queryProviderMatches,
+  queryProviderRowsByApp,
+  queryProvidersByApp,
+  queryProvidersStrict,
+  readSchemaUserVersion,
+  sqlQuote,
+};

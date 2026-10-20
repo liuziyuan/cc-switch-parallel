@@ -1,10 +1,7 @@
 import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync,
-  existsSync, rmSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -18,9 +15,15 @@ process.env.CC_SWITCH_TEST_HOME = testHome;
 const { APP_ADAPTERS } = await import("../src/adapters.ts");
 const { deepEqualJson } = await import("../src/json-utils.ts");
 const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
-const { buildStatusLineWrapperScript, isStatusLineChannelPath, claudeProviderName } = await import("../src/statusline.ts");
-const { statuslineColorFor, saveStatuslineColor, loadStatuslinePreferences } = await import("../src/statusline-colors.ts");
-const { applyCodexStatusLineInjection, isCodexStatusLineChannelPath } = await import("../src/stack/catalog.ts");
+const { buildStatusLineWrapperScript, isStatusLineChannelPath, claudeProviderName } = await import(
+  "../src/statusline.ts"
+);
+const { statuslineColorFor, saveStatuslineColor, loadStatuslinePreferences } = await import(
+  "../src/statusline-colors.ts"
+);
+const { applyCodexStatusLineInjection, isCodexStatusLineChannelPath } = await import(
+  "../src/stack/catalog.ts"
+);
 
 const CC = join(testHome, ".cc-switch");
 const INSTANCES = join(CC, "instances", "claude");
@@ -91,7 +94,10 @@ test("injection: carries refreshInterval/padding through an upgrade", () => {
   // display fields, and stay idempotent.
   const again = buildClaudeEffectiveSettings(
     { statusLine: { type: "command", command, refreshInterval: 5 } },
-    {}, "", "Prov", "p-upgrade",
+    {},
+    "",
+    "Prov",
+    "p-upgrade",
   );
   assert.equal(again.statusLine.type, "command");
   assert.equal(again.statusLine.command, command);
@@ -107,7 +113,11 @@ test("injection: user-authored statusLine becomes the wrapper's relay source", (
   cleanInstance("p-user");
   const userLine = { type: "command", command: "echo my-own-statusline", refreshInterval: 9 };
   const effective = buildClaudeEffectiveSettings(
-    { statusLine: userLine }, {}, "", "Prov", "p-user",
+    { statusLine: userLine },
+    {},
+    "",
+    "Prov",
+    "p-user",
   );
   // injected: the entry now points at the wrapper, display fields kept
   assert.equal(effective.statusLine.type, "command");
@@ -122,7 +132,11 @@ test("injection: malformed explicit statusLine (missing/blank command) still inj
   // command missing entirely
   cleanInstance("p-malformed");
   const e1 = buildClaudeEffectiveSettings(
-    { statusLine: { type: "command" } }, {}, "", "Prov", "p-malformed",
+    { statusLine: { type: "command" } },
+    {},
+    "",
+    "Prov",
+    "p-malformed",
   );
   assert.ok(e1.statusLine.command.includes("statusline-wrapper.mjs"));
   assert.equal(e1.statusLine.type, "command");
@@ -134,12 +148,14 @@ test("injection: malformed explicit statusLine (missing/blank command) still inj
   // whitespace-only command — same treatment
   cleanInstance("p-blank");
   const e2 = buildClaudeEffectiveSettings(
-    { statusLine: { type: "command", command: "   " } }, {}, "", "Prov", "p-blank",
+    { statusLine: { type: "command", command: "   " } },
+    {},
+    "",
+    "Prov",
+    "p-blank",
   );
   assert.ok(e2.statusLine.command.includes("statusline-wrapper.mjs"));
-  assert.ok(
-    readFileSync(instanceFile("p-blank"), "utf8").includes("const RELAY_COMMAND = null"),
-  );
+  assert.ok(readFileSync(instanceFile("p-blank"), "utf8").includes("const RELAY_COMMAND = null"));
 });
 
 test("injection: skipped when no provider identity is passed", () => {
@@ -161,9 +177,7 @@ test("claudeProviderName: falls back to the id without a DB", () => {
 test("guard consistency: prepare's file equals computeEffectiveSettings", () => {
   cleanInstance("p-consistent");
   const config = { env: { ANTHROPIC_BASE_URL: "https://example.com" }, model: "opus" };
-  claude.prepare(
-    join(INSTANCES, "p-consistent"), "p-consistent", config, {}, "", "", {},
-  );
+  claude.prepare(join(INSTANCES, "p-consistent"), "p-consistent", config, {}, "", "", {});
   const onDisk = claude.readInstanceSettingsSnapshot(join(INSTANCES, "p-consistent"));
   const recomputed = claude.computeEffectiveSettings(config, {}, "", "", "p-consistent", {});
   assert.ok(deepEqualJson(onDisk, recomputed));
@@ -173,10 +187,11 @@ test("guard consistency: prepare's file equals computeEffectiveSettings", () => 
 // ─── wrapper behaviour (end-to-end) ───────────────────────────────────
 
 function runWrapper(providerId, stdinJson) {
-  return spawnSync(
-    process.execPath, [instanceFile(providerId)],
-    { input: stdinJson ?? JSON.stringify({ session_id: "s1", model: { display_name: "Opus" } }), encoding: "utf8", timeout: 15000 },
-  );
+  return spawnSync(process.execPath, [instanceFile(providerId)], {
+    input: stdinJson ?? JSON.stringify({ session_id: "s1", model: { display_name: "Opus" } }),
+    encoding: "utf8",
+    timeout: 15000,
+  });
 }
 
 test("wrapper source: TTY stdin is not read; relay is killed with SIGKILL", () => {
@@ -218,10 +233,7 @@ test("wrapper: model-led line glues the tag — [provider][model]", () => {
   const r = runWrapper("p-glue", JSON.stringify({ model: { display_name: "Opus" } }));
   assert.equal(r.status, 0, r.stderr);
   const firstLine = r.stdout.split("\n")[0];
-  assert.ok(
-    firstLine.endsWith("Zhipu GLM en]\x1b[0m[Opus] │ proj"),
-    firstLine,
-  );
+  assert.ok(firstLine.endsWith("Zhipu GLM en]\x1b[0m[Opus] │ proj"), firstLine);
 });
 
 test("wrapper: glue works behind the relay's own ANSI codes (claude-hud shape)", () => {
@@ -237,10 +249,7 @@ test("wrapper: glue works behind the relay's own ANSI codes (claude-hud shape)",
   const firstLine = r.stdout.split("\n")[0];
   // tag sits at the very front, ahead of the relay's reset/color codes
   assert.ok(firstLine.startsWith("\x1b[1m\x1b["));
-  assert.ok(
-    firstLine.endsWith("Zhipu GLM en]\x1b[0m\x1b[0m\x1b[36m[Opus] │ proj"),
-    firstLine,
-  );
+  assert.ok(firstLine.endsWith("Zhipu GLM en]\x1b[0m\x1b[0m\x1b[36m[Opus] │ proj"), firstLine);
 });
 
 test("wrapper: glue walks past leading indent (real claude-hud output)", () => {
@@ -258,10 +267,7 @@ test("wrapper: glue walks past leading indent (real claude-hud output)", () => {
   assert.equal(r.status, 0, r.stderr);
   const firstLine = r.stdout.split("\n")[0];
   // glued tag, relay's leading indent dropped
-  assert.ok(
-    firstLine.endsWith("Zhipu GLM en]\x1b[0m[glm-5.3-flash[1m]] │ proj"),
-    firstLine,
-  );
+  assert.ok(firstLine.endsWith("Zhipu GLM en]\x1b[0m[glm-5.3-flash[1m]] │ proj"), firstLine);
 });
 
 test("wrapper: JSON-bearing line with model name inside does not glue", () => {
@@ -302,7 +308,10 @@ test("wrapper: per-provider colors are stable and do not collide on real names",
     // Evaluate the FNV-1a hash the same way the wrapper does.
     let hash = 2166136261;
     const provider = readFileSync(instanceFile(id), "utf8").match(/^const PROVIDER = "(.*)";$/m)[1];
-    for (const ch of provider) { hash ^= ch.codePointAt(0); hash = Math.imul(hash, 16777619) >>> 0; }
+    for (const ch of provider) {
+      hash ^= ch.codePointAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
     return [96, 92, 93, 95, 94, 91][hash % 6];
   };
   assert.notEqual(colorOf("p-col-a"), colorOf("p-col-b"));
@@ -363,7 +372,10 @@ test("wrapper: inlined RELAY_COMMAND (from cc-switch config) beats the global st
   writeGlobalSettings({ type: "command", command: "echo GLOBAL-SOURCE" });
   buildClaudeEffectiveSettings(
     { statusLine: { type: "command", command: "echo RELAY-SOURCE" } },
-    {}, "", "Prov", "p-relay",
+    {},
+    "",
+    "Prov",
+    "p-relay",
   );
 
   const r = runWrapper("p-relay", "{}");
@@ -377,7 +389,10 @@ test("wrapper: RELAY_COMMAND works even without a global settings file", () => {
   rmSync(GLOBAL_SETTINGS, { force: true });
   buildClaudeEffectiveSettings(
     { statusLine: { type: "command", command: "echo ONLY-RELAY" } },
-    {}, "", "Prov", "p-relay-noglobal",
+    {},
+    "",
+    "Prov",
+    "p-relay-noglobal",
   );
 
   const r = runWrapper("p-relay-noglobal", "{}");
@@ -428,7 +443,7 @@ test("codex injection: explicit user values win (fill-if-absent)", () => {
 });
 
 test("codex injection: status_line = [] opts out entirely", () => {
-  const cfg = { config: '[tui]\nstatus_line = []\n' };
+  const cfg = { config: "[tui]\nstatus_line = []\n" };
   const tree = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
   assert.deepEqual(tree.tui.status_line, []);
 });
@@ -447,7 +462,7 @@ test("codex channel: owns the tui.status_line subtree only", () => {
 test("codex guard consistency: prepare's file equals computeEffectiveSettings", () => {
   const dir = join(CC, "instances", "codex", "p-cx-consistent");
   mkdirSync(dir, { recursive: true });
-  const cfg = { config: '[tui]\nnotifications = true\n', auth: {} };
+  const cfg = { config: "[tui]\nnotifications = true\n", auth: {} };
   codex.prepare(dir, "p-cx-consistent", cfg, {}, "", "", {});
   const onDisk = codex.readInstanceSettingsSnapshot(dir);
   const recomputed = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx-consistent", {});
@@ -458,7 +473,7 @@ test("codex guard consistency: prepare's file equals computeEffectiveSettings", 
 });
 
 test("codex purity: two computations of the same input are identical", () => {
-  const cfg = { config: "model = \"x\"\n", auth: {} };
+  const cfg = { config: 'model = "x"\n', auth: {} };
   const a = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
   const b = codex.computeEffectiveSettings(cfg, {}, "", "", "p-cx", {});
   assert.ok(deepEqualJson(a, b));
@@ -472,7 +487,10 @@ test("tag color: default is auto and unknown codes fall back to auto", () => {
   mkdirSync(CC, { recursive: true });
   writeFileSync(join(CC, "statusline-preferences.json"), "{ not json");
   assert.equal(statuslineColorFor("claude", "p-x"), "auto");
-  assert.equal(buildStatusLineWrapperScript("Prov", GLOBAL_SETTINGS).includes('const COLOR = "auto"'), true);
+  assert.equal(
+    buildStatusLineWrapperScript("Prov", GLOBAL_SETTINGS).includes('const COLOR = "auto"'),
+    true,
+  );
 });
 
 test("tag color: save/load round-trip drives the wrapper's COLOR constant", () => {
@@ -485,10 +503,11 @@ test("tag color: save/load round-trip drives the wrapper's COLOR constant", () =
     "wrapper inlines the chosen color",
   );
   // e2e: fixed color reaches the tag, no hashing
-  const r = spawnSync(
-    process.execPath, [instanceFile("p-color")],
-    { input: "{}", encoding: "utf8", timeout: 15000 },
-  );
+  const r = spawnSync(process.execPath, [instanceFile("p-color")], {
+    input: "{}",
+    encoding: "utf8",
+    timeout: 15000,
+  });
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.startsWith("\x1b[1m\x1b[91m[Prov]"), r.stdout);
 });

@@ -6,7 +6,6 @@
     "moduleResolution": "Bundler",
     "types": ["node"],
     "strict": true,
-    "noImplicitAny": false,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,

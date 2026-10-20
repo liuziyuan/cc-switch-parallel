@@ -24,14 +24,28 @@ function isVoltaManagedInstall() {
 function readInstalledVersion() {
   let pkgJsonPath: string | null = null;
   if (isVoltaManagedInstall()) {
-    pkgJsonPath = join(HOME, ".volta", "tools", "image", "packages", NPM_PACKAGE_NAME,
-      "lib", "node_modules", NPM_PACKAGE_NAME, "package.json");
+    pkgJsonPath = join(
+      HOME,
+      ".volta",
+      "tools",
+      "image",
+      "packages",
+      NPM_PACKAGE_NAME,
+      "lib",
+      "node_modules",
+      NPM_PACKAGE_NAME,
+      "package.json",
+    );
   } else {
     try {
-      pkgJsonPath = join(execSync("npm root -g", {
-        encoding: "utf8",
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim(), NPM_PACKAGE_NAME, "package.json");
+      pkgJsonPath = join(
+        execSync("npm root -g", {
+          encoding: "utf8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim(),
+        NPM_PACKAGE_NAME,
+        "package.json",
+      );
     } catch {}
   }
   try {
@@ -43,13 +57,15 @@ function readInstalledVersion() {
 
 // Shared tail for both update paths: confirm against what is really on disk,
 // and fail loudly (non-zero) when the disk still disagrees.
-function reportUpdateOutcome(latestVersion) {
+function reportUpdateOutcome(latestVersion: any) {
   const installed = readInstalledVersion();
   if (installed === latestVersion) {
     console.log(`✓ Updated to v${latestVersion}`);
     process.exit(0);
   }
-  console.error(`⚠ Update command finished, but the install on disk reads v${installed ?? "unknown"} — restart your terminal and run \`switch update\` again if it still shows the old version.`);
+  console.error(
+    `⚠ Update command finished, but the install on disk reads v${installed ?? "unknown"} — restart your terminal and run \`switch update\` again if it still shows the old version.`,
+  );
   process.exit(1);
 }
 
@@ -87,7 +103,9 @@ async function runUpdate() {
   if (isVoltaManagedInstall()) {
     const r = spawnSync("volta", ["install", `${NPM_PACKAGE_NAME}@latest`], { stdio: "inherit" });
     if (r.status !== 0) {
-      console.error(`✗ Update failed — try running \`volta install ${NPM_PACKAGE_NAME}@latest\` manually.`);
+      console.error(
+        `✗ Update failed — try running \`volta install ${NPM_PACKAGE_NAME}@latest\` manually.`,
+      );
       process.exit(r.status || 1);
     }
     reportUpdateOutcome(latestVersion);
@@ -109,5 +127,10 @@ async function runUpdate() {
   reportUpdateOutcome(latestVersion);
 }
 
-
-export { isVoltaManagedInstall, queryLatestVersion, readInstalledVersion, reportUpdateOutcome, runUpdate };
+export {
+  isVoltaManagedInstall,
+  queryLatestVersion,
+  readInstalledVersion,
+  reportUpdateOutcome,
+  runUpdate,
+};

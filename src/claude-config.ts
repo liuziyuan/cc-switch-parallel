@@ -2,17 +2,28 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isPlainObject, jsonDeepClone, jsonIsSubset, mergeCommonOverProvider } from "./json-utils.js";
+import {
+  isPlainObject,
+  jsonDeepClone,
+  jsonIsSubset,
+  mergeCommonOverProvider,
+} from "./json-utils.js";
 import { INSTANCES_DIR } from "./paths.js";
 import { isLiveSharedSnippet, sharedSnippetText } from "./shared-config.js";
-import { isAggregationProviderSettings, protectAggregationIdentityEnv, readGlobalModelPicker, readStackState } from "./stack/state.js";
+import { ccsClaudeKeyFromModel } from "./stack/aggregation.js";
+import {
+  isAggregationProviderSettings,
+  protectAggregationIdentityEnv,
+  readGlobalModelPicker,
+  readStackState,
+} from "./stack/state.js";
 import { applyStatusLineInjection } from "./statusline.js";
 import { parseToml } from "./toml.js";
 import { tomlIsSubset } from "./toml-utils.js";
 
 // ─── Common config detection (port of Rust provider_uses_common_config) ─
 
-function providerUsesCommonConfig(appType, settingsConfig, meta, snippet) {
+function providerUsesCommonConfig(appType: any, settingsConfig: any, meta: any, snippet: any) {
   const snippetTrimmed = (snippet || "").trim();
   if (!snippetTrimmed) return false;
   const explicit = meta?.commonConfigEnabled;
@@ -22,13 +33,15 @@ function providerUsesCommonConfig(appType, settingsConfig, meta, snippet) {
   return settingsContainCommonConfig(appType, settingsConfig, snippetTrimmed);
 }
 
-function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
+function settingsContainCommonConfig(appType: any, settings: any, snippetTrimmed: any) {
   if (!snippetTrimmed) return false;
   if (appType === "claude") {
     try {
       const source = JSON.parse(snippetTrimmed);
       if (isPlainObject(source)) return jsonIsSubset(settings, source);
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   } else if (appType === "codex") {
     const configToml = settings?.config || "";
     if (!configToml.trim()) return false;
@@ -36,7 +49,9 @@ function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
       const targetDoc = parseToml(configToml);
       const sourceDoc = parseToml(snippetTrimmed);
       return tomlIsSubset(targetDoc, sourceDoc);
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   }
   return false;
 }
@@ -44,11 +59,13 @@ function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
 // ─── Claude config generation ─────────────────────────────────────────
 
 const CLAUDE_SANITIZE_KEYS = [
-  "api_format", "apiFormat",
-  "openrouter_compat_mode", "openrouterCompatMode",
+  "api_format",
+  "apiFormat",
+  "openrouter_compat_mode",
+  "openrouterCompatMode",
 ];
 
-function sanitizeClaudeSettings(settings) {
+function sanitizeClaudeSettings(settings: any) {
   const v = jsonDeepClone(settings);
   if (isPlainObject(v)) {
     for (const key of CLAUDE_SANITIZE_KEYS) delete v[key];
@@ -56,7 +73,7 @@ function sanitizeClaudeSettings(settings) {
   return v;
 }
 
-function applyKimiForCodingContextDefaults(effective, providerSettings) {
+function applyKimiForCodingContextDefaults(effective: any, providerSettings: any) {
   const baseUrl = providerSettings?.env?.ANTHROPIC_BASE_URL;
   if (!baseUrl || baseUrl.trim().replace(/\/$/, "") !== "https://api.kimi.com/coding") return;
   effective.env = effective.env || {};
@@ -72,7 +89,7 @@ function applyKimiForCodingContextDefaults(effective, providerSettings) {
 // recompute, and the model carry inside buildClaudeEffectiveSettings — same
 // expression everywhere, mirroring codexInstanceDirFor, so the three never
 // see different files.
-function claudeInstanceSettingsPath(providerId) {
+function claudeInstanceSettingsPath(providerId: any) {
   return join(INSTANCES_DIR, "claude", providerId, "settings.json");
 }
 
@@ -81,7 +98,7 @@ function claudeInstanceSettingsPath(providerId) {
 // settings.json when the user picks a model via /model ("saved as your
 // default for new sessions"). Exact match — never startsWith, or
 // modelPicker.* would be swallowed too.
-function isClaudeRuntimeStatePath(path) {
+function isClaudeRuntimeStatePath(path: any) {
   return path === "model";
 }
 
@@ -92,7 +109,14 @@ function isClaudeRuntimeStatePath(path) {
 // computeEffectiveSettings [C3] MUST pass the same pair — C3 exists to
 // recompute exactly what prepare would write, and a fork between the two
 // derivations makes the overwrite guard misfire.
-function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName, providerId, opts: { writeWrapper?: boolean } = {}) {
+function buildClaudeEffectiveSettings(
+  settingsConfig: any,
+  meta: any,
+  shared: any,
+  providerName: any,
+  providerId: any,
+  opts: { writeWrapper?: boolean } = {},
+) {
   // Defensive: callers pass parsed DB columns. A non-object (null, array,
   // scalar) would be cloned and handed to prepare, which writes it back as
   // the instance settings.json — degrade to {} instead.
@@ -116,14 +140,14 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
   // is only kept upstream for old-version compatibility). legacy mode keeps
   // the historical subset/forced-aggregation rules byte-identically.
   const isAgg = isAggregationProviderSettings(settingsConfig);
-  const useShared = !!sharedTrimmed && (
-    meta?.commonConfigEnabled === false
+  const useShared =
+    !!sharedTrimmed &&
+    (meta?.commonConfigEnabled === false
       ? false
       : liveShared
         ? true
         : (isAgg && meta?.commonConfigEnabled !== false) ||
-          providerUsesCommonConfig("claude", settingsConfig, meta, sharedText)
-  );
+          providerUsesCommonConfig("claude", settingsConfig, meta, sharedText));
   if (useShared) {
     try {
       const source = JSON.parse(sharedText);
@@ -197,12 +221,13 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
         // guard's computeEffectiveSettings [C3] drops it identically — the
         // one-time overwrite note the guard shows for the rollback is the
         // desired signal, not a false positive.
-        const ccs = model.match(/^ccs-claude-([a-z0-9-]+?)--/i);
-        if (ccs) {
+        const key = ccsClaudeKeyFromModel(model);
+        if (key) {
           const stack = readStackState("claude");
-          const key = ccs[1].toLowerCase();
           if (!stack || !(key in stack.keys)) {
-            console.error(`\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`);
+            console.error(
+              `\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`,
+            );
             model = null;
           }
         }
@@ -215,5 +240,13 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
   return effective;
 }
 
-
-export { CLAUDE_SANITIZE_KEYS, applyKimiForCodingContextDefaults, buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath, providerUsesCommonConfig, sanitizeClaudeSettings, settingsContainCommonConfig };
+export {
+  CLAUDE_SANITIZE_KEYS,
+  applyKimiForCodingContextDefaults,
+  buildClaudeEffectiveSettings,
+  claudeInstanceSettingsPath,
+  isClaudeRuntimeStatePath,
+  providerUsesCommonConfig,
+  sanitizeClaudeSettings,
+  settingsContainCommonConfig,
+};

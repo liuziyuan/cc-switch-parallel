@@ -12,7 +12,17 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-shared-config-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { readSharedConfig, detectSharedConfigMode, projectClaudeSharedKeys, projectCodexSharedKeys, sharedConfigHash, claudeFloorTop, claudeFloorEnv, claudeExclusiveEnv, resetSharedConfigWarnings } = await import("../src/shared-config.ts");
+const {
+  readSharedConfig,
+  detectSharedConfigMode,
+  projectClaudeSharedKeys,
+  projectCodexSharedKeys,
+  sharedConfigHash,
+  claudeFloorTop,
+  claudeFloorEnv,
+  claudeExclusiveEnv,
+  resetSharedConfigWarnings,
+} = await import("../src/shared-config.ts");
 
 const CC = join(testHome, ".cc-switch");
 const DB = join(CC, "cc-switch.db");
@@ -50,18 +60,28 @@ beforeEach(() => {
 
 test("floor rules mirror upstream: credentials/model/protocol are provider keys, feature switches are user keys", () => {
   for (const key of [
-    "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS",
-    "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "VERTEX_REGION_CLAUDE_4_5_SONNET",
-    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-    "CLAUDE_CODE_SUBAGENT_MODEL", "CLOUD_ML_REGION",
-    "GOOGLE_APPLICATION_CREDENTIALS", "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "AWS_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "VERTEX_REGION_CLAUDE_4_5_SONNET",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLOUD_ML_REGION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
   ]) {
     assert.equal(claudeFloorEnv(key), true, `${key} should be a key field`);
   }
   for (const key of [
-    "CLAUDE_CODE_USE_POWERSHELL_TOOL", "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH",
-    "CLAUDE_CODE_SKIP_PROMPT_HISTORY", "API_TIMEOUT_MS", "DISABLE_TELEMETRY",
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL",
+    "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH",
+    "CLAUDE_CODE_SKIP_PROMPT_HISTORY",
+    "API_TIMEOUT_MS",
+    "DISABLE_TELEMETRY",
     "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
   ]) {
     assert.equal(claudeFloorEnv(key), false, `${key} must stay a user key`);
@@ -198,7 +218,9 @@ test("legacy read: the DB snippet is used unchanged", () => {
 });
 
 test("live read: missing global file is unavailable — no fallback to the frozen snippet", () => {
-  sql(`INSERT INTO settings (key, value) VALUES ('common_config_claude', '{"hooks":{"Frozen":[1]}}');`);
+  sql(
+    `INSERT INTO settings (key, value) VALUES ('common_config_claude', '{"hooks":{"Frozen":[1]}}');`,
+  );
   rmSync(CLAUDE_LIVE, { force: true });
   const shared = readSharedConfig("claude");
   assert.equal(shared.mode, "live");
@@ -208,17 +230,19 @@ test("live read: missing global file is unavailable — no fallback to the froze
 });
 
 test("codex live read: TOML projection excludes routing and runtime state", () => {
-  writeCodexLive([
-    'model_provider = "custom"',
-    'model = "gpt-5"',
-    'approval_policy = "on-request"',
-    'projects = { "/tmp/x" = { trust_level = "trusted" } }',
-    '[model_providers.custom]',
-    'base_url = "https://live.example"',
-    '[mcp_servers.fs]',
-    'command = "mcp-fs"',
-    '',
-  ].join("\n"));
+  writeCodexLive(
+    [
+      'model_provider = "custom"',
+      'model = "gpt-5"',
+      'approval_policy = "on-request"',
+      'projects = { "/tmp/x" = { trust_level = "trusted" } }',
+      "[model_providers.custom]",
+      'base_url = "https://live.example"',
+      "[mcp_servers.fs]",
+      'command = "mcp-fs"',
+      "",
+    ].join("\n"),
+  );
   const shared = readSharedConfig("codex");
   assert.equal(shared.mode, "live");
   assert.equal(shared.parsed.model_provider, undefined);
@@ -230,9 +254,23 @@ test("codex live read: TOML projection excludes routing and runtime state", () =
 });
 
 test("hash: stable across key order, ignores provider key fields and statusLine, reacts to user keys", () => {
-  const base = { hooks: { A: [1] }, permissions: { allow: ["Bash"] }, model: "m", statusLine: { command: "a" } };
-  const hash = (obj) => sharedConfigHash({ mode: "live", parsed: projectClaudeSharedKeys(obj), text: "" });
-  assert.equal(hash(base), hash({ permissions: { allow: ["Bash"] }, model: "other", statusLine: { command: "b" }, hooks: { A: [1] } }),
-    "key order, model and statusLine are not part of the shared document");
+  const base = {
+    hooks: { A: [1] },
+    permissions: { allow: ["Bash"] },
+    model: "m",
+    statusLine: { command: "a" },
+  };
+  const hash = (obj) =>
+    sharedConfigHash({ mode: "live", parsed: projectClaudeSharedKeys(obj), text: "" });
+  assert.equal(
+    hash(base),
+    hash({
+      permissions: { allow: ["Bash"] },
+      model: "other",
+      statusLine: { command: "b" },
+      hooks: { A: [1] },
+    }),
+    "key order, model and statusLine are not part of the shared document",
+  );
   assert.notEqual(hash(base), hash({ ...base, hooks: { A: [2] } }));
 });

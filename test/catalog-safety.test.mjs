@@ -26,7 +26,10 @@ test("catalog: malformed entries are skipped, valid ones survive", () => {
   };
   const catalog = codexModelCatalogFromSettings(settings, "", "ProxyChat");
   assert.ok(catalog);
-  assert.deepEqual(catalog.models.map((m) => m.slug), ["good-model", "good-2", "good-3"]);
+  assert.deepEqual(
+    catalog.models.map((m) => m.slug),
+    ["good-model", "good-2", "good-3"],
+  );
   // Non-string displayName is ignored; the slug is the fallback.
   assert.equal(catalog.models[0].display_name, "good-model");
   // Non-array modalities = not declared (text+image); an array with "image"
@@ -38,7 +41,11 @@ test("catalog: malformed entries are skipped, valid ones survive", () => {
 
 test("catalog: an all-malformed model list yields no catalog", () => {
   assert.equal(
-    codexModelCatalogFromSettings({ modelCatalog: { models: [null, 1, { model: 2 }, { model: "" }] } }, "", "ProxyChat"),
+    codexModelCatalogFromSettings(
+      { modelCatalog: { models: [null, 1, { model: 2 }, { model: "" }] } },
+      "",
+      "ProxyChat",
+    ),
     null,
   );
 });

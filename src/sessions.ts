@@ -18,14 +18,14 @@ import { SYNC_STATE_PATH } from "./paths.js";
 // settings.json), so `clean` removes them with the directory.
 const SESSIONS_SUBDIR = ".cc-switch-sessions";
 const LEGACY_SESSION_FILENAME = ".cc-switch-session.json";
-const sessionsDir = (instanceDir) => join(instanceDir, SESSIONS_SUBDIR);
-const legacySessionFilePath = (instanceDir) => join(instanceDir, LEGACY_SESSION_FILENAME);
+const sessionsDir = (instanceDir: any) => join(instanceDir, SESSIONS_SUBDIR);
+const legacySessionFilePath = (instanceDir: any) => join(instanceDir, LEGACY_SESSION_FILENAME);
 
 // One ps(1) field lookup; null on any hiccup. Used for lstart (the PID-reuse
 // guard) and for the parent's tty. LC_ALL/LANG=C keeps lstart's format stable
 // across locales; callers that compare against pre-lock records can ask for
 // the inherited locale as a fallback.
-function psField(pid, field, inheritLocale = false) {
+function psField(pid: any, field: any, inheritLocale = false) {
   try {
     const env = inheritLocale ? process.env : { ...process.env, LC_ALL: "C", LANG: "C" };
     const r = spawnSync("ps", ["-p", String(pid), "-o", `${field}=`], {
@@ -43,20 +43,28 @@ function psField(pid, field, inheritLocale = false) {
 // Writes this session's own file (named after pid+ms, so concurrent sessions
 // never collide) and returns its path — null on failure. Callers only ever
 // remove the path they got back, never a shared file.
-function writeSessionFile(instanceDir, pid, bin, extraArgs) {
+function writeSessionFile(instanceDir: any, pid: any, bin: any, extraArgs: any) {
   try {
     let file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}.json`);
-    for (let n = 2; existsSync(file); n++) file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}-${n}.json`);
-    atomicWrite(file, JSON.stringify({
-      pid,
-      lstart: psField(pid, "lstart"),
-      cli: bin,
-      providerId: basename(instanceDir),
-      startedAt: Date.now(),
-      extraArgs,
-      tty: psField(process.pid, "tty"),
-      cwd: process.cwd(),
-    }, null, 2));
+    for (let n = 2; existsSync(file); n++)
+      file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}-${n}.json`);
+    atomicWrite(
+      file,
+      JSON.stringify(
+        {
+          pid,
+          lstart: psField(pid, "lstart"),
+          cli: bin,
+          providerId: basename(instanceDir),
+          startedAt: Date.now(),
+          extraArgs,
+          tty: psField(process.pid, "tty"),
+          cwd: process.cwd(),
+        },
+        null,
+        2,
+      ),
+    );
     return file;
   } catch {
     // best-effort: a tracking failure must never block the launch
@@ -64,14 +72,16 @@ function writeSessionFile(instanceDir, pid, bin, extraArgs) {
   }
 }
 
-function removeSessionFile(sessionFilePath) {
-  try { unlinkSync(sessionFilePath); } catch {}
+function removeSessionFile(sessionFilePath: any) {
+  try {
+    unlinkSync(sessionFilePath);
+  } catch {}
 }
 
 // All sessions of an instance: the per-session files plus the legacy
 // single-file record from older versions. A file that fails to parse (parent
 // killed mid-write) yields { session: null } so the caller cleans it up.
-function readSessions(instanceDir) {
+function readSessions(instanceDir: any) {
   const out: { path: string; session: any }[] = [];
   const names = readdirSyncSafe(sessionsDir(instanceDir)) || [];
   for (const name of names) {
@@ -95,11 +105,11 @@ function readSessions(instanceDir) {
 // false-positive once the OS reuses the pid). "unknown" is deliberately
 // conservative: EPERM, a missing lstart or an unreadable ps result must never
 // cause a session file to be deleted or a live marker to disappear.
-function normalizeLstart(value) {
+function normalizeLstart(value: any) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
 }
 
-function sessionLiveness(session): "alive" | "dead" | "unknown" {
+function sessionLiveness(session: any): "alive" | "dead" | "unknown" {
   if (!session || !Number.isInteger(session.pid) || session.pid <= 0) return "unknown";
   try {
     process.kill(session.pid, 0);
@@ -120,7 +130,7 @@ function sessionLiveness(session): "alive" | "dead" | "unknown" {
 
 // "Possibly alive": unknown counts as alive so the TUI marker never vanishes
 // because of a permission/locale hiccup.
-function sessionIsAlive(session) {
+function sessionIsAlive(session: any) {
   return sessionLiveness(session) !== "dead";
 }
 
@@ -131,7 +141,7 @@ function sessionIsAlive(session) {
 // tag and codex's native status_line both can't reach the tmux aggregate
 // view). Ids are stable across renames; consumers wanting the tag color read
 // statusline-preferences.json by id, exactly like the claude wrapper does.
-function buildLaunchExtraEnv(providerName, providerId) {
+function buildLaunchExtraEnv(providerName: any, providerId: any) {
   const env: Record<string, string> = {};
   if (providerName) env.CC_SWITCH_PROVIDER = String(providerName);
   if (providerId) env.CC_SWITCH_PROVIDER_ID = String(providerId);
@@ -145,17 +155,26 @@ function buildLaunchExtraEnv(providerName, providerId) {
 // leaves the file behind — `switch ps` cleans those up as stale.
 // Forward the child's status faithfully: a signal death (Ctrl-C, kill) must
 // not look like a clean exit to `switch ... && ...` callers.
-function exitCodeFor(code, signal) {
+function exitCodeFor(code: any, signal: any) {
   if (typeof code === "number") return code;
   const n = signal ? (osConstants.signals as Record<string, number>)[signal] : undefined;
   return typeof n === "number" ? 128 + n : 1;
 }
 
-function launchTracked(bin, extraArgs, instanceDir, envKey, onExit, extraEnv) {
+function launchTracked(
+  bin: any,
+  extraArgs: any,
+  instanceDir: any,
+  envKey: any,
+  onExit: any,
+  extraEnv: any,
+) {
   // Belt-and-suspenders for the flowing-stdin hazard: any missed cleanup
   // upstream would let the parent keep consuming (and discarding) keystrokes
   // that belong to the spawned CLI. pause() is idempotent and cheap.
-  try { process.stdin.pause(); } catch {}
+  try {
+    process.stdin.pause();
+  } catch {}
   const child = spawn(bin, extraArgs, {
     stdio: "inherit",
     env: {
@@ -173,14 +192,16 @@ function launchTracked(bin, extraArgs, instanceDir, envKey, onExit, extraEnv) {
   child.on("exit", (code, signal) => {
     if (sessionFile) removeSessionFile(sessionFile);
     const exitCode = exitCodeFor(code, signal);
-    try { onExit?.(exitCode, signal); } catch {}
+    try {
+      onExit?.(exitCode, signal);
+    } catch {}
     process.exit(exitCode);
   });
 }
 
 // ─── Sync state snapshot (config drift detection) ─────────────────────
 
-function sha256(str) {
+function sha256(str: any) {
   return createHash("sha256").update(str).digest("hex");
 }
 
@@ -192,7 +213,7 @@ function loadSyncState() {
   }
 }
 
-function saveSyncState(state) {
+function saveSyncState(state: any) {
   atomicWrite(SYNC_STATE_PATH, JSON.stringify(state, null, 2));
 }
 
@@ -207,7 +228,7 @@ function withSyncStateLock<T>(fn: (state: any) => T): T | null {
 
 // Shallow-compare two {pluginKey: bool} maps (undefined/missing treated as
 // absent on both sides via Set union of keys).
-function shallowEqualPlugins(a, b) {
+function shallowEqualPlugins(a: any, b: any) {
   const ao = isPlainObject(a) ? a : {};
   const bo = isPlainObject(b) ? b : {};
   const keys = new Set([...Object.keys(ao), ...Object.keys(bo)]);
@@ -215,5 +236,23 @@ function shallowEqualPlugins(a, b) {
   return true;
 }
 
-
-export { LEGACY_SESSION_FILENAME, SESSIONS_SUBDIR, buildLaunchExtraEnv, exitCodeFor, launchTracked, legacySessionFilePath, loadSyncState, psField, readSessions, removeSessionFile, saveSyncState, sessionIsAlive, sessionLiveness, sessionsDir, sha256, shallowEqualPlugins, withSyncStateLock, writeSessionFile };
+export {
+  LEGACY_SESSION_FILENAME,
+  SESSIONS_SUBDIR,
+  buildLaunchExtraEnv,
+  exitCodeFor,
+  launchTracked,
+  legacySessionFilePath,
+  loadSyncState,
+  psField,
+  readSessions,
+  removeSessionFile,
+  saveSyncState,
+  sessionIsAlive,
+  sessionLiveness,
+  sessionsDir,
+  sha256,
+  shallowEqualPlugins,
+  withSyncStateLock,
+  writeSessionFile,
+};

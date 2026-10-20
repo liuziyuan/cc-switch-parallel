@@ -39,7 +39,11 @@ test("merge: touched instances are written, untouched disk entries survive", () 
   const out = read();
   assert.equal(out.instances.claude.a.commonHash, "local-a");
   assert.equal(out.instances.claude.keep.commonHash, "disk-keep", "concurrent entry preserved");
-  assert.deepEqual(out.claude.installedPluginKeys, ["old"], "plugin baseline untouched without plugin sync");
+  assert.deepEqual(
+    out.claude.installedPluginKeys,
+    ["old"],
+    "plugin baseline untouched without plugin sync",
+  );
 });
 
 test("merge: removed ids drop the baseline, other disk entries survive", () => {
@@ -63,7 +67,10 @@ test("merge: the plugin baseline is written only when the plugin channel ran", (
 
 test("merge: a newer concurrent baseline is not overwritten by an older local one", () => {
   seed({ version: 3, instances: { claude: { a: { preparedAt: 5, commonHash: "newer-disk" } } } });
-  const local = { version: 3, instances: { claude: { a: { preparedAt: 2, commonHash: "older-local" } } } };
+  const local = {
+    version: 3,
+    instances: { claude: { a: { preparedAt: 2, commonHash: "older-local" } } },
+  };
   assert.equal(mergeAndSaveSyncState(local, { claude: ["a"] }, {}, false), true);
   assert.equal(read().instances.claude.a.commonHash, "newer-disk");
 
