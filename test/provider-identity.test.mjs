@@ -91,20 +91,30 @@ test("formatAmbiguousProvider: lists every id and the --id hint", () => {
 
 test("parseLaunchArgs: --id selects by id and leaves the CLI args untouched", () => {
   assert.deepEqual(parseLaunchArgs(["--sync", "--id", "z-dup", "claude", "--continue"]), {
-    syncFlag: "on", providerId: "z-dup", rest: ["claude", "--continue"],
+    syncFlag: "on", providerId: "z-dup", dryRun: false, diff: false, showSecrets: false,
+    rest: ["claude", "--continue"],
   });
   assert.deepEqual(parseLaunchArgs(["--id=z-dup", "claude"]), {
-    syncFlag: null, providerId: "z-dup", rest: ["claude"],
+    syncFlag: null, providerId: "z-dup", dryRun: false, diff: false, showSecrets: false,
+    rest: ["claude"],
   });
   assert.deepEqual(parseLaunchArgs(["--no-sync", "P", "claude", "--continue"]), {
-    syncFlag: "off", providerId: null, rest: ["P", "claude", "--continue"],
+    syncFlag: "off", providerId: null, dryRun: false, diff: false, showSecrets: false,
+    rest: ["P", "claude", "--continue"],
   });
   // Flags are only consumed at the front; everything after the first
   // positional token is forwarded to the CLI verbatim.
   assert.deepEqual(parseLaunchArgs(["P", "claude", "--sync"]), {
-    syncFlag: null, providerId: null, rest: ["P", "claude", "--sync"],
+    syncFlag: null, providerId: null, dryRun: false, diff: false, showSecrets: false,
+    rest: ["P", "claude", "--sync"],
+  });
+  assert.deepEqual(parseLaunchArgs(["--dry-run", "--diff", "--show-secrets", "P", "claude"]), {
+    syncFlag: null, providerId: null, dryRun: true, diff: true, showSecrets: true,
+    rest: ["P", "claude"],
   });
   assert.equal(parseLaunchArgs(["--id"]).error, "missing --id value");
+  assert.equal(parseLaunchArgs(["--diff", "P", "claude"]).error, "--diff and --show-secrets require --dry-run");
+  assert.equal(parseLaunchArgs(["--show-secrets", "P", "claude"]).error, "--diff and --show-secrets require --dry-run");
 });
 
 test("launch refs: id wins when present, name is the legacy fallback", () => {

@@ -175,7 +175,7 @@ async function codexAggregationDoctorChecks(): Promise<DoctorCheck[]> {
   return checks;
 }
 
-async function runDoctor(): Promise<void> {
+async function collectDoctorChecks(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
 
@@ -293,7 +293,10 @@ async function runDoctor(): Promise<void> {
   for (const c of await aggregationDoctorChecks()) add(c.label, c.pass, c.detail);
   for (const c of await codexAggregationDoctorChecks()) add(c.label, c.pass, c.detail);
 
-  // render
+  return checks;
+}
+
+function renderDoctorText(checks: DoctorCheck[]): void {
   console.log("\n  \x1b[1mcc-switch-parallel doctor\x1b[0m\n");
   for (const c of checks) {
     const mark = c.pass ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
@@ -306,6 +309,49 @@ async function runDoctor(): Promise<void> {
     process.exit(1);
   }
   console.log("  \x1b[32mAll checks passed.\x1b[0m\n");
+}
+
+function parseDoctorArgs(args: string[]): { json: boolean; fix: boolean; unknown: string[] } {
+  const out = { json: false, fix: false, unknown: [] as string[] };
+  for (const a of args) {
+    if (a === "--json") out.json = true;
+    else if (a === "--fix") out.fix = true;
+    else out.unknown.push(a);
+  }
+  return out;
+}
+
+function renderDoctorJson(checks: DoctorCheck[]): string {
+  const failed = checks.filter((c) => !c.pass).length;
+  return JSON.stringify({
+    version: 1,
+    ok: failed === 0,
+    summary: { total: checks.length, passed: checks.length - failed, failed },
+    checks,
+  }, null, 2);
+}
+
+async function runDoctor(args: string[] = []): Promise<void> {
+  const parsed = parseDoctorArgs(args);
+  if (parsed.unknown.length) {
+    console.error(`✗ unknown argument: ${parsed.unknown[0]}`);
+    console.error("Usage: switch doctor [--json]");
+    process.exit(1);
+  }
+  if (parsed.fix) {
+    // Reserved for the whitelisted self-heal pass; --fix is intentionally
+    // rejected until fixable/fixId are populated by collectors.
+    console.error("✗ --fix is not implemented yet.");
+    process.exit(1);
+  }
+  const checks = await collectDoctorChecks();
+  if (parsed.json) {
+    console.log(renderDoctorJson(checks));
+    // exitCode instead of exit(): let stdout drain before the process ends.
+    if (checks.some((c) => !c.pass)) process.exitCode = 1;
+    return;
+  }
+  renderDoctorText(checks);
 }
 
 async function runClean(args) {
@@ -354,4 +400,4 @@ async function runClean(args) {
 }
 
 
-export { aggregationDoctorChecks, assertCleanable, blockingSessions, codexAggregationDoctorChecks, collectInstances, runClean, runDoctor, which };
+export { aggregationDoctorChecks, assertCleanable, blockingSessions, codexAggregationDoctorChecks, collectDoctorChecks, collectInstances, parseDoctorArgs, renderDoctorJson, renderDoctorText, runClean, runDoctor, which };

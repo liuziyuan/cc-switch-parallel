@@ -55,42 +55,143 @@ A Full-auto quick-launch row (`⚠`) asks for confirmation before launching with
 ### Command mode
 
 ```bash
-switch [--sync|--no-sync] <provider> <cmd> [args...]
-switch [--sync|--no-sync] a|s|d|f|g       # launch a Recent top5 slot directly
+switch [global flags] <provider> <cmd> [args...]
+switch [global flags] a|s|d|f|g
 ```
 
-Examples:
+Everything after `<provider> <cmd>` is forwarded verbatim to the launched CLI. Global flags must come first.
+
+#### Global flags
+
+| Flag | Meaning |
+| --- | --- |
+| `--sync` | Ask to confirm config drift before launching (requires a TTY). |
+| `--no-sync` | Suppress the drift warning entirely. |
+| `--id <providerId>` / `--id=<providerId>` | Select a provider by id; use it when two providers share a name. |
+| `--dry-run` | Print what a launch would write and run; no files are written and no process is started. |
+| `--diff` | With `--dry-run`: compare the derived config with the instance file on disk. |
+| `--show-secrets` | With `--dry-run`: show real values instead of `***` (prints credentials). |
+
+`--diff` and `--show-secrets` are rejected without `--dry-run`. A trailing `--dry-run` is **not** a switch flag — it is forwarded to the launched CLI.
+
+#### Launching a provider
 
 ```bash
 switch "Claude Official" claude
 switch "Zhipu GLM en" claude --continue
-switch --sync "Claude Official" claude   # confirm config drift interactively before launching
-switch --no-sync "Example Provider" codex       # launch silently, suppress the drift warning
-switch s                                 # Recent slot 2 — exactly what the TUI's `s` key does
-switch --no-sync d                       # silently launch Recent slot 3
+switch --id <providerId> claude --continue
+switch --sync "Claude Official" claude       # confirm drift interactively first
+switch --no-sync "Example Provider" codex    # silent launch
 ```
+
+If several providers share a name, the launch is refused and the matching ids are printed; re-run with `--id`. A missing provider prints the available names. Both exit 1.
+
+#### Recent slots
+
+```bash
+switch s          # Recent slot 2 — exactly what the TUI's `s` key does
+switch --no-sync d
+```
+
+Only the bare key form qualifies; `switch a claude` is parsed as a provider named `a`. Full-auto slots ask for confirmation and require a terminal.
+
+#### Dry run
+
+```bash
+switch --dry-run "Zhipu GLM en" claude --continue
+switch --dry-run --diff "Zhipu GLM en" claude
+switch --dry-run --show-secrets "Zhipu GLM en" claude
+```
+
+The output lists the provider, instance directory, command, environment, the effective `settings.json` / `config.toml`, and (with `--diff`) leaf-level changes against the current instance file. Credential-looking keys are masked as `***` by default.
+
+`--dry-run` does not run the drift/sync pass, does not create the instance directory or statusline wrapper, does not back up or overwrite config, and does not write launch history or sync state. Quick slots do not support it; `--sync` / `--no-sync` are ignored.
 
 ### Other commands
 
-```bash
-switch ps         # List running switch-launched sessions
-switch sync       # Detect & sync config drift (plugins, config fields, shared config)
-switch doctor     # Diagnose the environment (sqlite3, DB, binaries, instructions files, …)
-switch clean      # Remove instance directories (interactive, or --all)
-switch customize [claude|codex] <provider>          # Instance-only CLAUDE.md / AGENTS.md (opens editor)
-switch uncustomize [claude|codex] <provider> [--yes] # Back to the shared global file
-switch update     # Self-update to the latest npm version
-switch --help     # List all commands
+#### `switch list [--json] [--app claude|codex]`
+
+Lists providers read from the cc-switch DB, including the virtual aggregation entry.
+
+- Columns: `APP`, `NAME`, `ID`, `KIND` (`provider` / `stack`), `CURRENT` (`*` when the desktop app points at it), `MEMBERS` (aggregation members), `STATUS` (`ok` or `invalid: …`).
+- `--app` may be repeated; unknown apps, missing values and unknown flags exit 1.
+- JSON: `{ "version": 1, "providers": [{ app, id, name, kind, aggregation, virtual, current, members, available, issues, nameAmbiguous }] }`.
+- `available: false` means the row's config cannot be launched without repair; `issues` explains why. Duplicate names are flagged with `nameAmbiguous: true` — disambiguate with `switch --id`.
+- Read-only. A missing or unreadable DB is reported as an error, never as an empty list.
+
+#### `switch ps [--json]`
+
+Prints one row per running switch-launched session — concurrent terminals on the same provider each get their own row:
+
+```
+  #  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m   claude
+  2  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d   claude --continue
 ```
 
-`switch ps` prints one row per session — concurrent terminals on the same provider each get their own row, never overwriting each other:
+- `#` is a stable 1-based index for this invocation (oldest first), used by `ps kill` / `ps attach`. It can change between invocations.
+- The tmux column falls back to the tty when not inside tmux. Aggregation instances show `provider → member` (the member currently paying).
+- `--json`: `{ "version": 1, "sessions": [{ index, pid, cli, providerId, name, tmux, tty, cwd, startedAt, upMs, extraArgs, billingMember, status }] }`. `status` is `alive` or `unknown` (`unknown` = the pid exists but its identity could not be verified).
+- Provably dead session files are cleaned up.
 
-```
-  claude  Example Provider      cc-switch-parallel  ~/workspace/personal/cc-switch-parallel  up 3m
-  claude  Example Provider      project-a           ~/workspace/project-a                    up 2d
-```
+#### `switch ps kill <pid|index> [--force]`
 
-The third column is the tmux session name (falls back to the terminal tty when not inside tmux); the fourth is the project directory where the session was started (`~`-abbreviated).
+Stops a session recorded by this tool.
+
+- `#N` forces an index; `pid:<pid>` forces a pid; a bare number in `1..N` is treated as an index, otherwise as a pid.
+- Only sessions whose recorded `lstart` still matches the process are signaled; `unknown` identities are refused.
+- Without `--force`: requires a TTY, asks for confirmation, sends `SIGTERM`, then `SIGKILL` after 5 seconds.
+- `--force`: no prompt, immediate `SIGKILL` — intended for scripts.
+- Exit codes: `0` on success/already exited, `1` on refusal/failure, `130` when interrupted at the prompt.
+- Only the CLI process is signaled; grandchild processes are not guaranteed to exit.
+
+#### `switch ps attach <index>`
+
+Focuses the tmux pane running that session.
+
+- Inside tmux: `switch-client` + `select-pane`.
+- Outside tmux: `select-window` + `select-pane` + `attach-session` (requires a TTY).
+- Sessions not started inside tmux, a missing tmux binary, or no tmux server are reported as errors and exit 1.
+
+#### `switch sync`
+
+Detects config drift (plugins, settings fields, shared config) and writes the sync back after confirmation. Requires a TTY; non-interactive invocations exit 1. `switch --sync <provider> <cmd>` runs the same pass before a launch.
+
+#### `switch doctor [--json]`
+
+Diagnoses sqlite3, the cc-switch DB, CLI binaries, shared config sources, instance dirs, instructions symlinks, sync state and aggregation (live state, members, Stack row, proxy).
+
+- `--json` prints only `{ "version": 1, "ok", "summary": { "total", "passed", "failed" }, "checks": [{ "label", "pass", "detail", "fixable" }] }` on stdout, with no ANSI.
+- Exit code is `1` when any check fails, `0` otherwise (also in JSON mode).
+- `--fix` is reserved and currently rejected (`--fix is not implemented yet.`). Unknown flags exit 1.
+
+#### `switch clean [--all|--yes] [--force]`
+
+Removes instance directories.
+
+- With no flags: interactive selection (requires a TTY).
+- `--all` / `--yes`: remove every instance directory without the picker; they do **not** bypass live-session protection.
+- Live or unverifiable sessions block removal unless `--force` is given.
+- Also removes the matching sync-state baselines and settings backups. Non-TTY without `--all` exits 1.
+
+#### `switch customize [claude|codex] <provider>` / `--id <providerId>`
+
+Creates or opens an instance-only `CLAUDE.md` / `AGENTS.md` (opens `$EDITOR`, falls back to the system editor). The provider can be selected by name or `--id`. Missing/ambiguous providers exit 1.
+
+#### `switch uncustomize [claude|codex] <provider> [--yes]` / `--id <providerId> [--yes]`
+
+Restores the shared global instructions symlink. Without `--yes` it asks for confirmation and requires a TTY; interrupt exits 130, refusal exits 1.
+
+#### `switch update` / `switch self-update` / `switch --update`
+
+Self-updates to the latest npm version. Errors exit 1.
+
+#### `switch version` / `switch -v` / `switch --version`
+
+Prints the installed version and, when available, the latest npm version.
+
+#### `switch help` / `switch -h` / `switch --help`
+
+Prints the full command list.
 
 ## Config drift & sync
 

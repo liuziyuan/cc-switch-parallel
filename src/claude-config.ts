@@ -91,7 +91,7 @@ function isClaudeRuntimeStatePath(path) {
 // computeEffectiveSettings [C3] MUST pass the same pair — C3 exists to
 // recompute exactly what prepare would write, and a fork between the two
 // derivations makes the overwrite guard misfire.
-function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName, providerId) {
+function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName, providerId, opts: { writeWrapper?: boolean } = {}) {
   // Defensive: callers pass parsed DB columns. A non-object (null, array,
   // scalar) would be cloned and handed to prepare, which writes it back as
   // the instance settings.json — degrade to {} instead.
@@ -164,7 +164,7 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
     }
   }
   if (providerName !== undefined && providerId !== undefined) {
-    applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta);
+    applyStatusLineInjection(effective, providerName, providerId, settingsConfig, meta, opts);
   }
   // Carry the instance-local model choice (isClaudeRuntimeStatePath) across a
   // full settings.json regeneration — the claude mirror of

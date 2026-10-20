@@ -244,34 +244,68 @@ async function runUncustomize(args) {
   process.exit(0);
 }
 
-function printHelp() {
-  console.log(`cc-switch-parallel — launch Claude Code / Codex with per-provider isolated configs
+function buildHelpText(): string {
+  return `cc-switch-parallel — launch Claude Code / Codex with per-provider isolated configs
 
 Usage:
-  switch                                 Interactive TUI (select CLI, then provider)
-  switch <provider> <cmd> [args...]     Launch a provider directly
-  switch --id <providerId> <cmd> [...]  Launch by provider id (disambiguates duplicate names)
-  switch --sync <provider> <cmd> [...]  Same, but confirm config drift first
-  switch --no-sync <provider> <cmd> [...] Same, but suppress the drift warning
-  switch a|s|d|f|g                      Launch a Recent top5 slot directly (same slots as the TUI)
-  switch sync                           Detect & sync config drift (plugins, settings fields, shared config)
-  switch doctor                         Diagnose the environment
-  switch clean [--all] [--force]        Remove instance directories (refuses live sessions; --force overrides)
-  switch ps                             List running switch-launched sessions
-  switch customize [claude|codex] <provider>   Instance-only instructions file (CLAUDE.md / AGENTS.md; opens editor)
-  switch customize [claude|codex] --id <providerId>   Same, selecting the provider by id
-  switch uncustomize [claude|codex] <provider> [--yes]  Back to the shared global instructions file
-  switch uncustomize [claude|codex] --id <providerId> [--yes]  Same, selecting the provider by id
-  switch update                         Self-update to the latest npm version
-  switch -v | --version                 Show version
+  switch [global flags] [<provider> <cmd> [args...]]
+  switch [global flags] a|s|d|f|g
+  switch <command> [args...]
+
+Global flags (must precede <provider>/<cmd>):
+  --sync | --no-sync                 Confirm / suppress the config-drift prompt before launch
+  --id <providerId> | --id=<id>      Select a provider by id (disambiguates duplicate names)
+  --dry-run                          Print what a launch would write and run; no side effects
+  --diff                             With --dry-run: show a diff against the current instance file
+  --show-secrets                     With --dry-run: reveal unredacted values
+
+Launch:
+  switch                              Interactive TUI (select CLI, then provider)
+  switch <provider> <cmd> [args...]   Launch directly; args are forwarded verbatim to the CLI
+  switch --id <providerId> <cmd> ...  Launch by provider id
+  switch --dry-run [--diff] [--show-secrets] <provider> <cmd> [args...]
+                                      Preview config, instance dir, command and env
+  switch a|s|d|f|g                    Launch a Recent top-5 slot directly
+
+Sessions:
+  switch ps [--json]                  List running switch-launched sessions
+  switch ps kill <pid|index> [--force]
+                                      Stop a recorded session; --force = SIGKILL, no prompt
+  switch ps attach <index>            Focus the session's tmux pane
+
+Providers:
+  switch list [--json] [--app claude|codex]
+                                      List providers, aggregation state and availability
+  switch customize [claude|codex] <provider>
+  switch customize [claude|codex] --id <providerId>
+                                      Instance-only instructions file (CLAUDE.md / AGENTS.md)
+  switch uncustomize [claude|codex] <provider> [--yes]
+  switch uncustomize [claude|codex] --id <providerId> [--yes]
+                                      Restore the shared global instructions file
+
+Maintenance:
+  switch sync                         Detect & sync config drift
+  switch doctor [--json]              Diagnose the environment
+  switch clean [--all|--yes] [--force] Remove instance directories
+  switch update | self-update | --update
+                                      Self-update to the latest npm version
+  switch version | -v | --version     Show version
+  switch help | -h | --help           Show this help
 
 Commands: ${Object.keys(APP_ADAPTERS).join(", ")}
 
 Examples:
   switch "Claude Official" claude
-  switch "Zhipu GLM en" claude --continue
-  switch s                              # Recent slot 2 — same as pressing s in the TUI`);
+  switch --id <providerId> claude --continue
+  switch --dry-run --diff "Zhipu GLM en" claude
+  switch list --app claude
+  switch ps --json
+  switch s                              # Recent slot 2 — same as pressing s in the TUI`;
+}
+
+function printHelp() {
+  console.log(buildHelpText());
 }
 
 
-export { CODEX_INSTRUCTIONS_INSTANCE_MARK, buildCodexInstructionsTemplate, findCustomizeProviderOrExit, instanceInstructionsPath, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize };
+export { CODEX_INSTRUCTIONS_INSTANCE_MARK, buildCodexInstructionsTemplate, buildHelpText, findCustomizeProviderOrExit, instanceInstructionsPath, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize };

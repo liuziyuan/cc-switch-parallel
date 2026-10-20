@@ -158,9 +158,9 @@ const APP_ADAPTERS = {
     // source is naturally normalized, so no jsonNormalize needed here. [C3]
     // providerName/providerId must match prepare's pair exactly, or the
     // statusline injection makes the two derivations fork.
-    computeEffectiveSettings(settingsConfig, meta, _category, shared, providerId, _settings) {
+    computeEffectiveSettings(settingsConfig, meta, _category, shared, providerId, _settings, opts = {}) {
       return jsonNormalize(buildClaudeEffectiveSettings(
-        settingsConfig, meta, shared, claudeProviderName(providerId), providerId,
+        settingsConfig, meta, shared, claudeProviderName(providerId), providerId, opts,
       ));
     },
 
@@ -370,7 +370,7 @@ const APP_ADAPTERS = {
     // instance's runtime state across (same merge prepare does), and parse
     // the TOML, normalized identically to the C2 snapshot so the guard's
     // backfill comparison is deterministic. [C3]
-    computeEffectiveSettings(settingsConfig, meta, category, commonSnippet, providerId, settings) {
+    computeEffectiveSettings(settingsConfig, meta, category, commonSnippet, providerId, settings, _opts = {}) {
       try {
         const { configText, stackCatalog } = buildCodexConfig(
           settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
