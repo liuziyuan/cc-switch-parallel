@@ -14,7 +14,7 @@
 
 `switch` 走了另一条路：每个终端通过 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 拥有自己隔离的配置目录，因此你可以**在一个终端跑 Claude Official，在另一个终端同时跑 Zhipu GLM**。
 
-cc-switch 4.0 起还提供**聚合模式（Stack）**：一个本地代理把多家供应商的模型发布进同一个 `/model` 列表，客户端内即可无感切换。`switch` 把聚合入口当作普通 provider 一样并行启动（TUI 列表尾部的 `◆ 聚合` 分组），与普通实例共存互不影响——聚合实例的 statusline 还会跟随 `/model` 的选择显示当前计费供应商。
+cc-switch 4.0 起还提供**聚合模式（Stack）**：一个本地代理把多家供应商的模型发布进同一个 `/model` 列表，客户端内即可无感切换。`switch` 把聚合入口当作普通 provider 一样并行启动（TUI 列表尾部的 `◆ Aggregation` 分组），与普通实例共存互不影响——聚合实例的 statusline 还会跟随 `/model` 的选择显示当前计费供应商。
 
 ## 安装
 
@@ -42,7 +42,7 @@ switch
 
 **Recent (top 5)：** CLI 界面会列出最常用的 5 个启动组合，按 `a s d f g` 一键快速启动；按使用次数排序，每行尾部显示最近一次使用时间（`· 2h`、`· 3d` 等）。命令模式启动（`switch "X" claude …`）同样计入排序；快捷启动会重放当时的完整参数——上次带 `--continue` 启动，这次按快捷键也会带 `--continue`（带额外参数的行会以 `· +args` 标出）。
 
-**命令行快捷启动：** 不想开 TUI 时，`switch a` / `switch s` / `switch d` / `switch f` / `switch g` 直接启动对应槽位——与在 TUI 里按同一字母完全等价：同一置顶顺序、同一重放参数、同一启动模式，启动前会在 stderr 打一行 `→ 供应商 · cli · 模式`。只认裸键形式，`switch a claude` 仍按 provider 名解析。Full-auto 槽位与 TUI 一致，重放前要求确认（非交互终端无法确认时拒绝启动并给出显式命令）。
+**命令行快捷启动：** 不想开 TUI 时，`switch a` / `switch s` / `switch d` / `switch f` / `switch g` 直接启动对应槽位——与在 TUI 里按同一字母完全等价：同一置顶顺序、同一重放参数、同一启动模式，启动前会在 stderr 打一行 `→ provider · cli · mode`。只认裸键形式，`switch a claude` 仍按 provider 名解析。Full-auto 槽位与 TUI 一致，重放前要求确认（非交互终端无法确认时拒绝启动并给出显式命令）。
 
 **置顶是持久的。** 高亮 Recent 行按 `t` + 数字 `1`–`5` 钉入对应槽位（provider 界面的 `t` 仍然可用——钉完会直接进入启动模式选择，选完即以该模式启动）；被钉的行带 `*` 标记，跨启动保持位置，直到按 `u` 取消置顶。条目以供应商 id 为键：在 cc-switch 中改名不会丢槽位和历史次数，Recent 自动跟随显示新名字。
 
@@ -241,7 +241,7 @@ Codex CLI 的状态栏是**原生内置字段选择式**（`config.toml` 的 `[t
 
 cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代理（默认 `127.0.0.1:15721`），把多家供应商的模型以 `ccs-claude-<key>--<model>` id 发布进 Claude Code 的 `/model` 列表（Codex 侧为 `ccs-<key>/<model>`，见下文），客户端内即可无感切换。`switch` 不进入/退出该模式（那是桌面端的动作），而是把它**当作并行中的一员来消费**——tmux 里 `[Z.AI GLM] [DeepSeek] [聚合]` 三类实例并存互不影响。
 
-**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ 聚合 · Stack（DeepSeek + Z.AI GLM）` 分组。聚合入口是一个**运行时虚拟 provider 行**（固定 id `__stack__`）：不写入 cc-switch 数据库（桌面端 GUI 不会显示任何 CLI 生成的行），每次打开 TUI / 启动时从 live-state 与全局 `~/.claude/settings.json` **现算**最新路由契约（base URL、ccs 别名、modelPicker）——桌面端改代理端口、切换默认供应商或清空模型列表后无需任何同步步骤，下次操作即生效。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。命令模式同样可启动：`switch Stack claude` / `switch Stack codex`（虚拟行的名字就是 `Stack`；数据库里已有同名 provider 时显示为 `Stack 2`）。
+**使用方式**：在 cc-switch 桌面端开启聚合（选定默认供应商、加入成员供应商）后，TUI 的 provider 列表尾部会出现 `◆ Aggregation · Stack (DeepSeek + Z.AI GLM)` 分组。聚合入口是一个**运行时虚拟 provider 行**（固定 id `__stack__`）：不写入 cc-switch 数据库（桌面端 GUI 不会显示任何 CLI 生成的行），每次打开 TUI / 启动时从 live-state 与全局 `~/.claude/settings.json` **现算**最新路由契约（base URL、ccs 别名、modelPicker）——桌面端改代理端口、切换默认供应商或清空模型列表后无需任何同步步骤，下次操作即生效。选中它启动即得到聚合实例：`/model` 里多家供应商的模型同列（Claude Code ≥ 2.1.243），recent、pin、`o` 配色、`● live`、`switch ps` 与普通 provider 完全一致——`ps` 还会在聚合实例名后显示当前计费成员（`Stack → DeepSeek`，解码自该实例 `/model` 的最新选择）。命令模式同样可启动：`switch Stack claude` / `switch Stack codex`（虚拟行的名字就是 `Stack`；数据库里已有同名 provider 时显示为 `Stack 2`）。
 
 聚合实例的 statusline 有两点跟随模型切换：
 
@@ -253,7 +253,7 @@ cc-switch 4.0 的**聚合模式**（代号 Stack）在本地起一个 HTTP 代�
 - 聚合代理随 cc-switch 桌面进程生灭——桌面端退出后聚合实例会指向已死的代理地址（上游退出时只恢复全局配置，不会碰 `switch` 的实例文件），重开桌面端即恢复。`switch` 启动聚合实例前会对代理地址做一次 300ms TCP 探测，不可达时在 stderr 警告（不阻塞启动）；`switch doctor` 亦含聚合检查（live-state 契约版本、成员行在位、虚拟入口派生、代理可达性）。
 - `/model` 的聚合列表来自桌面端写进全局 `~/.claude/settings.json` 的 `modelPicker` 键；`switch` 在每次启动聚合实例时从全局同步它，所以桌面端改聚合名单后**重进实例**即可见（运行中的会话不自动跟）。桌面端把列表清空（恢复内置模型）同样是合法状态——实例的聚合列表随之清空，不会沿用旧快照。
 - 聚合入口只承载路由（loopback 地址、代理凭据、`ccs` 模型别名），不含共享配置内容——`switch` 启动聚合实例时**始终合并共享配置**（hooks、permissions 等；4.0.2+ 来自全局 live 文件的 user keys，旧 schema 来自 `common_config_*`，与普通 provider 一致）；路由身份 env（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`）与 `ccs` 模型别名以聚合入口为准，共享配置覆盖不了它们。在桌面端对聚合行显式关闭「使用通用配置」仍然生效。
-- 桌面端关闭聚合后，聚合入口仍在（TUI 显示「未激活」；成员行已删时显示「N 个成员缺失」），实例照常启动但代理不在——请回到普通 provider 实例。聚合实例的 `/model` 不再列指向死代理的 ccs 旧条目。
+- 桌面端关闭聚合后，聚合入口仍在（TUI 显示 `inactive`；成员行已删时显示 `N member(s) missing`），实例照常启动但代理不在——请回到普通 provider 实例。聚合实例的 `/model` 不再列指向死代理的 ccs 旧条目。
 - 实例编辑写回（`switch sync`）对聚合入口不生效：provider 侧改动会被标记为 blocked 并说明原因（虚拟行不落库，实例配置每次启动由桌面端状态重新生成）；落在通用配置上的改动照常写回。
 - **从 ≤ 0.19 升级**：首次运行会自动清理旧版写入数据库的聚合 provider 行（幂等），并把启动历史、置顶与 statusline 颜色迁移到虚拟 id `__stack__`；正在桌面端使用中的聚合行（is_current）会保留并提示。运行中的旧聚合实例不受影响，其 UUID 目录在会话结束后可用 `switch clean` 清理。
 

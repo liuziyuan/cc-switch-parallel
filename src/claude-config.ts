@@ -202,7 +202,7 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
           const stack = readStackState("claude");
           const key = ccs[1].toLowerCase();
           if (!stack || !(key in stack.keys)) {
-            console.error(`\x1b[2mℹ 聚合模型 "${model}" 已不在当前聚合栈中（栈已关闭或成员被移除）— 本次启动回退默认模型，恢复后请在 /model 重选\x1b[0m`);
+            console.error(`\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`);
             model = null;
           }
         }

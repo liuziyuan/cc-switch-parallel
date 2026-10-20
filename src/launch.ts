@@ -96,7 +96,7 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
   if (aggBaseUrl) {
     const reachable = await probeTcpReachable(aggBaseUrl);
     if (!reachable) {
-      console.error(`⚠ 聚合代理 ${aggBaseUrl} 不可达 — 请确认 cc-switch 桌面端已开启聚合（实例照常启动，请求会失败直至代理恢复）`);
+      console.error(`⚠ Aggregation proxy ${aggBaseUrl} is unreachable — make sure the cc-switch desktop app has aggregation enabled (the instance still launches; requests will fail until the proxy is back)`);
     }
   }
   adapter.launch(instanceDir, extraArgs, { providerName: row.name, providerId: row.id });

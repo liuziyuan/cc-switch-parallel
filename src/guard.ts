@@ -80,8 +80,8 @@ function formatSettingsChangeLine(ch, target) {
   const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
   const targetTag =
     target === "common" ? " \x1b[2m(→ common config)\x1b[0m"
-    : target === "shared-live" ? " \x1b[2m(→ 全局 live 配置)\x1b[0m"
-    : target === "blocked-virtual" ? " \x1b[33m(⚠ 聚合虚拟行 — 不写回数据库)\x1b[0m"
+    : target === "shared-live" ? " \x1b[2m(→ global live config)\x1b[0m"
+    : target === "blocked-virtual" ? " \x1b[33m(⚠ aggregation virtual row — not written back to the database)\x1b[0m"
     : target === "blocked-sensitive" || target === "blocked"
       ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
     : " \x1b[2m(→ provider)\x1b[0m";

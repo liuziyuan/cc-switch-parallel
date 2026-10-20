@@ -108,7 +108,7 @@ export function clipFrame(lines: string[], rows: number): string[] {
   if (lines.length <= max) return lines;
   if (max <= 2) return lines.slice(0, max);
   const hidden = lines.length - (max - 1);
-  return [...lines.slice(0, max - 2), `… ${hidden} 行未显示 …`, lines[lines.length - 1]];
+  return [...lines.slice(0, max - 2), `… ${hidden} lines hidden …`, lines[lines.length - 1]];
 }
 
 /** Map one raw keypress to the confirmation outcome. EOF is a stream event. */

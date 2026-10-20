@@ -1556,13 +1556,13 @@ test("aggregation TUI label: member rows missing from the DB surface in the labe
   assert.ok(group);
   assert.ok(group.ids.has(VIRTUAL_STACK_PROVIDER_ID), "virtual entry joins the group");
   assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("DeepSeek"));
-  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("1 个成员缺失"));
-  // dormant path: stack off, instance dir present → group survives as （未激活）
+  assert.ok(group.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("1 member(s) missing"));
+  // dormant path: stack off, instance dir present → group survives as (inactive)
   removeLiveState();
   mkdirSync(join(INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
   const dormant = buildAggregationGroup("claude");
   assert.ok(dormant);
-  assert.ok(dormant.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("未激活"));
+  assert.ok(dormant.labels.get(VIRTUAL_STACK_PROVIDER_ID).includes("inactive"));
   writeGlobalSettings(undefined);
   cleanVirtualStackInstance();
   removeLiveState();
