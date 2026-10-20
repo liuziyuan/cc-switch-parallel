@@ -62,6 +62,9 @@ export interface DoctorCheck {
   label: string;
   pass: boolean;
   detail: string;
+  /** Reserved for `doctor --fix`: only whitelisted checks may self-heal. */
+  fixable?: boolean;
+  fixId?: string;
 }
 
 /** One instance directory on disk. */

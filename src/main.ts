@@ -211,7 +211,7 @@ async function main() {
   }
 
   if (args[0] === "doctor") {
-    await runDoctor();
+    await runDoctor(args.slice(1));
     return;
   }
 
