@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { parse as parseTomlRaw, stringify as stringifyToml } from "smol-toml";
+
+// smol-toml 1.9 returns null-prototype objects; normalize to plain objects so
+// deepStrictEqual against literals keeps working (this file asserts values).
+const parseToml = (text) => JSON.parse(JSON.stringify(parseTomlRaw(text)));
 
 // Fixture home MUST be set before the dynamic import: HOME-derived constants
 // (CC_SWITCH_DIR, INSTANCES_DIR) are evaluated at module load.

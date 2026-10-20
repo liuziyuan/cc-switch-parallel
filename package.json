@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "smol-toml": "^1.7.1"
+    "smol-toml": "^1.9.1"
   },
   "engines": {
     "node": ">=18"
