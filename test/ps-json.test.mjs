@@ -20,16 +20,19 @@ const sessionsDir = join(instanceDir, ".cc-switch-sessions");
 function writeSession(pid, extra = {}) {
   mkdirSync(sessionsDir, { recursive: true });
   const file = join(sessionsDir, `${pid}-1.json`);
-  writeFileSync(file, JSON.stringify({
-    pid,
-    lstart: extra.lstart === undefined ? psField(pid, "lstart") : extra.lstart,
-    cli: "claude",
-    providerId: "p1",
-    startedAt: extra.startedAt ?? Date.now(),
-    extraArgs: extra.extraArgs ?? [],
-    tty: "ttys999",
-    cwd: "/tmp/work",
-  }));
+  writeFileSync(
+    file,
+    JSON.stringify({
+      pid,
+      lstart: extra.lstart === undefined ? psField(pid, "lstart") : extra.lstart,
+      cli: "claude",
+      providerId: "p1",
+      startedAt: extra.startedAt ?? Date.now(),
+      extraArgs: extra.extraArgs ?? [],
+      tty: "ttys999",
+      cwd: "/tmp/work",
+    }),
+  );
   return file;
 }
 
@@ -41,13 +44,19 @@ function sleepChild() {
 test("collectRunningSessions: stable index, fields and sanitization", async (t) => {
   const older = sleepChild();
   const newer = sleepChild();
-  t.after(() => { older.kill("SIGKILL"); newer.kill("SIGKILL"); });
+  t.after(() => {
+    older.kill("SIGKILL");
+    newer.kill("SIGKILL");
+  });
   writeSession(older.pid, { startedAt: 1000, extraArgs: ["--continue"] });
   writeSession(newer.pid, { startedAt: 2000, extraArgs: ["--flag\u001b[31m"] });
 
   const rows = collectRunningSessions();
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows.map((r) => r.index), [1, 2]);
+  assert.deepEqual(
+    rows.map((r) => r.index),
+    [1, 2],
+  );
   assert.equal(rows[0].pid, older.pid);
   assert.equal(rows[1].pid, newer.pid);
   assert.equal(rows[0].status, "alive");
@@ -61,10 +70,21 @@ test("collectRunningSessions: stable index, fields and sanitization", async (t) 
   const parsed = JSON.parse(renderPsJson(rows));
   assert.equal(parsed.version, 1);
   assert.equal(parsed.sessions.length, 2);
-  assert.deepEqual(
-    Object.keys(parsed.sessions[0]),
-    ["index", "pid", "cli", "providerId", "name", "tmux", "tty", "cwd", "startedAt", "upMs", "extraArgs", "billingMember", "status"],
-  );
+  assert.deepEqual(Object.keys(parsed.sessions[0]), [
+    "index",
+    "pid",
+    "cli",
+    "providerId",
+    "name",
+    "tmux",
+    "tty",
+    "cwd",
+    "startedAt",
+    "upMs",
+    "extraArgs",
+    "billingMember",
+    "status",
+  ]);
 });
 
 test("collectRunningSessions: unknown liveness stays visible", async (t) => {
@@ -84,7 +104,10 @@ test("collectRunningSessions: provably dead sessions are removed", async () => {
   await new Promise((resolve) => child.once("exit", resolve));
 
   const rows = collectRunningSessions();
-  assert.equal(rows.some((r) => r.pid === child.pid), false);
+  assert.equal(
+    rows.some((r) => r.pid === child.pid),
+    false,
+  );
   assert.equal(existsSync(file), false, "dead session file cleaned up");
 });
 

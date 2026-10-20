@@ -10,33 +10,62 @@ import { isLiveSharedSnippet, sharedSnippetText } from "../shared-config.js";
 import { isCodexAggregationProviderSettings, readStackState } from "./state.js";
 import { parseToml, stringifyToml } from "../toml.js";
 import { tomlDeepMerge } from "../toml-utils.js";
-import { CC_SWITCH_CATALOG_FILENAME, CODEX_RESERVED_MODEL_PROVIDER_IDS, codexAggregationRoute, isCustomCodexModelProviderId } from "./aggregation.js";
+import {
+  CC_SWITCH_CATALOG_FILENAME,
+  CODEX_RESERVED_MODEL_PROVIDER_IDS,
+  codexAggregationRoute,
+  isCustomCodexModelProviderId,
+} from "./aggregation.js";
 
 // ─── Codex config generation ──────────────────────────────────────────
 
 const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
 const CODEX_WEB_SEARCH_REJECT_HOSTS = [
-  "xiaomimimo.com", "longcat.chat", "minimax.io", "minimaxi.com",
+  "xiaomimimo.com",
+  "longcat.chat",
+  "minimax.io",
+  "minimaxi.com",
 ];
 const CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES = ["mimo", "longcat", "minimax", "qwen3-coder"];
 const ONE_M_CONTEXT_MARKER = "[1m]";
 
 const CONFIRMED_TEXT_ONLY_TAILS = [
-  "ark-code-latest", "deepseek-chat", "deepseek-reasoner",
-  "deepseek-v4-flash", "deepseek-v4-pro",
-  "glm-5.1", "glm-5.2",
-  "kat-coder", "kat-coder-pro", "kat-coder-pro v1", "kat-coder-pro v2",
-  "kat-coder-pro-v1", "kat-coder-pro-v2",
-  "ling-2.5-1t", "longcat-2.0", "longcat-flash-chat",
-  "minimax-m2.7", "minimax-m2.7-highspeed", "mimo-v2.5-pro",
-  "qwen3-coder-480b", "qwen3-coder-480b-a35b-instruct",
-  "qwen3-coder-flash", "qwen3-coder-next", "qwen3-coder-plus",
-  "step-3.5-flash", "step-3.5-flash-2603", "us.deepseek.r1-v1",
+  "ark-code-latest",
+  "deepseek-chat",
+  "deepseek-reasoner",
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "glm-5.1",
+  "glm-5.2",
+  "kat-coder",
+  "kat-coder-pro",
+  "kat-coder-pro v1",
+  "kat-coder-pro v2",
+  "kat-coder-pro-v1",
+  "kat-coder-pro-v2",
+  "ling-2.5-1t",
+  "longcat-2.0",
+  "longcat-flash-chat",
+  "minimax-m2.7",
+  "minimax-m2.7-highspeed",
+  "mimo-v2.5-pro",
+  "qwen3-coder-480b",
+  "qwen3-coder-480b-a35b-instruct",
+  "qwen3-coder-flash",
+  "qwen3-coder-next",
+  "qwen3-coder-plus",
+  "step-3.5-flash",
+  "step-3.5-flash-2603",
+  "us.deepseek.r1-v1",
 ];
 
 function normalizeModelId(value) {
   if (typeof value !== "string") return "";
-  let n = value.trim().replace(/^models\//, "").trim().toLowerCase();
+  let n = value
+    .trim()
+    .replace(/^models\//, "")
+    .trim()
+    .toLowerCase();
   if (n.endsWith(ONE_M_CONTEXT_MARKER)) {
     n = n.slice(0, -ONE_M_CONTEXT_MARKER.length).trim();
   }
@@ -53,9 +82,7 @@ function imageInputCapabilityFromModalities(model, modalities) {
   // The catalog is user/DB data: a non-array or non-string entries used to
   // throw on .some/.trim and abort prepare. Ignore unusable shapes; an array
   // with no string entries is "not declared", not "text only".
-  const values = Array.isArray(modalities)
-    ? modalities.filter((m) => typeof m === "string")
-    : [];
+  const values = Array.isArray(modalities) ? modalities.filter((m) => typeof m === "string") : [];
   const declared = values.length
     ? values.some((m) => m.trim().toLowerCase() === "image")
     : undefined;
@@ -90,9 +117,15 @@ function codexCatalogModelSpecs(settingsConfig) {
     // Catalog entries come from the DB/desktop app and are not trusted:
     // a non-object entry or a non-string model used to throw on .model/.trim
     // and abort prepare (i.e. the launch).
-    if (!isPlainObject(mc) || typeof mc.model !== "string") { skipped++; continue; }
+    if (!isPlainObject(mc) || typeof mc.model !== "string") {
+      skipped++;
+      continue;
+    }
     const model = mc.model.trim();
-    if (!model) { skipped++; continue; }
+    if (!model) {
+      skipped++;
+      continue;
+    }
     if (seen.has(model)) continue;
     seen.add(model);
     const str = (v) => (typeof v === "string" ? v.trim() : "");
@@ -101,14 +134,21 @@ function codexCatalogModelSpecs(settingsConfig) {
     specs.push({
       model,
       displayName: displayName || undefined,
-      contextWindow: parsePositiveU64([mc.contextWindow, mc.context_window].find((v) => v !== undefined)),
-      supportsParallelToolCalls: [mc.supportsParallelToolCalls, mc.supports_parallel_tool_calls].find((v) => v !== undefined),
+      contextWindow: parsePositiveU64(
+        [mc.contextWindow, mc.context_window].find((v) => v !== undefined),
+      ),
+      supportsParallelToolCalls: [
+        mc.supportsParallelToolCalls,
+        mc.supports_parallel_tool_calls,
+      ].find((v) => v !== undefined),
       inputModalities: [mc.inputModalities, mc.input_modalities].find((v) => v !== undefined),
       baseInstructions: baseInstructions || undefined,
     });
   }
   if (skipped) {
-    console.error(`⚠ Codex model catalog: skipped ${skipped} malformed entr${skipped === 1 ? "y" : "ies"} (model must be a non-empty string).`);
+    console.error(
+      `⚠ Codex model catalog: skipped ${skipped} malformed entr${skipped === 1 ? "y" : "ies"} (model must be a non-empty string).`,
+    );
   }
   return specs;
 }
@@ -125,7 +165,8 @@ function resolveCodexCatalogToolProfile(provider) {
 }
 
 function loadTemplate(profile) {
-  const filename = profile === "ProxyChat" ? "gpt5_5_template.json" : "codex_native_responses_template.json";
+  const filename =
+    profile === "ProxyChat" ? "gpt5_5_template.json" : "codex_native_responses_template.json";
   return JSON.parse(readFileSync(join(RESOURCES_DIR, filename), "utf8"));
 }
 
@@ -145,12 +186,18 @@ function codexCatalogModelEntry(template, spec, priority, profile, defaultContex
   entry.upgrade = null;
   entry.input_modalities = codexCatalogInputModalities(spec.model, spec.inputModalities);
   if (profile !== "ProxyChat") {
-    for (const key of ["apply_patch_tool_type", "web_search_tool_type", "tools", "model_messages"]) {
+    for (const key of [
+      "apply_patch_tool_type",
+      "web_search_tool_type",
+      "tools",
+      "model_messages",
+    ]) {
       delete entry[key];
     }
     entry.shell_type = "shell_command";
     if (spec.baseInstructions?.trim()) entry.base_instructions = spec.baseInstructions.trim();
-    if (spec.supportsParallelToolCalls !== undefined) entry.supports_parallel_tool_calls = spec.supportsParallelToolCalls;
+    if (spec.supportsParallelToolCalls !== undefined)
+      entry.supports_parallel_tool_calls = spec.supportsParallelToolCalls;
   }
   return entry;
 }
@@ -160,7 +207,9 @@ function codexModelCatalogFromSettings(settingsConfig, configText, profile) {
   if (specs.length === 0) return null;
   const defaultContextWindow = extractTopLevelU64(configText, "model_context_window") || 128000;
   const template = loadTemplate(profile);
-  const entries = specs.map((spec, i) => codexCatalogModelEntry(template, spec, i, profile, defaultContextWindow));
+  const entries = specs.map((spec, i) =>
+    codexCatalogModelEntry(template, spec, i, profile, defaultContextWindow),
+  );
   return { models: entries };
 }
 
@@ -178,7 +227,8 @@ function readGlobalCodexCatalogText() {
   try {
     const text = readFileSync(join(HOME, ".codex", CC_SWITCH_CATALOG_FILENAME), "utf8");
     const parsed = JSON.parse(text);
-    if (!isPlainObject(parsed) || !Array.isArray(parsed.models) || parsed.models.length === 0) return null;
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.models) || parsed.models.length === 0)
+      return null;
     return text;
   } catch {
     return null;
@@ -193,9 +243,11 @@ function copyGlobalCodexCatalogIntoInstance(instanceDir) {
     return { copied: true };
   }
   const keptExisting = existsSync(dest);
-  console.error(keptExisting
-    ? `⚠ Global ${CC_SWITCH_CATALOG_FILENAME} is missing or corrupt — keeping the instance's existing copy; the /model list may be stale (fix it in the desktop app, then re-enter the instance)`
-    : `⚠ Global ${CC_SWITCH_CATALOG_FILENAME} is missing or corrupt — the instance will have no aggregation model list (fix it in the desktop app, then re-enter the instance)`);
+  console.error(
+    keptExisting
+      ? `⚠ Global ${CC_SWITCH_CATALOG_FILENAME} is missing or corrupt — keeping the instance's existing copy; the /model list may be stale (fix it in the desktop app, then re-enter the instance)`
+      : `⚠ Global ${CC_SWITCH_CATALOG_FILENAME} is missing or corrupt — the instance will have no aggregation model list (fix it in the desktop app, then re-enter the instance)`,
+  );
   return { copied: false };
 }
 
@@ -279,8 +331,11 @@ function applyCodexStatusLineInjection(configObj) {
 // dotted-suffix (never a bare "tui." prefix) so the user's own [tui] keys
 // (notifications, terminal_title, …) keep syncing normally.
 function isCodexStatusLineChannelPath(path) {
-  return path === "tui.status_line" || path.startsWith("tui.status_line.")
-    || path === "tui.status_line_use_colors";
+  return (
+    path === "tui.status_line" ||
+    path.startsWith("tui.status_line.") ||
+    path === "tui.status_line_use_colors"
+  );
 }
 
 // [Runtime-state filter for the codex settings channel] — keys the Codex CLI
@@ -293,10 +348,12 @@ function isCodexStatusLineChannelPath(path) {
 // exactly rather than tui-subtree-wide so user-configured [tui] keys
 // (terminal_title, notifications, …) keep syncing normally.
 function isCodexRuntimeStatePath(path) {
-  return path.startsWith("projects.")
-    || path.startsWith("hooks.state.")
-    || path === "tui.screen_reader_detection_done"
-    || path.startsWith("tui.model_availability_nux.");
+  return (
+    path.startsWith("projects.") ||
+    path.startsWith("hooks.state.") ||
+    path === "tui.screen_reader_detection_done" ||
+    path.startsWith("tui.model_availability_nux.")
+  );
 }
 
 // Leaf diffing reports the PARENT path, not leaves, when one side lacks the
@@ -368,7 +425,9 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
     if (isPlainObject(curTui.model_availability_nux)) {
       generated.tui = isPlainObject(generated.tui) ? generated.tui : {};
       generated.tui.model_availability_nux = mergeCommonOverProvider(
-        isPlainObject(generated.tui.model_availability_nux) ? generated.tui.model_availability_nux : {},
+        isPlainObject(generated.tui.model_availability_nux)
+          ? generated.tui.model_availability_nux
+          : {},
         curTui.model_availability_nux,
       );
       changed = true;
@@ -383,7 +442,9 @@ function mergeCodexRuntimeState(configText, instanceDir, isAgg = false) {
         const stack = readStackState("codex");
         const key = ccs[1].toLowerCase();
         if (!stack || !(key in stack.keys)) {
-          console.error(`\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`);
+          console.error(
+            `\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`,
+          );
           model = null;
         }
       }
@@ -458,17 +519,25 @@ function codexAuthHasLoginMaterial(auth) {
 //   model                            soft — row value wins when present, the
 //                                    common value stands otherwise
 // Mutates and returns configObj. Idempotent when the common merge didn't run.
-const CODEX_AGG_TOPLEVEL_FALLBACK_KEYS = ["base_url", "wire_api", "experimental_bearer_token", "requires_openai_auth"];
+const CODEX_AGG_TOPLEVEL_FALLBACK_KEYS = [
+  "base_url",
+  "wire_api",
+  "experimental_bearer_token",
+  "requires_openai_auth",
+];
 
 function protectCodexAggregationIdentity(configObj, settingsConfig) {
   let rowDoc: any = null;
-  try { rowDoc = parseToml(settingsConfig?.config || ""); } catch {}
+  try {
+    rowDoc = parseToml(settingsConfig?.config || "");
+  } catch {}
   if (!isPlainObject(rowDoc)) rowDoc = {};
   const pid = typeof rowDoc.model_provider === "string" ? rowDoc.model_provider : null;
   if (pid) configObj.model_provider = pid;
   else delete configObj.model_provider;
   if (!isPlainObject(configObj.model_providers)) configObj.model_providers = {};
-  const rowTable = pid && isPlainObject(rowDoc.model_providers?.[pid]) ? rowDoc.model_providers[pid] : null;
+  const rowTable =
+    pid && isPlainObject(rowDoc.model_providers?.[pid]) ? rowDoc.model_providers[pid] : null;
   if (rowTable) configObj.model_providers[pid] = jsonDeepClone(rowTable);
   else if (pid) delete configObj.model_providers[pid];
   // Also drop any table the row doesn't carry — a common config cannot plant
@@ -507,14 +576,14 @@ function buildCodexConfig(settingsConfig, meta, category, shared, provider, sett
   let effectiveConfigText = configText;
 
   // Shared config merge (TOML)
-  const useShared = !!sharedTrimmed && (
-    meta?.commonConfigEnabled === false
+  const useShared =
+    !!sharedTrimmed &&
+    (meta?.commonConfigEnabled === false
       ? false
       : liveShared
         ? true
         : (isAgg && meta?.commonConfigEnabled !== false) ||
-          providerUsesCommonConfig("codex", settingsConfig, meta, sharedText)
-  );
+          providerUsesCommonConfig("codex", settingsConfig, meta, sharedText));
   if (useShared) {
     try {
       const target = parseToml(configText || "");
@@ -535,7 +604,9 @@ function buildCodexConfig(settingsConfig, meta, category, shared, provider, sett
   // the global cc-switch-model-catalog.json verbatim in prepare (stackCatalog
   // flag below), never from the template regeneration that would drop the
   // desktop-written keys (comp_hash, multi_agent_version, priorities …).
-  const catalog = isAgg ? null : codexModelCatalogFromSettings(settingsConfig, effectiveConfigText, profile);
+  const catalog = isAgg
+    ? null
+    : codexModelCatalogFromSettings(settingsConfig, effectiveConfigText, profile);
 
   let configObj;
   try {
@@ -572,7 +643,7 @@ function buildCodexConfig(settingsConfig, meta, category, shared, provider, sett
   // Aggregation row: auth stays {} — the real credentials live in the member
   // rows and the proxy; a misconfigured OPENAI_API_KEY must never overwrite
   // PROXY_MANAGED (bearer injection below is likewise skipped).
-  const auth = isAgg ? {} : (settingsConfig.auth || {});
+  const auth = isAgg ? {} : settingsConfig.auth || {};
   const apiKey = isAgg ? undefined : extractCodexAuthApiKey(auth);
 
   // Third-party provider: inject bearer token
@@ -592,5 +663,44 @@ function buildCodexConfig(settingsConfig, meta, category, shared, provider, sett
   return { configText: finalConfigText, auth, catalog, apiKey, profile, stackCatalog: isAgg };
 }
 
-
-export { CC_SWITCH_CATALOG_FILENAME, CODEX_AGG_TOPLEVEL_FALLBACK_KEYS, CODEX_OFFICIAL_PROVIDER_ID, CODEX_RESERVED_MODEL_PROVIDER_IDS, CODEX_STATUS_LINE_ITEMS, CODEX_WEB_SEARCH_REJECT_HOSTS, CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES, CONFIRMED_TEXT_ONLY_TAILS, ONE_M_CONTEXT_MARKER, applyCodexStatusLineInjection, buildCodexConfig, codexAggregationRoute, codexAuthHasLoginMaterial, codexCatalogInputModalities, codexCatalogModelEntry, codexCatalogModelSpecs, codexInstanceDirFor, codexModelCatalogFromSettings, codexNativeGatewayRejectsWebSearch, copyGlobalCodexCatalogIntoInstance, extractCodexAuthApiKey, extractCodexBaseUrl, extractTopLevelU64, imageInputCapabilityFromModalities, isCodexRuntimeStateChange, isCodexRuntimeStatePath, isCodexStatusLineChannelPath, isConfirmedTextOnlyModel, isCustomCodexModelProviderId, loadTemplate, mergeCodexRuntimeState, normalizeModelId, parsePositiveU64, protectCodexAggregationIdentity, readGlobalCodexCatalogText, resolveCodexCatalogToolProfile, setCodexExperimentalBearerToken, setCodexModelCatalogField, setCodexWebSearchField };
+export {
+  CC_SWITCH_CATALOG_FILENAME,
+  CODEX_AGG_TOPLEVEL_FALLBACK_KEYS,
+  CODEX_OFFICIAL_PROVIDER_ID,
+  CODEX_RESERVED_MODEL_PROVIDER_IDS,
+  CODEX_STATUS_LINE_ITEMS,
+  CODEX_WEB_SEARCH_REJECT_HOSTS,
+  CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES,
+  CONFIRMED_TEXT_ONLY_TAILS,
+  ONE_M_CONTEXT_MARKER,
+  applyCodexStatusLineInjection,
+  buildCodexConfig,
+  codexAggregationRoute,
+  codexAuthHasLoginMaterial,
+  codexCatalogInputModalities,
+  codexCatalogModelEntry,
+  codexCatalogModelSpecs,
+  codexInstanceDirFor,
+  codexModelCatalogFromSettings,
+  codexNativeGatewayRejectsWebSearch,
+  copyGlobalCodexCatalogIntoInstance,
+  extractCodexAuthApiKey,
+  extractCodexBaseUrl,
+  extractTopLevelU64,
+  imageInputCapabilityFromModalities,
+  isCodexRuntimeStateChange,
+  isCodexRuntimeStatePath,
+  isCodexStatusLineChannelPath,
+  isConfirmedTextOnlyModel,
+  isCustomCodexModelProviderId,
+  loadTemplate,
+  mergeCodexRuntimeState,
+  normalizeModelId,
+  parsePositiveU64,
+  protectCodexAggregationIdentity,
+  readGlobalCodexCatalogText,
+  resolveCodexCatalogToolProfile,
+  setCodexExperimentalBearerToken,
+  setCodexModelCatalogField,
+  setCodexWebSearchField,
+};

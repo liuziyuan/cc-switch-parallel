@@ -5,12 +5,35 @@ import { APP_ADAPTERS } from "./adapters.js";
 import { buildRunningSet } from "./commands/ps.js";
 import { queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
-import { QUICK_KEYS, insertManualOrder, loadHistory, permLabel, quickItemsFor, removeAllDeadPairs, removeHistoryPair, setEntryHotkey, snapshotAliveByCli, unpinPair } from "./history.js";
+import {
+  QUICK_KEYS,
+  insertManualOrder,
+  loadHistory,
+  permLabel,
+  quickItemsFor,
+  removeAllDeadPairs,
+  removeHistoryPair,
+  setEntryHotkey,
+  snapshotAliveByCli,
+  unpinPair,
+} from "./history.js";
 import { launchProvider } from "./launch.js";
 import { VIRTUAL_STACK_APPS } from "./paths.js";
-import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.js";
+import {
+  buildAggregationGroup,
+  cleanupLegacyStackRows,
+  reportLegacyStackCleanup,
+} from "./stack/state.js";
 import { clipFrame, fitLine, installTerminalGuard, sanitizeText } from "./terminal-utils.js";
-import { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRelay, loadStatuslineDisplay, saveStatuslineColor, saveStatuslineDisplay, statuslineColorFor } from "./statusline-colors.js";
+import {
+  STATUSLINE_COLOR_CHOICES,
+  STATUSLINE_DISPLAY_ITEMS,
+  detectStatuslineRelay,
+  loadStatuslineDisplay,
+  saveStatuslineColor,
+  saveStatuslineDisplay,
+  statuslineColorFor,
+} from "./statusline-colors.js";
 
 // ─── TUI interactive mode ──────────────────────────────────────────────
 
@@ -64,7 +87,13 @@ function readDisplayPath(obj, path) {
 // Rows for the `s` statusline panel. Pure (no terminal access) so the layout
 // and the claude-hud annotation are unit-testable; `width` is the usable
 // column count after the panel's 4-column outer padding.
-function buildStatuslinePanelLines({ display, relayKind = "none", context = null, cursor = 0, width = 76 }) {
+function buildStatuslinePanelLines({
+  display,
+  relayKind = "none",
+  context = null,
+  cursor = 0,
+  width = 76,
+}) {
   const lines: string[] = [];
   const text = (s) => fitLine(sanitizeText(s), Math.max(1, width - 2));
   const row = (s, style) => {
@@ -79,26 +108,39 @@ function buildStatuslinePanelLines({ display, relayKind = "none", context = null
   // The relay owns the model/project/git/context rows; say so loudly, then
   // annotate each locked switch with who actually supplies it.
   if (relayKind === "claude-hud") {
-    lines.push(row("⚡ claude-hud is active — model / project / git / context are rendered by claude-hud", "highlight"));
+    lines.push(
+      row(
+        "⚡ claude-hud is active — model / project / git / context are rendered by claude-hud",
+        "highlight",
+      ),
+    );
   } else if (relayKind === "other") {
     lines.push(row("⚡ A custom statusLine is active — new items are not stacked", "highlight"));
   } else {
     lines.push(row("Self-drawn statusline — all switches apply (effective immediately)", "dim"));
   }
   if (context === "codex") {
-    lines.push(row("Codex has no external statusline yet — these switches apply to Claude instances only", "warning"));
+    lines.push(
+      row(
+        "Codex has no external statusline yet — these switches apply to Claude instances only",
+        "warning",
+      ),
+    );
   }
   lines.push("");
   if (relayKind !== "none") {
-    lines.push(row(
-      relayKind === "claude-hud"
-        ? "Locked rows are supplied by claude-hud; turn it off to use the built-in renderer"
-        : "Locked rows are supplied by the custom statusLine; remove it to use the built-in renderer",
-      "dim",
-    ));
+    lines.push(
+      row(
+        relayKind === "claude-hud"
+          ? "Locked rows are supplied by claude-hud; turn it off to use the built-in renderer"
+          : "Locked rows are supplied by the custom statusLine; remove it to use the built-in renderer",
+        "dim",
+      ),
+    );
   }
 
-  const sourceLabel = relayKind === "claude-hud" ? "claude-hud" : relayKind === "other" ? "statusLine" : null;
+  const sourceLabel =
+    relayKind === "claude-hud" ? "claude-hud" : relayKind === "other" ? "statusLine" : null;
   const relayLocked = relayKind !== "none";
   for (let i = 0; i < STATUSLINE_DISPLAY_ITEMS.length; i++) {
     const item = STATUSLINE_DISPLAY_ITEMS[i];
@@ -117,7 +159,7 @@ function buildStatuslinePanelLines({ display, relayKind = "none", context = null
 
 function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> {
   // Backward-compat: accept a bare hotkeys array as 3rd arg.
-  const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : (optsArg || {});
+  const opts = Array.isArray(optsArg) ? { hotkeys: optsArg } : optsArg || {};
   const hotkeys = opts.hotkeys || [];
   const interactive = !!opts.interactive;
   let quickItems = opts.quickItems || []; // mutable: refreshed after mutations
@@ -128,12 +170,18 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
   const pinOptions = !!opts.pinContext && typeof opts.onPin === "function"; // provider layer
   const pinQuick = !!opts.quickPin && typeof opts.onPin === "function"; // CLI layer
   const canColor = typeof opts.onColor === "function" && typeof opts.getCurrentColor === "function"; // provider layer `o`
-  const canStatusline = typeof opts.onStatusline === "function" && typeof opts.getStatuslineDisplay === "function"; // provider layer `s`
-  const refreshQuick = typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
+  const canStatusline =
+    typeof opts.onStatusline === "function" && typeof opts.getStatuslineDisplay === "function"; // provider layer `s`
+  const refreshQuick =
+    typeof opts.onRefreshQuickItems === "function" ? opts.onRefreshQuickItems : null;
 
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      reject(new Error("TUI mode requires an interactive terminal. Use command mode: switch <provider> <cmd>"));
+      reject(
+        new Error(
+          "TUI mode requires an interactive terminal. Use command mode: switch <provider> <cmd>",
+        ),
+      );
       return;
     }
 
@@ -185,7 +233,8 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       const lines: string[] = [];
       lines.push(`\x1b[1m\x1b[36m◆ ${fit(prompt, 4)}\x1b[0m`);
       lines.push("");
-      const locked = m === "param" || m === "pin" || m === "confirm" || m === "color" || m === "statusline";
+      const locked =
+        m === "param" || m === "pin" || m === "confirm" || m === "color" || m === "statusline";
       // unified navigation space: [0..options.length-1] = options,
       // [options.length..options.length+quickItems.length-1] = quickItems
       for (let i = 0; i < options.length; i++) {
@@ -263,13 +312,17 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         } else {
           head = `Remove "${provider}" from Recent?`;
         }
-        lines.push(`  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`);
+        lines.push(
+          `  ${head}   \x1b[1m\x1b[36my confirm\x1b[0m\x1b[90m · any other key cancel\x1b[0m`,
+        );
       } else if (interactive) {
         lines.push("");
         const pinHint = pinOptions ? `   t pin top5` : "";
         const colorHint = canColor ? `   o tag color` : "";
         const statuslineHint = canStatusline ? `   s statusline` : "";
-        lines.push(`  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}${colorHint}${statuslineHint}   esc ← back to CLI`, 4)}\x1b[0m`);
+        lines.push(
+          `  \x1b[90m${fit(`↑↓ navigate   ⏎ confirm${pinHint}${colorHint}${statuslineHint}   esc ← back to CLI`, 4)}\x1b[0m`,
+        );
       } else {
         // CLI layer select mode: optionally show top5 quick-launch region
         if (quickItems.length > 0) {
@@ -282,7 +335,11 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
             // still be wanted) but flag it red and make it non-launchable.
             // A pinned row keeps its manual slot — marked `*` so a persistent
             // pin never reads as "the ranking is broken".
-            const flag = q.dead ? `\x1b[31m ✗ missing\x1b[0m` : q.running ? `\x1b[32m ● live\x1b[0m` : "";
+            const flag = q.dead
+              ? `\x1b[31m ✗ missing\x1b[0m`
+              : q.running
+                ? `\x1b[32m ● live\x1b[0m`
+                : "";
             const pin = q.pinned ? "*" : " ";
             const text = fit(`${q.key} ${pin}${q.label}`, 6);
             if (locked) {
@@ -291,7 +348,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
             } else if (isSel) {
               lines.push(`\x1b[36m❯ ${text}\x1b[0m${flag}`);
             } else {
-              lines.push(`  \x1b[36m${text.slice(0, 1)}\x1b[0m \x1b[90m${text.slice(2)}\x1b[0m${flag}`);
+              lines.push(
+                `  \x1b[36m${text.slice(0, 1)}\x1b[0m \x1b[90m${text.slice(2)}\x1b[0m${flag}`,
+              );
             }
           }
         }
@@ -303,7 +362,8 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         if (quickItems.length === 0 || selected < options.length) {
           parts.push(`⏎/1-${options.length} sel`);
         }
-        if (quickItems.length > 0) parts.push(`${QUICK_KEYS[0]}-${QUICK_KEYS[quickItems.length - 1]} quick`);
+        if (quickItems.length > 0)
+          parts.push(`${QUICK_KEYS[0]}-${QUICK_KEYS[quickItems.length - 1]} quick`);
         if (quickItems.length > 0 && selected >= options.length) {
           if (pinQuick) parts.push("t pin");
           if (canUnpin && quickItems[selected - options.length]?.pinned) parts.push("u unpin");
@@ -432,9 +492,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           render(
             mode,
             slot
-              ? (interactive
+              ? interactive
                 ? `✓ Pinned "${pinTarget.label}" to Recent #${slot} — esc back to CLI to see it`
-                : `✓ Pinned "${pinTarget.label}" to Recent #${slot}`)
+                : `✓ Pinned "${pinTarget.label}" to Recent #${slot}`
               : `✗ Pin failed (history write error)`,
           );
           return;
@@ -447,7 +507,8 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         // cancels. Never launches; every other key is ignored (same stance
         // as pinning) so stray input can't mutate state.
         if (key === "\x1b[A" || key === "k") {
-          colorIndex = (colorIndex - 1 + STATUSLINE_COLOR_CHOICES.length) % STATUSLINE_COLOR_CHOICES.length;
+          colorIndex =
+            (colorIndex - 1 + STATUSLINE_COLOR_CHOICES.length) % STATUSLINE_COLOR_CHOICES.length;
           render(mode);
           return;
         }
@@ -481,7 +542,9 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         // esc returns. Rows owned by a relay are locked (dimmed) but still
         // navigable, so the user can read what is and is not in effect.
         if (key === "\x1b[A" || key === "k") {
-          statuslineIndex = (statuslineIndex - 1 + STATUSLINE_DISPLAY_ITEMS.length) % STATUSLINE_DISPLAY_ITEMS.length;
+          statuslineIndex =
+            (statuslineIndex - 1 + STATUSLINE_DISPLAY_ITEMS.length) %
+            STATUSLINE_DISPLAY_ITEMS.length;
           render(mode);
           return;
         }
@@ -522,7 +585,13 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           mode = "select";
           if (kind === "launch") {
             cleanup();
-            resolve({ quick: true, cli: target.cli, provider: target.provider, hotkey: target.hotkey, extraArgs: target.extraArgs });
+            resolve({
+              quick: true,
+              cli: target.cli,
+              provider: target.provider,
+              hotkey: target.hotkey,
+              extraArgs: target.extraArgs,
+            });
             return;
           }
           if (kind === "cleanup") {
@@ -538,7 +607,12 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           }
           const ok = opts.onRemove(target.pairKey) !== null;
           if (ok) refreshQuickItems();
-          render(mode, ok ? `✓ Removed "${target.provider}" from Recent` : `✗ Remove failed (history write error)`);
+          render(
+            mode,
+            ok
+              ? `✓ Removed "${target.provider}" from Recent`
+              : `✗ Remove failed (history write error)`,
+          );
           return;
         }
         confirmAction = null;
@@ -580,7 +654,13 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
           return;
         }
         cleanup();
-        resolve({ quick: true, cli: q.cli, provider: q.provider, hotkey: q.hotkey, extraArgs: q.extraArgs });
+        resolve({
+          quick: true,
+          cli: q.cli,
+          provider: q.provider,
+          hotkey: q.hotkey,
+          extraArgs: q.extraArgs,
+        });
       };
       if (key === "\r" || key === "\n") {
         // If selection is on a quick item, resolve it as quick-launch —
@@ -628,7 +708,12 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
         const q = quickItems[selected - options.length];
         const ok = opts.onUnpin(q.pairKey) !== null;
         if (ok) refreshQuickItems();
-        render(mode, ok ? `✓ Unpinned "${q.provider}" — back to natural ranking` : `✗ Unpin failed (history write error)`);
+        render(
+          mode,
+          ok
+            ? `✓ Unpinned "${q.provider}" — back to natural ranking`
+            : `✗ Unpin failed (history write error)`,
+        );
         return;
       }
       // `c`: bulk-remove every dead entry from Recent (confirm follows)
@@ -646,9 +731,10 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       // only supplies the Codex notice.
       if (interactive && canStatusline && key === "s" && selected < options.length) {
         statuslineDisplay = opts.getStatuslineDisplay();
-        statuslineRelay = typeof opts.getStatuslineRelay === "function"
-          ? opts.getStatuslineRelay()
-          : { kind: "none", command: null };
+        statuslineRelay =
+          typeof opts.getStatuslineRelay === "function"
+            ? opts.getStatuslineRelay()
+            : { kind: "none", command: null };
         statuslineIndex = 0;
         mode = "statusline";
         render(mode);
@@ -688,7 +774,12 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
       }
       if (pinQuick && key === "t" && quickItems.length > 0 && selected >= options.length) {
         const q = quickItems[selected - options.length];
-        pinTarget = { cli: q.cli, providerId: q.providerId, provider: q.provider, label: q.provider };
+        pinTarget = {
+          cli: q.cli,
+          providerId: q.providerId,
+          provider: q.provider,
+          label: q.provider,
+        };
         mode = "pin";
         render(mode);
         return;
@@ -734,22 +825,40 @@ function tuiSelect(prompt: string, options: any[], optsArg?: any): Promise<any> 
     function cleanup() {
       if (cleaned) return;
       cleaned = true;
-      try { process.stdin.setRawMode(false); } catch {}
-      try { process.stdin.removeListener("data", onData); } catch {}
-      try { process.stdin.removeListener("end", onInputClosed); } catch {}
-      try { process.stdin.removeListener("close", onInputClosed); } catch {}
-      try { process.stdin.removeListener("error", onInputClosed); } catch {}
-      try { process.stdout.removeListener("resize", onResize); } catch {}
+      try {
+        process.stdin.setRawMode(false);
+      } catch {}
+      try {
+        process.stdin.removeListener("data", onData);
+      } catch {}
+      try {
+        process.stdin.removeListener("end", onInputClosed);
+      } catch {}
+      try {
+        process.stdin.removeListener("close", onInputClosed);
+      } catch {}
+      try {
+        process.stdin.removeListener("error", onInputClosed);
+      } catch {}
+      try {
+        process.stdout.removeListener("resize", onResize);
+      } catch {}
       // pause() is required, not just removeListener: stdin is still in
       // flowing mode from the resume() at entry, and a flowing stream with no
       // data listeners keeps READING tty bytes (discarding them) — the spawned
       // CLI would lose keystrokes. Masked for years by spawnSync freezing the
       // event loop; surfaced when launch switched to async spawn.
-      try { process.stdin.pause(); } catch {}
+      try {
+        process.stdin.pause();
+      } catch {}
       if (lastDrawnLines > 0) {
-        try { process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`); } catch {}
+        try {
+          process.stdout.write(`\x1b[${lastDrawnLines}A\x1b[J`);
+        } catch {}
       }
-      try { guard?.dispose(); } catch {}
+      try {
+        guard?.dispose();
+      } catch {}
     }
 
     process.stdin.on("data", onData);
@@ -803,8 +912,10 @@ async function runTUI() {
       const { entries, order } = loadHistory();
       // Shared projection with command mode's `switch a|s|d|f|g` — only the
       // ● live marker is TUI-specific.
-      return quickItemsFor(entries, order, aliveByCli)
-        .map((q) => ({ ...q, running: runningSet.has(q.providerId) }));
+      return quickItemsFor(entries, order, aliveByCli).map((q) => ({
+        ...q,
+        running: runningSet.has(q.providerId),
+      }));
     };
 
     const cli = await tuiSelect("Select CLI tool", cliOptions, {
@@ -830,7 +941,8 @@ async function runTUI() {
     // and replays the recorded argv (falling back to the bare permission flags
     // for pre-extraArgs entries).
     if (cli.quick) {
-      const args = cli.extraArgs.length > 0 ? cli.extraArgs : APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey);
+      const args =
+        cli.extraArgs.length > 0 ? cli.extraArgs : APP_ADAPTERS[cli.cli].permissionArgs(cli.hotkey);
       await launchProvider(cli.cli, launchRefForQuick(cli), args, null, { hotkey: cli.hotkey });
       return;
     }
@@ -840,7 +952,9 @@ async function runTUI() {
 
     const providers = queryProvidersByApp(adapter.appType);
     if (providers.length === 0) {
-      console.error(`✗ No provider config found for ${adapter.appType}. Please configure one in cc-switch first.`);
+      console.error(
+        `✗ No provider config found for ${adapter.appType}. Please configure one in cc-switch first.`,
+      );
       process.exit(1);
     }
     let providerOptions = providers.map((p) => ({ label: p.name, value: p.id }));
@@ -861,43 +975,44 @@ async function runTUI() {
     }
     let selected;
     try {
-      selected = await tuiSelect(
-        `Select provider (${adapter.displayName})`,
-        providerOptions,
-        {
-          hotkeys: [
-            { key: "⏎", label: "Default" },
-            { key: "2", label: "Semi-auto" },
-            { key: "3", label: "Full-auto ⚠" },
-          ],
-          interactive: true,
-          pinContext: cli.value,
-          onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
-          // `o` tag color — both CLIs. claude's color is consumed by the
-          // wrapper at prepare time; codex's native status_line has no custom
-          // text/color slot (upstream #17827), so the codex color is consumed
-          // by the tmuxclihook status bar's provider segment instead (same
-          // statusline-preferences.json, per-CLI buckets).
-          colorContext: cli.value,
-          onColor: (target, value) => saveStatuslineColor(cli.value, target.providerId, value),
-          getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
-          // `s` display settings are global; statuslineContext only drives the
-          // Codex notice (Codex has no external statusline command yet).
-          statuslineContext: cli.value,
-          onStatusline: (key, value) => saveStatuslineDisplay(key, value),
-          getStatuslineDisplay: () => loadStatuslineDisplay(),
-          getStatuslineRelay: () => detectStatuslineRelay(),
-        },
-      );
+      selected = await tuiSelect(`Select provider (${adapter.displayName})`, providerOptions, {
+        hotkeys: [
+          { key: "⏎", label: "Default" },
+          { key: "2", label: "Semi-auto" },
+          { key: "3", label: "Full-auto ⚠" },
+        ],
+        interactive: true,
+        pinContext: cli.value,
+        onPin: (item, pos) => insertManualOrder(item, pos, aliveByCli),
+        // `o` tag color — both CLIs. claude's color is consumed by the
+        // wrapper at prepare time; codex's native status_line has no custom
+        // text/color slot (upstream #17827), so the codex color is consumed
+        // by the tmuxclihook status bar's provider segment instead (same
+        // statusline-preferences.json, per-CLI buckets).
+        colorContext: cli.value,
+        onColor: (target, value) => saveStatuslineColor(cli.value, target.providerId, value),
+        getCurrentColor: (target) => statuslineColorFor(cli.value, target.providerId),
+        // `s` display settings are global; statuslineContext only drives the
+        // Codex notice (Codex has no external statusline command yet).
+        statuslineContext: cli.value,
+        onStatusline: (key, value) => saveStatuslineDisplay(key, value),
+        getStatuslineDisplay: () => loadStatuslineDisplay(),
+        getStatuslineRelay: () => detectStatuslineRelay(),
+      });
     } catch (e: any) {
       if (e.message === "BACK_TO_CLI") continue; // esc on provider → back to CLI
       throw e; // Ctrl+C → propagate to main()
     }
     const provider = providers.find((p) => p.id === selected.value);
-    await launchProvider(cli.value, launchRefForRow(provider), adapter.permissionArgs(selected.hotkey), null, { hotkey: selected.hotkey });
+    await launchProvider(
+      cli.value,
+      launchRefForRow(provider),
+      adapter.permissionArgs(selected.hotkey),
+      null,
+      { hotkey: selected.hotkey },
+    );
     return;
   }
 }
-
 
 export { buildStatuslinePanelLines, launchRefForQuick, launchRefForRow, runTUI, tuiSelect };

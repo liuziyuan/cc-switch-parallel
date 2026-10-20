@@ -19,10 +19,27 @@ process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
 const { APP_ADAPTERS } = await import("../src/adapters.ts");
-const { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } = await import("../src/db.ts");
+const { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } =
+  await import("../src/db.ts");
 const { codexAggregationRoute } = await import("../src/stack/aggregation.ts");
-const { protectCodexAggregationIdentity, copyGlobalCodexCatalogIntoInstance, readGlobalCodexCatalogText, mergeCodexRuntimeState } = await import("../src/stack/catalog.ts");
-const { isCodexAggregationProviderSettings, providerIsAggregation, aggregationBaseUrlFor, buildCodexStackSettingsFromGlobal, codexStackDormantSettings, isCodexAggModelPath, virtualStackProviderFor, appendVirtualStackRow, readStackState, buildAggregationGroup } = await import("../src/stack/state.ts");
+const {
+  protectCodexAggregationIdentity,
+  copyGlobalCodexCatalogIntoInstance,
+  readGlobalCodexCatalogText,
+  mergeCodexRuntimeState,
+} = await import("../src/stack/catalog.ts");
+const {
+  isCodexAggregationProviderSettings,
+  providerIsAggregation,
+  aggregationBaseUrlFor,
+  buildCodexStackSettingsFromGlobal,
+  codexStackDormantSettings,
+  isCodexAggModelPath,
+  virtualStackProviderFor,
+  appendVirtualStackRow,
+  readStackState,
+  buildAggregationGroup,
+} = await import("../src/stack/state.ts");
 const { codexAggregationDoctorChecks } = await import("../src/commands/doctor.ts");
 const { VIRTUAL_STACK_PROVIDER_ID } = await import("../src/paths.ts");
 
@@ -62,15 +79,31 @@ status_line = ["model-with-reasoning", "current-dir"]
 "gpt-5.6-sol" = 2
 `;
 
-const CATALOG_FIXTURE = JSON.stringify({
-  models: [
-    { slug: "glm-5.3", display_name: "GLM-5.3", priority: 1, comp_hash: "aa", multi_agent_version: "v1" },
-    { slug: "ccs-deepseek/deepseek-flash", display_name: "DeepSeek V4.1 Flash（DeepSeek）", priority: 3 },
-  ],
-}, null, 2);
+const CATALOG_FIXTURE = JSON.stringify(
+  {
+    models: [
+      {
+        slug: "glm-5.3",
+        display_name: "GLM-5.3",
+        priority: 1,
+        comp_hash: "aa",
+        multi_agent_version: "v1",
+      },
+      {
+        slug: "ccs-deepseek/deepseek-flash",
+        display_name: "DeepSeek V4.1 Flash（DeepSeek）",
+        priority: 3,
+      },
+    ],
+  },
+  null,
+  2,
+);
 
 function sql(statement) {
-  return execFileSync("sqlite3", [join(CC, "cc-switch.db"), ".timeout 3000", statement], { encoding: "utf8" });
+  return execFileSync("sqlite3", [join(CC, "cc-switch.db"), ".timeout 3000", statement], {
+    encoding: "utf8",
+  });
 }
 
 function ensureDB() {
@@ -98,19 +131,24 @@ function cleanCodexState() {
   rmSync(GLOBAL_CATALOG, { force: true });
   rmSync(LIVE_STATE, { force: true });
   rmSync(join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true, force: true });
-  try { sql(`DELETE FROM providers WHERE app_type = 'codex'`); } catch {}
+  try {
+    sql(`DELETE FROM providers WHERE app_type = 'codex'`);
+  } catch {}
 }
 
 function writeCodexLiveState(stack, proxyRoute) {
   mkdirSync(CC, { recursive: true });
   // Both app buckets: proves the codex reads only apps.codex (isolation).
-  writeFileSync(LIVE_STATE, JSON.stringify({
-    version: 1,
-    apps: {
-      claude: { mode: "direct" },
-      codex: { mode: "proxy", ...(proxyRoute ? { proxy_route: proxyRoute } : {}), stack },
-    },
-  }));
+  writeFileSync(
+    LIVE_STATE,
+    JSON.stringify({
+      version: 1,
+      apps: {
+        claude: { mode: "direct" },
+        codex: { mode: "proxy", ...(proxyRoute ? { proxy_route: proxyRoute } : {}), stack },
+      },
+    }),
+  );
 }
 
 function writeGlobalConfig(text) {
@@ -141,14 +179,24 @@ name = "zhipu"
 base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
 wire_api = "chat"
 `;
-const STACK_ROW_CONFIG = GLOBAL_CONFIG_FULL.replace('model_provider = "custom"', 'model_provider = "custom"');
+const STACK_ROW_CONFIG = GLOBAL_CONFIG_FULL.replace(
+  'model_provider = "custom"',
+  'model_provider = "custom"',
+);
 
 let stderrBuf = "";
 function captureStderr(fn) {
   stderrBuf = "";
   const orig = process.stderr.write;
-  process.stderr.write = (s) => { stderrBuf += s; return true; };
-  try { fn(); } finally { process.stderr.write = orig; }
+  process.stderr.write = (s) => {
+    stderrBuf += s;
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = orig;
+  }
 }
 
 // ─── 1. signature ──────────────────────────────────────────────────────
@@ -158,23 +206,33 @@ test("codex aggregation unit: signature = loopback active table + PROXY_MANAGED"
   assert.equal(isCodexAggregationProviderSettings(aggRow), true);
   assert.equal(providerIsAggregation("codex", aggRow), true);
   // top-level fallback shape (no table): bearer + loopback via top-level keys
-  assert.equal(isCodexAggregationProviderSettings({
-    config: `model_provider = "custom"
+  assert.equal(
+    isCodexAggregationProviderSettings({
+      config: `model_provider = "custom"
 base_url = "http://127.0.0.1:15721/v1"
 experimental_bearer_token = "PROXY_MANAGED"
 `,
-    auth: {},
-  }), true, "top-level fallback shape still matches");
+      auth: {},
+    }),
+    true,
+    "top-level fallback shape still matches",
+  );
   // loopback + REAL token = a user's own gateway, NOT aggregation
-  assert.equal(isCodexAggregationProviderSettings({
-    config: GLOBAL_CONFIG_FULL.replace('"PROXY_MANAGED"', '"sk-real"'),
-    auth: {},
-  }), false);
+  assert.equal(
+    isCodexAggregationProviderSettings({
+      config: GLOBAL_CONFIG_FULL.replace('"PROXY_MANAGED"', '"sk-real"'),
+      auth: {},
+    }),
+    false,
+  );
   // non-loopback + PROXY_MANAGED is not one either
-  assert.equal(isCodexAggregationProviderSettings({
-    config: GLOBAL_CONFIG_FULL.replace("http://127.0.0.1:15721/v1", "https://api.z.ai/v1"),
-    auth: {},
-  }), false);
+  assert.equal(
+    isCodexAggregationProviderSettings({
+      config: GLOBAL_CONFIG_FULL.replace("http://127.0.0.1:15721/v1", "https://api.z.ai/v1"),
+      auth: {},
+    }),
+    false,
+  );
   // plain member rows are not aggregation rows
   assert.equal(isCodexAggregationProviderSettings({ config: DEEPSEEK_CONFIG, auth: {} }), false);
   assert.equal(isCodexAggregationProviderSettings({ config: ZHIPU_CONFIG, auth: {} }), false);
@@ -229,13 +287,17 @@ test("codex aggregation: buildCodexStackSettingsFromGlobal projects the whitelis
   assert.equal(doc.projects, undefined, "runtime state stays out");
   assert.equal(doc.hooks, undefined, "runtime state stays out");
   assert.equal(doc.tui, undefined, "runtime state stays out");
-  assert.deepEqual(doc.model_providers.custom, {
-    name: "custom",
-    base_url: "http://127.0.0.1:15721/v1",
-    wire_api: "responses",
-    experimental_bearer_token: "PROXY_MANAGED",
-    requires_openai_auth: false,
-  }, "only the whitelist table keys, bearer/requires forced");
+  assert.deepEqual(
+    doc.model_providers.custom,
+    {
+      name: "custom",
+      base_url: "http://127.0.0.1:15721/v1",
+      wire_api: "responses",
+      experimental_bearer_token: "PROXY_MANAGED",
+      requires_openai_auth: false,
+    },
+    "only the whitelist table keys, bearer/requires forced",
+  );
   assert.equal(Object.keys(doc.model_providers).length, 1);
   // wire_api "chat" passes through; missing table name falls back to the id
   writeGlobalConfig(`model_provider = "custom"
@@ -309,7 +371,10 @@ test("codex aggregation: virtualStackProviderFor three states + per-app isolatio
   const dormantDoc = parseToml(JSON.parse(dormant.settings_config).config);
   assert.equal(dormantDoc.model_provider, "cc-switch-stack");
   assert.equal(dormantDoc.model_providers["cc-switch-stack"].base_url, "http://127.0.0.1:15721");
-  assert.equal(dormantDoc.model_providers["cc-switch-stack"].experimental_bearer_token, "PROXY_MANAGED");
+  assert.equal(
+    dormantDoc.model_providers["cc-switch-stack"].experimental_bearer_token,
+    "PROXY_MANAGED",
+  );
   assert.equal(dormantDoc.model, undefined, "dormant row carries no model");
   assert.deepEqual(JSON.parse(dormant.settings_config).auth, {});
   // live: stack on + loopback global config → full derived row
@@ -342,7 +407,10 @@ test("codex aggregation: query exits merge the virtual row, DB wins on id collis
   mkdirSync(join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID), { recursive: true });
   // dormant entry exists → merged onto projections at all four exits
   const list = appendVirtualStackRow([{ id: "m-ds", name: "DeepSeek" }], "codex");
-  assert.deepEqual(list.map((r) => r.id), ["m-ds", VIRTUAL_STACK_PROVIDER_ID]);
+  assert.deepEqual(
+    list.map((r) => r.id),
+    ["m-ds", VIRTUAL_STACK_PROVIDER_ID],
+  );
   const byApp = queryProvidersByApp("codex");
   assert.ok(byApp.some((r) => r.id === VIRTUAL_STACK_PROVIDER_ID));
   const strict = queryProvidersStrict("codex");
@@ -356,7 +424,10 @@ test("codex aggregation: query exits merge the virtual row, DB wins on id collis
   // DB already carries a __stack__ codex row → the merge input already has
   // the id → not appended again (DB wins)
   insertCodexRow(VIRTUAL_STACK_PROVIDER_ID, "Stack", DEEPSEEK_CONFIG);
-  const collided = appendVirtualStackRow([{ id: VIRTUAL_STACK_PROVIDER_ID, name: "Stack" }], "codex");
+  const collided = appendVirtualStackRow(
+    [{ id: VIRTUAL_STACK_PROVIDER_ID, name: "Stack" }],
+    "codex",
+  );
   assert.equal(collided.length, 1);
   assert.equal(collided[0].is_virtual, undefined, "DB row stands, no virtual append");
   sql(`DELETE FROM providers WHERE id = '${VIRTUAL_STACK_PROVIDER_ID}'`);
@@ -392,39 +463,77 @@ terminal_title = ["common-title"]
 test("codex aggregation: forced common merge + identity protection via computeEffectiveSettings", () => {
   cleanCodexState();
   ensureDB();
-  sql(`INSERT OR REPLACE INTO settings (key, value) VALUES ('common_config_codex', '${HOSTILE_COMMON.replace(/'/g, "''")}')`);
+  sql(
+    `INSERT OR REPLACE INTO settings (key, value) VALUES ('common_config_codex', '${HOSTILE_COMMON.replace(/'/g, "''")}')`,
+  );
   const commonText = HOSTILE_COMMON;
   const dir = join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID);
   mkdirSync(dir, { recursive: true });
   const settingsConfig = { config: GLOBAL_CONFIG_FULL, auth: {} };
-  const effective = codex.computeEffectiveSettings(settingsConfig, {}, "custom", commonText, VIRTUAL_STACK_PROVIDER_ID, {});
+  const effective = codex.computeEffectiveSettings(
+    settingsConfig,
+    {},
+    "custom",
+    commonText,
+    VIRTUAL_STACK_PROVIDER_ID,
+    {},
+  );
   assert.ok(effective, "derivation parses");
   // identity keys survive the hostile common config
   assert.equal(effective.model_provider, "custom");
-  assert.deepEqual(effective.model_providers.custom, {
-    name: "custom",
-    base_url: "http://127.0.0.1:15721/v1",
-    wire_api: "responses",
-    experimental_bearer_token: "PROXY_MANAGED",
-    requires_openai_auth: false,
-  }, "whole-table restore kills env_key/http_headers plants");
+  assert.deepEqual(
+    effective.model_providers.custom,
+    {
+      name: "custom",
+      base_url: "http://127.0.0.1:15721/v1",
+      wire_api: "responses",
+      experimental_bearer_token: "PROXY_MANAGED",
+      requires_openai_auth: false,
+    },
+    "whole-table restore kills env_key/http_headers plants",
+  );
   assert.equal(effective.model_providers.planted, undefined, "row-absent tables are dropped");
   assert.equal(effective.base_url, undefined, "top-level fallback keys deleted");
   assert.equal(effective.wire_api, undefined);
   assert.equal(effective.experimental_bearer_token, undefined);
   assert.equal(effective.requires_openai_auth, undefined);
   assert.equal(effective.web_search, "disabled", "row value restored over common's");
-  assert.equal(effective.model_catalog_json, "cc-switch-model-catalog.json", "catalog pinned to the constant");
+  assert.equal(
+    effective.model_catalog_json,
+    "cc-switch-model-catalog.json",
+    "catalog pinned to the constant",
+  );
   // common CONTENT still merged in (the point of the forced merge)
   assert.equal(effective.model_context_window, 999999);
   assert.deepEqual(effective.tui.terminal_title, ["common-title"]);
   // model soft-protection: the row's model wins over any common value;
   // row has model → present. Remove it and a common model would stand:
-  const noModelRow = { config: GLOBAL_CONFIG_FULL.replace('model = "glm-5.3-flash"\n', ""), auth: {} };
-  const effective2 = codex.computeEffectiveSettings(noModelRow, {}, "custom", commonText, VIRTUAL_STACK_PROVIDER_ID, {});
-  assert.equal(effective2.model, undefined, "row without model keeps no model even from common's absence");
+  const noModelRow = {
+    config: GLOBAL_CONFIG_FULL.replace('model = "glm-5.3-flash"\n', ""),
+    auth: {},
+  };
+  const effective2 = codex.computeEffectiveSettings(
+    noModelRow,
+    {},
+    "custom",
+    commonText,
+    VIRTUAL_STACK_PROVIDER_ID,
+    {},
+  );
+  assert.equal(
+    effective2.model,
+    undefined,
+    "row without model keeps no model even from common's absence",
+  );
   // explicit commonConfigEnabled:false → no merge at all, identity intact
-  const effective3 = codex.computeEffectiveSettings(settingsConfig, { commonConfigEnabled: false }, "custom", commonText, VIRTUAL_STACK_PROVIDER_ID, {});
+  const effective3 = codex.computeEffectiveSettings(
+    settingsConfig,
+    { commonConfigEnabled: false },
+    "custom",
+    commonText,
+    VIRTUAL_STACK_PROVIDER_ID,
+    {},
+  );
   assert.equal(effective3.model_context_window, undefined);
   assert.equal(effective3.model_provider, "custom");
   cleanCodexState();
@@ -433,12 +542,19 @@ test("codex aggregation: forced common merge + identity protection via computeEf
 test("codex aggregation: bearer token never injected even with a misconfigured OPENAI_API_KEY", () => {
   cleanCodexState();
   ensureDB();
-  const settingsConfig = { config: GLOBAL_CONFIG_FULL, auth: { OPENAI_API_KEY: "sk-misconfigured" } };
+  const settingsConfig = {
+    config: GLOBAL_CONFIG_FULL,
+    auth: { OPENAI_API_KEY: "sk-misconfigured" },
+  };
   const dir = join(CODEX_INSTANCES, "bearer-test");
   mkdirSync(dir, { recursive: true });
   codex.prepare(dir, "bearer-test", settingsConfig, {}, "custom", null, {});
   const doc = parseToml(readFileSync(join(dir, "config.toml"), "utf8"));
-  assert.equal(doc.model_providers.custom.experimental_bearer_token, "PROXY_MANAGED", "no key overwrite");
+  assert.equal(
+    doc.model_providers.custom.experimental_bearer_token,
+    "PROXY_MANAGED",
+    "no key overwrite",
+  );
   assert.equal(doc.experimental_bearer_token, undefined, "no top-level fallback write either");
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")), {}, "auth.json is {}");
   cleanCodexState();
@@ -447,7 +563,11 @@ test("codex aggregation: bearer token never injected even with a misconfigured O
 test("codex aggregation unit: protectCodexAggregationIdentity handles row-less and empty shapes", () => {
   cleanCodexState();
   // row config unparsable → protective defaults (delete identity, pin catalog)
-  const obj = { model_provider: "evil", model_providers: { evil: { base_url: "http://x" } }, web_search: "enabled" };
+  const obj = {
+    model_provider: "evil",
+    model_providers: { evil: { base_url: "http://x" } },
+    web_search: "enabled",
+  };
   protectCodexAggregationIdentity(obj, { config: "not [ valid" });
   assert.equal(obj.model_provider, undefined);
   assert.equal(obj.model_providers, undefined);
@@ -471,26 +591,45 @@ test("codex aggregation: catalog is copied byte-for-byte, degraded copies warn",
   // global catalog present → instance copy is byte-identical
   writeGlobalCatalog(CATALOG_FIXTURE);
   let res;
-  captureStderr(() => { res = copyGlobalCodexCatalogIntoInstance(dir); });
+  captureStderr(() => {
+    res = copyGlobalCodexCatalogIntoInstance(dir);
+  });
   assert.deepEqual(res, { copied: true });
-  assert.equal(readFileSync(join(dir, "cc-switch-model-catalog.json"), "utf8"), CATALOG_FIXTURE, "byte-for-byte");
+  assert.equal(
+    readFileSync(join(dir, "cc-switch-model-catalog.json"), "utf8"),
+    CATALOG_FIXTURE,
+    "byte-for-byte",
+  );
   assert.equal(readGlobalCodexCatalogText(), CATALOG_FIXTURE);
   // global missing + instance copy exists → kept, warning
   rmSync(GLOBAL_CATALOG, { force: true });
-  captureStderr(() => { res = copyGlobalCodexCatalogIntoInstance(dir); });
+  captureStderr(() => {
+    res = copyGlobalCodexCatalogIntoInstance(dir);
+  });
   assert.deepEqual(res, { copied: false });
-  assert.equal(readFileSync(join(dir, "cc-switch-model-catalog.json"), "utf8"), CATALOG_FIXTURE, "existing copy kept");
-  assert.ok(stderrBuf.includes("keeping the instance's existing copy"), "warns about the kept copy");
+  assert.equal(
+    readFileSync(join(dir, "cc-switch-model-catalog.json"), "utf8"),
+    CATALOG_FIXTURE,
+    "existing copy kept",
+  );
+  assert.ok(
+    stderrBuf.includes("keeping the instance's existing copy"),
+    "warns about the kept copy",
+  );
   // global missing + no copy → no file, warning
   rmSync(join(dir, "cc-switch-model-catalog.json"), { force: true });
-  captureStderr(() => { res = copyGlobalCodexCatalogIntoInstance(dir); });
+  captureStderr(() => {
+    res = copyGlobalCodexCatalogIntoInstance(dir);
+  });
   assert.deepEqual(res, { copied: false });
   assert.equal(existsSync(join(dir, "cc-switch-model-catalog.json")), false);
   assert.ok(stderrBuf.includes("no aggregation model list"));
   // corrupt / empty models degrade the same way
   for (const bad of ["{corrupt", JSON.stringify({ models: [] }), JSON.stringify({ models: "x" })]) {
     writeGlobalCatalog(bad);
-    captureStderr(() => { res = copyGlobalCodexCatalogIntoInstance(dir); });
+    captureStderr(() => {
+      res = copyGlobalCodexCatalogIntoInstance(dir);
+    });
     assert.deepEqual(res, { copied: false }, `degrades on ${bad.slice(0, 12)}`);
   }
   cleanCodexState();
@@ -503,8 +642,19 @@ test("codex aggregation: prepare writes catalog via copy path; plain rows keep t
   writeGlobalCatalog(CATALOG_FIXTURE);
   const stackDir = join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID);
   mkdirSync(stackDir, { recursive: true });
-  codex.prepare(stackDir, VIRTUAL_STACK_PROVIDER_ID, { config: GLOBAL_CONFIG_FULL, auth: {} }, {}, null, null, {});
-  assert.equal(readFileSync(join(stackDir, "cc-switch-model-catalog.json"), "utf8"), CATALOG_FIXTURE);
+  codex.prepare(
+    stackDir,
+    VIRTUAL_STACK_PROVIDER_ID,
+    { config: GLOBAL_CONFIG_FULL, auth: {} },
+    {},
+    null,
+    null,
+    {},
+  );
+  assert.equal(
+    readFileSync(join(stackDir, "cc-switch-model-catalog.json"), "utf8"),
+    CATALOG_FIXTURE,
+  );
   const stackDoc = parseToml(readFileSync(join(stackDir, "config.toml"), "utf8"));
   assert.equal(stackDoc.model_catalog_json, "cc-switch-model-catalog.json");
   // plain row with modelCatalog → template regeneration (existing behavior)
@@ -517,14 +667,26 @@ name = "deepseek"
 base_url = "https://api.deepseek.com/v1"
 wire_api = "chat"
 `;
-  codex.prepare(plainDir, "plain-cat", {
-    config: plainConfig,
-    auth: {},
-    modelCatalog: { models: [{ model: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 65536 }] },
-  }, {}, "custom", null, {});
+  codex.prepare(
+    plainDir,
+    "plain-cat",
+    {
+      config: plainConfig,
+      auth: {},
+      modelCatalog: {
+        models: [{ model: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 65536 }],
+      },
+    },
+    {},
+    "custom",
+    null,
+    {},
+  );
   const plainDoc = parseToml(readFileSync(join(plainDir, "config.toml"), "utf8"));
   assert.equal(plainDoc.model_catalog_json, "cc-switch-model-catalog.json");
-  const regenerated = JSON.parse(readFileSync(join(plainDir, "cc-switch-model-catalog.json"), "utf8"));
+  const regenerated = JSON.parse(
+    readFileSync(join(plainDir, "cc-switch-model-catalog.json"), "utf8"),
+  );
   assert.equal(regenerated.models[0].slug, "deepseek-chat");
   assert.equal(regenerated.models[0].priority, 1000, "template priority, not the desktop one");
   // plain row WITHOUT modelCatalog → no file, no key (existing behavior)
@@ -542,15 +704,20 @@ wire_api = "chat"
 test("codex aggregation: /model pick carried across prepare; dangling key falls back; plain rows unaffected", () => {
   cleanCodexState();
   ensureDB();
-  writeCodexLiveState(
-    { enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } },
-    "m-ds",
-  );
+  writeCodexLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
   insertCodexRow("m-ds", "DeepSeek", DEEPSEEK_CONFIG);
   const dir = join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID);
   mkdirSync(dir, { recursive: true });
   // first prepare: row model lands
-  codex.prepare(dir, VIRTUAL_STACK_PROVIDER_ID, { config: GLOBAL_CONFIG_FULL, auth: {} }, {}, null, null, {});
+  codex.prepare(
+    dir,
+    VIRTUAL_STACK_PROVIDER_ID,
+    { config: GLOBAL_CONFIG_FULL, auth: {} },
+    {},
+    null,
+    null,
+    {},
+  );
   assert.equal(parseToml(readFileSync(join(dir, "config.toml"), "utf8")).model, "glm-5.3-flash");
   // user picks a member model via /model → written to the instance file
   const pickedDoc = parseToml(readFileSync(join(dir, "config.toml"), "utf8"));
@@ -558,19 +725,41 @@ test("codex aggregation: /model pick carried across prepare; dangling key falls 
   writeFileSync(join(dir, "config.toml"), stringifyToml(pickedDoc));
   // second prepare CARRIES the pick (same derivation on the C3 side)
   captureStderr(() => {
-    codex.prepare(dir, VIRTUAL_STACK_PROVIDER_ID, { config: GLOBAL_CONFIG_FULL, auth: {} }, {}, null, null, {});
+    codex.prepare(
+      dir,
+      VIRTUAL_STACK_PROVIDER_ID,
+      { config: GLOBAL_CONFIG_FULL, auth: {} },
+      {},
+      null,
+      null,
+      {},
+    );
   });
-  assert.equal(parseToml(readFileSync(join(dir, "config.toml"), "utf8")).model, "ccs-deepseek/deepseek-flash", "pick survives relaunch");
+  assert.equal(
+    parseToml(readFileSync(join(dir, "config.toml"), "utf8")).model,
+    "ccs-deepseek/deepseek-flash",
+    "pick survives relaunch",
+  );
   assert.ok(!stderrBuf.includes("is no longer in the current aggregation stack"));
   // C3 parity: computeEffectiveSettings sees the same carried value
-  const c3 = codex.computeEffectiveSettings({ config: GLOBAL_CONFIG_FULL, auth: {} }, {}, null, null, VIRTUAL_STACK_PROVIDER_ID, {});
+  const c3 = codex.computeEffectiveSettings(
+    { config: GLOBAL_CONFIG_FULL, auth: {} },
+    {},
+    null,
+    null,
+    VIRTUAL_STACK_PROVIDER_ID,
+    {},
+  );
   assert.equal(c3.model, "ccs-deepseek/deepseek-flash", "guard derives the carry identically");
   // dangling ccs key (stack off) → carry dropped, fallback + notice
   rmSync(LIVE_STATE, { force: true });
   captureStderr(() => {
     mergeCodexRuntimeState('model = "glm-5.3-flash"\n', dir, true);
   });
-  assert.ok(stderrBuf.includes("is no longer in the current aggregation stack"), "dangling pick warns");
+  assert.ok(
+    stderrBuf.includes("is no longer in the current aggregation stack"),
+    "dangling pick warns",
+  );
   // dangling ccs key (member removed) → same
   writeCodexLiveState({ enabled: true, members: ["m-zai"], keys: { zhipu: "m-zai" } }, "m-zai");
   captureStderr(() => {
@@ -586,11 +775,18 @@ test("codex aggregation: /model pick carried across prepare; dangling key falls 
   mkdirSync(plainDir, { recursive: true });
   writeFileSync(join(plainDir, "config.toml"), 'model = "ccs-deepseek/deepseek-flash"\n');
   const plainOut = mergeCodexRuntimeState('model = "glm-5.3-flash"\n', plainDir);
-  assert.equal(parseToml(plainOut).model, "glm-5.3-flash", "plain row rolls back (established semantics)");
+  assert.equal(
+    parseToml(plainOut).model,
+    "glm-5.3-flash",
+    "plain row rolls back (established semantics)",
+  );
   // drift filter: model on the virtual codex instance yields; on plain rows it doesn't
   assert.equal(isCodexAggModelPath("codex", VIRTUAL_STACK_PROVIDER_ID, "model"), true);
   assert.equal(isCodexAggModelPath("codex", "plain-carry", "model"), false);
-  assert.equal(isCodexAggModelPath("codex", VIRTUAL_STACK_PROVIDER_ID, "model_reasoning_effort"), false);
+  assert.equal(
+    isCodexAggModelPath("codex", VIRTUAL_STACK_PROVIDER_ID, "model_reasoning_effort"),
+    false,
+  );
   assert.equal(isCodexAggModelPath("claude", VIRTUAL_STACK_PROVIDER_ID, "model"), false);
   // hand-made aggregation row yields too
   insertCodexRow("m-hand", "HandStack", GLOBAL_CONFIG_FULL);
@@ -642,10 +838,17 @@ test("codex aggregation unit: aggregationBaseUrlFor dispatches per app", () => {
   assert.equal(aggregationBaseUrlFor("codex", aggRow), "http://127.0.0.1:15721/v1");
   assert.equal(aggregationBaseUrlFor("codex", { config: DEEPSEEK_CONFIG, auth: {} }), null);
   assert.equal(
-    aggregationBaseUrlFor("claude", { env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" } }),
+    aggregationBaseUrlFor("claude", {
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:15721", ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED" },
+    }),
     "http://127.0.0.1:15721",
   );
-  assert.equal(aggregationBaseUrlFor("claude", { env: { ANTHROPIC_BASE_URL: "https://api.z.ai", ANTHROPIC_AUTH_TOKEN: "t" } }), null);
+  assert.equal(
+    aggregationBaseUrlFor("claude", {
+      env: { ANTHROPIC_BASE_URL: "https://api.z.ai", ANTHROPIC_AUTH_TOKEN: "t" },
+    }),
+    null,
+  );
 });
 
 // ─── 9. doctor ─────────────────────────────────────────────────────────
@@ -656,16 +859,25 @@ test("codex aggregation doctor: off → silent; live → row + proxy checks", as
   assert.deepEqual(await codexAggregationDoctorChecks(), []);
   // live stack + listening proxy → both pass
   const srv = createServer(() => {});
-  t.after(() => { srv.closeAllConnections?.(); try { srv.close(); } catch {} });
+  t.after(() => {
+    srv.closeAllConnections?.();
+    try {
+      srv.close();
+    } catch {}
+  });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const port = srv.address().port;
-  writeGlobalConfig(GLOBAL_CONFIG_FULL.replace("http://127.0.0.1:15721/v1", `http://127.0.0.1:${port}/v1`));
+  writeGlobalConfig(
+    GLOBAL_CONFIG_FULL.replace("http://127.0.0.1:15721/v1", `http://127.0.0.1:${port}/v1`),
+  );
   writeCodexLiveState({ enabled: true, members: ["m-ds"], keys: { deepseek: "m-ds" } }, "m-ds");
   let checks = await codexAggregationDoctorChecks();
   assert.equal(checks.length, 2);
   const byLabel = (cs) => Object.fromEntries(cs.map((c) => [c.label, c]));
   assert.equal(byLabel(checks)["codex aggregation Stack row"].pass, true);
-  assert.ok(byLabel(checks)["codex aggregation Stack row"].detail.includes("virtual entry derived"));
+  assert.ok(
+    byLabel(checks)["codex aggregation Stack row"].detail.includes("virtual entry derived"),
+  );
   assert.equal(byLabel(checks)["codex aggregation proxy"].pass, true);
   await new Promise((r) => srv.close(r));
   checks = await codexAggregationDoctorChecks();
@@ -686,13 +898,23 @@ test("codex aggregation: prepare output equals computeEffectiveSettings (C3 pari
   const dir = join(CODEX_INSTANCES, VIRTUAL_STACK_PROVIDER_ID);
   mkdirSync(dir, { recursive: true });
   // a project trust entry in the instance file — carried across regeneration
-  writeFileSync(join(dir, "config.toml"), `[projects."/Users/x/proj"]
+  writeFileSync(
+    join(dir, "config.toml"),
+    `[projects."/Users/x/proj"]
 trust_level = "trusted"
-`);
+`,
+  );
   const settingsConfig = { config: GLOBAL_CONFIG_FULL, auth: {} };
   codex.prepare(dir, VIRTUAL_STACK_PROVIDER_ID, settingsConfig, {}, null, null, {});
   const c2 = codex.readInstanceSettingsSnapshot(dir);
-  const c3 = codex.computeEffectiveSettings(settingsConfig, {}, null, null, VIRTUAL_STACK_PROVIDER_ID, {});
+  const c3 = codex.computeEffectiveSettings(
+    settingsConfig,
+    {},
+    null,
+    null,
+    VIRTUAL_STACK_PROVIDER_ID,
+    {},
+  );
   assert.deepEqual(c2, c3, "guard comparison [C3] sees what prepare writes");
   assert.equal(c2.projects["/Users/x/proj"].trust_level, "trusted", "runtime trust carried");
   // dormant settings: valid TOML with the same signature (dormant rows must

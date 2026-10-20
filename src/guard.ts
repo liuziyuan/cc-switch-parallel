@@ -35,7 +35,11 @@ function backupInstanceSettings(appType, providerId, instanceDir, fileName = "se
       .filter((n) => n.startsWith(`${fileName}.`))
       .sort()
       .slice(0, -BACKUP_KEEP);
-    for (const name of keep) { try { unlinkSync(join(dir, name)); } catch {} }
+    for (const name of keep) {
+      try {
+        unlinkSync(join(dir, name));
+      } catch {}
+    }
     return dest;
   } catch {
     return null;
@@ -79,12 +83,15 @@ function formatSettingsChangeLine(ch, target) {
   const mark = ch.op === "add" ? "+" : ch.op === "remove" ? "-" : "~";
   const color = ch.op === "add" ? "\x1b[32m" : ch.op === "remove" ? "\x1b[31m" : "\x1b[33m";
   const targetTag =
-    target === "common" ? " \x1b[2m(→ common config)\x1b[0m"
-    : target === "shared-live" ? " \x1b[2m(→ global live config)\x1b[0m"
-    : target === "blocked-virtual" ? " \x1b[33m(⚠ aggregation virtual row — not written back to the database)\x1b[0m"
-    : target === "blocked-sensitive" || target === "blocked"
-      ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
-    : " \x1b[2m(→ provider)\x1b[0m";
+    target === "common"
+      ? " \x1b[2m(→ common config)\x1b[0m"
+      : target === "shared-live"
+        ? " \x1b[2m(→ global live config)\x1b[0m"
+        : target === "blocked-virtual"
+          ? " \x1b[33m(⚠ aggregation virtual row — not written back to the database)\x1b[0m"
+          : target === "blocked-sensitive" || target === "blocked"
+            ? " \x1b[33m(⚠ sensitive — NOT synced, edit in cc-switch)\x1b[0m"
+            : " \x1b[2m(→ provider)\x1b[0m";
   return `${color}${mark} settings\x1b[0m ${ch.path}${targetTag}`;
 }
 
@@ -116,43 +123,76 @@ function guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, shared, s
     // and future guards are exact.
     if (!isPlainObject(entry?.preparedSettings)) {
       const effective = adapter.computeEffectiveSettings(
-        parseJsonObject(row.settings_config) ?? {}, parseJsonObject(row.meta) ?? {},
-        row.category, shared, row.id, settings,
+        parseJsonObject(row.settings_config) ?? {},
+        parseJsonObject(row.meta) ?? {},
+        row.category,
+        shared,
+        row.id,
+        settings,
       );
       const backfilled = effective != null && deepEqualJson(effective, current);
       if (!backfilled) {
-        const bak = backupInstanceSettings(adapter.appType, row.id, instanceDir, adapter.instanceSettingsFileName);
-        process.stderr.write(`\x1b[2m${adapter.instanceSettingsFileName} for "${row.name}" differs from the cc-switch config; a backup was saved${bak ? ` (${bak})` : " (backup FAILED)"} before overwriting.\x1b[0m\n`);
+        const bak = backupInstanceSettings(
+          adapter.appType,
+          row.id,
+          instanceDir,
+          adapter.instanceSettingsFileName,
+        );
+        process.stderr.write(
+          `\x1b[2m${adapter.instanceSettingsFileName} for "${row.name}" differs from the cc-switch config; a backup was saved${bak ? ` (${bak})` : " (backup FAILED)"} before overwriting.\x1b[0m\n`,
+        );
       }
       return;
     }
 
     const changes = diffSettingsLeaves(entry.preparedSettings, current).filter(
-      (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path, ch)
-        && !isCodexAggModelPath(adapter.appType, row.id, ch.path),
+      (ch) =>
+        !adapter.channelOwnedPath?.(ch.path) &&
+        !adapter.runtimeStatePath?.(ch.path, ch) &&
+        !isCodexAggModelPath(adapter.appType, row.id, ch.path),
     );
     if (changes.length === 0) return; // faithful mirror — overwrite silently
 
-    const bak = backupInstanceSettings(adapter.appType, row.id, instanceDir, adapter.instanceSettingsFileName);
-    process.stderr.write(`\x1b[33m⚠ Instance ${adapter.instanceSettingsFileName} for "${row.name}" has edits that will be overwritten:\x1b[0m\n`);
+    const bak = backupInstanceSettings(
+      adapter.appType,
+      row.id,
+      instanceDir,
+      adapter.instanceSettingsFileName,
+    );
+    process.stderr.write(
+      `\x1b[33m⚠ Instance ${adapter.instanceSettingsFileName} for "${row.name}" has edits that will be overwritten:\x1b[0m\n`,
+    );
     const shown = changes.slice(0, 10);
     for (const ch of shown) {
-      const mark = ch.op === "add" ? "\x1b[32m+\x1b[0m" : ch.op === "remove" ? "\x1b[31m-\x1b[0m" : "\x1b[33m~\x1b[0m";
+      const mark =
+        ch.op === "add"
+          ? "\x1b[32m+\x1b[0m"
+          : ch.op === "remove"
+            ? "\x1b[31m-\x1b[0m"
+            : "\x1b[33m~\x1b[0m";
       process.stderr.write(`    ${mark} ${ch.path}\n`);
     }
     if (changes.length > shown.length) {
       process.stderr.write(`    … and ${changes.length - shown.length} more\n`);
     }
     process.stderr.write(
-      bak
-        ? `  Backup saved: ${bak}\n`
-        : `  \x1b[31mBackup FAILED — edits will be lost.\x1b[0m\n`,
+      bak ? `  Backup saved: ${bak}\n` : `  \x1b[31mBackup FAILED — edits will be lost.\x1b[0m\n`,
     );
-    process.stderr.write(`  Run \x1b[1mswitch sync\x1b[0m to merge these edits back into cc-switch before they are lost.\n`);
+    process.stderr.write(
+      `  Run \x1b[1mswitch sync\x1b[0m to merge these edits back into cc-switch before they are lost.\n`,
+    );
   } catch {
     // best-effort: guard must never block a launch.
   }
 }
 
-
-export { BACKUPS_DIR, BACKUP_KEEP, backupDirFor, backupInstanceSettings, formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite, isPluginChannelPath, pruneInstanceSettingsBackups };
+export {
+  BACKUPS_DIR,
+  BACKUP_KEEP,
+  backupDirFor,
+  backupInstanceSettings,
+  formatSettingsChangeLine,
+  guardInstanceConfigBeforeOverwrite,
+  isPluginChannelPath,
+  pruneInstanceSettingsBackups,
+};

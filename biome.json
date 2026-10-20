@@ -1,7 +1,19 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "formatter": {
-    "enabled": false
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
   },
   "linter": {
     "enabled": true,
@@ -15,6 +27,13 @@
     }
   },
   "files": {
-    "includes": ["**", "!dist", "!dist", "!node_modules", "!node_modules", "!resources", "!resources"]
+    "includes": [
+      "**",
+      "!**/dist/**",
+      "!**/node_modules/**",
+      "!**/resources/**",
+      "!**/.claude/**",
+      "!package-lock.json"
+    ]
   }
 }

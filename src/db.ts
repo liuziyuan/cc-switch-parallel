@@ -63,7 +63,9 @@ function queryProviderMatches(name: string, appType: string): ProviderRow[] {
       const v = virtualStackProviderFor(appType);
       if (v && v.name === name) return [v];
     }
-  } catch { /* fall through to [] */ }
+  } catch {
+    /* fall through to [] */
+  }
   return [];
 }
 
@@ -79,7 +81,9 @@ function queryProviderById(id: string, appType: string): ProviderRow | null {
     if (id === VIRTUAL_STACK_PROVIDER_ID && VIRTUAL_STACK_APPS.has(appType)) {
       return virtualStackProviderFor(appType);
     }
-  } catch { /* fall through to null */ }
+  } catch {
+    /* fall through to null */
+  }
   return null;
 }
 
@@ -96,9 +100,15 @@ function queryProvidersByApp(appType: string): ProviderRow[] {
 // (every live entry would be marked dead) and the TUI's alive snapshot
 // (every Recent row would be flagged ✗ missing).
 function queryProvidersStrict(appType: string): ProviderRow[] {
-  const json = execFileSync("sqlite3", ["-json", DB_PATH,
-    `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
-  ], { encoding: "utf8", timeout: DB_PROC_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
+  const json = execFileSync(
+    "sqlite3",
+    [
+      "-json",
+      DB_PATH,
+      `SELECT id, name FROM providers WHERE app_type = ${sqlQuote(appType)} ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC`,
+    ],
+    { encoding: "utf8", timeout: DB_PROC_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] },
+  );
   // Virtual row merges ONLY onto a successful read — a DB failure must
   // propagate untouched so history migration / alive snapshots stay honest.
   return appendVirtualStackRow(JSON.parse(json || "[]"), appType);
@@ -164,7 +174,7 @@ function patchProviderSettingsConfig(providerId, appType, patchObj) {
   const patchLit = sqlQuote(JSON.stringify(patchObj));
   execDB(
     `UPDATE providers SET settings_config = json_patch(settings_config, json(${patchLit})) ` +
-    `WHERE id = ${sqlQuote(providerId)} AND app_type = ${sqlQuote(appType)}`,
+      `WHERE id = ${sqlQuote(providerId)} AND app_type = ${sqlQuote(appType)}`,
   );
 }
 
@@ -178,5 +188,20 @@ function loadSettings() {
   }
 }
 
-
-export { DB_BUSY_TIMEOUT_MS, DB_PROC_TIMEOUT_MS, execDB, loadSettings, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryDB, queryProviderById, queryProviderMatches, queryProviderRowsByApp, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion, sqlQuote };
+export {
+  DB_BUSY_TIMEOUT_MS,
+  DB_PROC_TIMEOUT_MS,
+  execDB,
+  loadSettings,
+  patchCommonConfigClaude,
+  patchProviderSettingsConfig,
+  queryCommonConfig,
+  queryDB,
+  queryProviderById,
+  queryProviderMatches,
+  queryProviderRowsByApp,
+  queryProvidersByApp,
+  queryProvidersStrict,
+  readSchemaUserVersion,
+  sqlQuote,
+};

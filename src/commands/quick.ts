@@ -2,7 +2,13 @@
 
 import { APP_ADAPTERS } from "../adapters.js";
 import { confirmSync } from "../drift.js";
-import { QUICK_KEYS, loadHistory, permLabel, quickItemsFor, snapshotAliveByCli } from "../history.js";
+import {
+  QUICK_KEYS,
+  loadHistory,
+  permLabel,
+  quickItemsFor,
+  snapshotAliveByCli,
+} from "../history.js";
 import { launchProvider } from "../launch.js";
 import { launchRefForQuick } from "../tui.js";
 
@@ -27,11 +33,15 @@ function resolveQuickItem(key: string) {
 async function runQuickLaunch(key: string, syncFlag: string | null) {
   const item = resolveQuickItem(key);
   if (!item) {
-    console.error(`✗ Recent slot "${key}" is empty — run \`switch\` to launch something first (Recent fills as you use it).`);
+    console.error(
+      `✗ Recent slot "${key}" is empty — run \`switch\` to launch something first (Recent fills as you use it).`,
+    );
     process.exit(1);
   }
   if (item.dead) {
-    console.error(`✗ Recent slot "${key}" points to "${item.provider}", which no longer exists in cc-switch.`);
+    console.error(
+      `✗ Recent slot "${key}" points to "${item.provider}", which no longer exists in cc-switch.`,
+    );
     console.error(`  Open \`switch\` and press c to clean dead entries.`);
     process.exit(1);
   }
@@ -39,11 +49,16 @@ async function runQuickLaunch(key: string, syncFlag: string | null) {
   // --dangerously-skip-permissions argv, so it never launches without an
   // explicit yes. Non-TTY callers can't confirm and are told the explicit path.
   // The dangerous flag is per-CLI (Codex spells it differently).
-  const dangerFlag = APP_ADAPTERS[item.cli]?.permissionArgs?.("3").join(" ") ?? "--dangerously-skip-permissions";
+  const dangerFlag =
+    APP_ADAPTERS[item.cli]?.permissionArgs?.("3").join(" ") ?? "--dangerously-skip-permissions";
   if (item.hotkey === "3") {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      console.error(`✗ Recent slot "${key}" is Full-auto (${item.provider}) — no terminal to confirm in.`);
-      console.error(`  Launch it explicitly instead: switch "${item.provider}" ${item.cli} ${dangerFlag}`);
+      console.error(
+        `✗ Recent slot "${key}" is Full-auto (${item.provider}) — no terminal to confirm in.`,
+      );
+      console.error(
+        `  Launch it explicitly instead: switch "${item.provider}" ${item.cli} ${dangerFlag}`,
+      );
       process.exit(1);
     }
     const outcome = await confirmSync(
@@ -57,9 +72,10 @@ async function runQuickLaunch(key: string, syncFlag: string | null) {
   }
   // Replay exactly what the TUI would: the recorded argv, falling back to the
   // bare permission flags for entries recorded before extraArgs existed.
-  const args = item.extraArgs.length > 0
-    ? item.extraArgs
-    : APP_ADAPTERS[item.cli]?.permissionArgs?.(item.hotkey) ?? [];
+  const args =
+    item.extraArgs.length > 0
+      ? item.extraArgs
+      : (APP_ADAPTERS[item.cli]?.permissionArgs?.(item.hotkey) ?? []);
   console.error(`→ ${item.label}`);
   await launchProvider(item.cli, launchRefForQuick(item), args, syncFlag, { hotkey: item.hotkey });
 }

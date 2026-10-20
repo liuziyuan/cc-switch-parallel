@@ -34,14 +34,17 @@ function sql(statement) {
 function ensureDb() {
   mkdirSync(CC, { recursive: true });
   if (!existsSync(DB)) {
-    execFileSync("sqlite3", [DB, `CREATE TABLE providers (
+    execFileSync("sqlite3", [
+      DB,
+      `CREATE TABLE providers (
       id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL,
       settings_config TEXT NOT NULL, website_url TEXT, category TEXT,
       created_at INTEGER, sort_index INTEGER, notes TEXT, icon TEXT, icon_color TEXT,
       meta TEXT NOT NULL DEFAULT '{}', is_current BOOLEAN NOT NULL DEFAULT 0,
       in_failover_queue BOOLEAN NOT NULL DEFAULT 0, provider_type TEXT,
       PRIMARY KEY (id, app_type));
-      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);`]);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);`,
+    ]);
   }
   sql("DELETE FROM providers; DELETE FROM settings; PRAGMA user_version = 20;");
   writeClaudeLive({ hooks: { Live: [{ hooks: [] }] }, permissions: { allow: ["Bash"] } });
@@ -111,16 +114,23 @@ test("legacy mode: the DB snippet keeps its historical statusLine relay behavior
   };
   addProvider("glm-legacy", "claude", settingsConfig, { commonConfigEnabled: true });
 
-  const { settings, wrapper } = prepareClaude("glm-legacy", settingsConfig, { commonConfigEnabled: true });
+  const { settings, wrapper } = prepareClaude("glm-legacy", settingsConfig, {
+    commonConfigEnabled: true,
+  });
   assert.deepEqual(settings.hooks, { Frozen: [{ hooks: [] }] });
-  assert.ok(wrapper.includes("/tmp/claude-hud/dist/index.js"), "legacy mode still inlines the explicit statusLine");
+  assert.ok(
+    wrapper.includes("/tmp/claude-hud/dist/index.js"),
+    "legacy mode still inlines the explicit statusLine",
+  );
 });
 
 test("live mode: unreadable global file means no shared settings — no frozen fallback", () => {
   sql(`INSERT INTO settings (key, value) VALUES ('common_config_claude',
     '${JSON.stringify(FROZEN_COMMON).replace(/'/g, "''")}');`);
   rmSync(CLAUDE_LIVE, { force: true });
-  const settingsConfig = { env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "tok" } };
+  const settingsConfig = {
+    env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "tok" },
+  };
   addProvider("glm-missing", "claude", settingsConfig, {});
 
   const { settings, wrapper } = prepareClaude("glm-missing", settingsConfig, {});
@@ -130,25 +140,27 @@ test("live mode: unreadable global file means no shared settings — no frozen f
 });
 
 test("live mode: codex shared keys merge, routing/model stay with the provider row", () => {
-  writeCodexLive([
-    'model_provider = "live-provider"',
-    'model = "live-model"',
-    'approval_policy = "on-request"',
-    'sandbox_mode = "workspace-write"',
-    '[model_providers.live-provider]',
-    'base_url = "https://live.example"',
-    '[mcp_servers.fs]',
-    'command = "mcp-fs"',
-    '',
-  ].join("\n"));
+  writeCodexLive(
+    [
+      'model_provider = "live-provider"',
+      'model = "live-model"',
+      'approval_policy = "on-request"',
+      'sandbox_mode = "workspace-write"',
+      "[model_providers.live-provider]",
+      'base_url = "https://live.example"',
+      "[mcp_servers.fs]",
+      'command = "mcp-fs"',
+      "",
+    ].join("\n"),
+  );
   const settingsConfig = {
     config: [
       'model_provider = "row-provider"',
       'model = "row-model"',
-      '[model_providers.row-provider]',
+      "[model_providers.row-provider]",
       'base_url = "https://row.example"',
       'wire_api = "responses"',
-      '',
+      "",
     ].join("\n"),
     auth: {},
   };

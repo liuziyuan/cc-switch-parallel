@@ -10,13 +10,19 @@ const TEST_HOME = mkdtempSync(join(tmpdir(), "cc-launch-doctor-json-"));
 process.env.CC_SWITCH_TEST_HOME = TEST_HOME;
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 
-const { collectDoctorChecks, parseDoctorArgs, renderDoctorJson } = await import("../src/commands/doctor.ts");
+const { collectDoctorChecks, parseDoctorArgs, renderDoctorJson } = await import(
+  "../src/commands/doctor.ts"
+);
 
 test("parseDoctorArgs: flags and unknown arguments", () => {
   assert.deepEqual(parseDoctorArgs([]), { json: false, fix: false, unknown: [] });
   assert.deepEqual(parseDoctorArgs(["--json"]), { json: true, fix: false, unknown: [] });
   assert.deepEqual(parseDoctorArgs(["--fix"]), { json: false, fix: true, unknown: [] });
-  assert.deepEqual(parseDoctorArgs(["--json", "--fix", "x"]), { json: true, fix: true, unknown: ["x"] });
+  assert.deepEqual(parseDoctorArgs(["--json", "--fix", "x"]), {
+    json: true,
+    fix: true,
+    unknown: ["x"],
+  });
 });
 
 test("collectDoctorChecks: shape and JSON envelope", async () => {
@@ -43,10 +49,14 @@ function runDoctorProcess(args) {
     `await runDoctor(${JSON.stringify(args)});`,
   ].join("\n");
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
-      env: { ...process.env, CC_SWITCH_TEST_HOME: TEST_HOME },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", script],
+      {
+        env: { ...process.env, CC_SWITCH_TEST_HOME: TEST_HOME },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));

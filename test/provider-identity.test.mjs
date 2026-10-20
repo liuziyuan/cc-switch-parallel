@@ -11,7 +11,9 @@ process.env.CC_SWITCH_TEST_HOME = TEST_HOME;
 const CC = join(TEST_HOME, ".cc-switch");
 
 function sql(statement) {
-  return execFileSync("sqlite3", [join(CC, "cc-switch.db"), ".timeout 3000", statement], { encoding: "utf8" });
+  return execFileSync("sqlite3", [join(CC, "cc-switch.db"), ".timeout 3000", statement], {
+    encoding: "utf8",
+  });
 }
 function ensureDB() {
   mkdirSync(CC, { recursive: true });
@@ -37,7 +39,9 @@ insertRow("z-dup", "claude", "Dup");
 insertRow("solo", "claude", "Solo");
 insertRow("codex-dup", "codex", "Dup");
 
-const { queryProviderById, queryProviderMatches, queryProvidersByApp } = await import("../src/db.ts");
+const { queryProviderById, queryProviderMatches, queryProvidersByApp } = await import(
+  "../src/db.ts"
+);
 const { parseLaunchArgs } = await import("../src/commands/args.ts");
 const { resolveProviderRef, formatAmbiguousProvider } = await import("../src/provider-ref.ts");
 const { launchRefForRow, launchRefForQuick } = await import("../src/tui.ts");
@@ -45,8 +49,14 @@ const { formatAvailableProviders } = await import("../src/provider-ref.ts");
 
 test("queryProviderMatches: returns every same-name row in id order", () => {
   const rows = queryProviderMatches("Dup", "claude");
-  assert.deepEqual(rows.map((r) => r.id), ["a-dup", "z-dup"]);
-  assert.deepEqual(queryProviderMatches("Solo", "claude").map((r) => r.id), ["solo"]);
+  assert.deepEqual(
+    rows.map((r) => r.id),
+    ["a-dup", "z-dup"],
+  );
+  assert.deepEqual(
+    queryProviderMatches("Solo", "claude").map((r) => r.id),
+    ["solo"],
+  );
   assert.deepEqual(queryProviderMatches("Nope", "claude"), []);
 });
 
@@ -61,7 +71,10 @@ test("resolveProviderRef: name ambiguity is reported, id is exact", () => {
   const ambiguous = resolveProviderRef({ name: "Dup" }, "claude");
   assert.equal(ambiguous.ok, false);
   assert.equal(ambiguous.error, "ambiguous");
-  assert.deepEqual(ambiguous.matches.map((r) => r.id), ["a-dup", "z-dup"]);
+  assert.deepEqual(
+    ambiguous.matches.map((r) => r.id),
+    ["a-dup", "z-dup"],
+  );
 
   const byId = resolveProviderRef({ id: "z-dup" }, "claude");
   assert.equal(byId.ok, true);
@@ -87,35 +100,64 @@ test("formatAmbiguousProvider: lists every id and the --id hint", () => {
 
 test("parseLaunchArgs: --id selects by id and leaves the CLI args untouched", () => {
   assert.deepEqual(parseLaunchArgs(["--sync", "--id", "z-dup", "claude", "--continue"]), {
-    syncFlag: "on", providerId: "z-dup", dryRun: false, diff: false, showSecrets: false,
+    syncFlag: "on",
+    providerId: "z-dup",
+    dryRun: false,
+    diff: false,
+    showSecrets: false,
     rest: ["claude", "--continue"],
   });
   assert.deepEqual(parseLaunchArgs(["--id=z-dup", "claude"]), {
-    syncFlag: null, providerId: "z-dup", dryRun: false, diff: false, showSecrets: false,
+    syncFlag: null,
+    providerId: "z-dup",
+    dryRun: false,
+    diff: false,
+    showSecrets: false,
     rest: ["claude"],
   });
   assert.deepEqual(parseLaunchArgs(["--no-sync", "P", "claude", "--continue"]), {
-    syncFlag: "off", providerId: null, dryRun: false, diff: false, showSecrets: false,
+    syncFlag: "off",
+    providerId: null,
+    dryRun: false,
+    diff: false,
+    showSecrets: false,
     rest: ["P", "claude", "--continue"],
   });
   // Flags are only consumed at the front; everything after the first
   // positional token is forwarded to the CLI verbatim.
   assert.deepEqual(parseLaunchArgs(["P", "claude", "--sync"]), {
-    syncFlag: null, providerId: null, dryRun: false, diff: false, showSecrets: false,
+    syncFlag: null,
+    providerId: null,
+    dryRun: false,
+    diff: false,
+    showSecrets: false,
     rest: ["P", "claude", "--sync"],
   });
   assert.deepEqual(parseLaunchArgs(["--dry-run", "--diff", "--show-secrets", "P", "claude"]), {
-    syncFlag: null, providerId: null, dryRun: true, diff: true, showSecrets: true,
+    syncFlag: null,
+    providerId: null,
+    dryRun: true,
+    diff: true,
+    showSecrets: true,
     rest: ["P", "claude"],
   });
   assert.equal(parseLaunchArgs(["--id"]).error, "missing --id value");
-  assert.equal(parseLaunchArgs(["--diff", "P", "claude"]).error, "--diff and --show-secrets require --dry-run");
-  assert.equal(parseLaunchArgs(["--show-secrets", "P", "claude"]).error, "--diff and --show-secrets require --dry-run");
+  assert.equal(
+    parseLaunchArgs(["--diff", "P", "claude"]).error,
+    "--diff and --show-secrets require --dry-run",
+  );
+  assert.equal(
+    parseLaunchArgs(["--show-secrets", "P", "claude"]).error,
+    "--diff and --show-secrets require --dry-run",
+  );
 });
 
 test("launch refs: id wins when present, name is the legacy fallback", () => {
   assert.deepEqual(launchRefForRow({ id: "z-dup", name: "Dup" }), { id: "z-dup", name: "Dup" });
-  assert.deepEqual(launchRefForQuick({ providerId: "z-dup", provider: "Dup" }), { id: "z-dup", name: "Dup" });
+  assert.deepEqual(launchRefForQuick({ providerId: "z-dup", provider: "Dup" }), {
+    id: "z-dup",
+    name: "Dup",
+  });
   assert.deepEqual(launchRefForQuick({ providerId: null, provider: "Dup" }), { name: "Dup" });
   assert.deepEqual(launchRefForRow(null), { name: undefined });
 });

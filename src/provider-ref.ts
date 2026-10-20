@@ -7,7 +7,10 @@ import { queryProviderById, queryProviderMatches } from "./db.js";
 
 export type ProviderRef = { id?: string | null; name?: string | null };
 
-export function resolveProviderRef(ref: ProviderRef, appType: string):
+export function resolveProviderRef(
+  ref: ProviderRef,
+  appType: string,
+):
   | { ok: true; row: any }
   | { ok: false; error: "notFound"; ref: ProviderRef }
   | { ok: false; error: "ambiguous"; matches: any[] } {
@@ -28,7 +31,9 @@ export function formatAmbiguousProvider(
   cmd: string,
   hint = `switch --id <providerId> ${cmd} [args...]`,
 ): string {
-  const lines = [`✗ Provider name "${name}" is ambiguous (${appType}) — ${matches.length} matches:`];
+  const lines = [
+    `✗ Provider name "${name}" is ambiguous (${appType}) — ${matches.length} matches:`,
+  ];
   for (const m of matches) lines.push(`    ${m.id}  ${m.name}`);
   lines.push(`  Re-run with: ${hint}`);
   lines.push(`  (or rename one provider in cc-switch)`);

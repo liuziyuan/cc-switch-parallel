@@ -10,7 +10,9 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-ps-actions-"));
 process.env.CC_SWITCH_TEST_HOME = testHome;
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 
-const { attachSession, killSession, parsePsArgs, resolveSessionTarget } = await import("../src/commands/ps.ts");
+const { attachSession, killSession, parsePsArgs, resolveSessionTarget } = await import(
+  "../src/commands/ps.ts"
+);
 const { psField } = await import("../src/sessions.ts");
 
 function sleep(ms) {
@@ -50,7 +52,11 @@ test("parsePsArgs: modes, flags and errors", () => {
   assert.deepEqual(parsePsArgs([]), { mode: "table" });
   assert.deepEqual(parsePsArgs(["--json"]), { mode: "json" });
   assert.deepEqual(parsePsArgs(["kill", "#2"]), { mode: "kill", target: "#2", force: false });
-  assert.deepEqual(parsePsArgs(["kill", "--force", "1"]), { mode: "kill", target: "1", force: true });
+  assert.deepEqual(parsePsArgs(["kill", "--force", "1"]), {
+    mode: "kill",
+    target: "1",
+    force: true,
+  });
   assert.deepEqual(parsePsArgs(["attach", "1"]), { mode: "attach", target: "1" });
   assert.match(parsePsArgs(["kill"]).error, /exactly one target/);
   assert.match(parsePsArgs(["kill", "1", "2"]).error, /exactly one target/);
@@ -66,7 +72,11 @@ test("resolveSessionTarget: #N, pid:N, bare numbers and errors", () => {
   assert.equal(resolveSessionTarget(rows, "#2").row, rows[1]);
   assert.equal(resolveSessionTarget(rows, "pid:100").row, rows[0]);
   assert.equal(resolveSessionTarget(rows, "1").row, rows[0]);
-  assert.equal(resolveSessionTarget(rows, "100").row, rows[0], "bare out-of-range number falls back to pid");
+  assert.equal(
+    resolveSessionTarget(rows, "100").row,
+    rows[0],
+    "bare out-of-range number falls back to pid",
+  );
   assert.equal(resolveSessionTarget(rows, "#9").ok, false);
   assert.equal(resolveSessionTarget(rows, "9").ok, false);
   assert.match(resolveSessionTarget(rows, "abc").error, /invalid target/);
@@ -75,7 +85,11 @@ test("resolveSessionTarget: #N, pid:N, bare numbers and errors", () => {
 
 test("killSession --force: SIGKILL and session file removal", async (t) => {
   const child = spawn("sleep", ["30"], { stdio: "ignore" });
-  t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+  t.after(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {}
+  });
   const row = makeRow(child.pid);
   const exited = waitExit(child);
   const result = await killSession(row, { force: true, killTimeoutMs: 2000 });
@@ -87,7 +101,11 @@ test("killSession --force: SIGKILL and session file removal", async (t) => {
 
 test("killSession: SIGTERM exits a cooperative process", async (t) => {
   const child = spawn("sleep", ["30"], { stdio: "ignore" });
-  t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+  t.after(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {}
+  });
   const row = makeRow(child.pid);
   const exited = waitExit(child);
   const result = await killSession(row, {
@@ -102,10 +120,16 @@ test("killSession: SIGTERM exits a cooperative process", async (t) => {
 });
 
 test("killSession: escalates to SIGKILL when SIGTERM is ignored", async (t) => {
-  const child = spawn(process.execPath, [
-    "-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)",
-  ], { stdio: "ignore" });
-  t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+  const child = spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],
+    { stdio: "ignore" },
+  );
+  t.after(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {}
+  });
   await sleep(150);
   const row = makeRow(child.pid);
   const exited = waitExit(child);
@@ -123,7 +147,9 @@ test("killSession: escalates to SIGKILL when SIGTERM is ignored", async (t) => {
 test("killSession: refuses unverifiable identities and invalid pids", async (t) => {
   const child = spawn("sleep", ["30"], { stdio: "ignore" });
   t.after(() => {
-    try { child.kill("SIGKILL"); } catch {}
+    try {
+      child.kill("SIGKILL");
+    } catch {}
   });
   // A stale lstart means PID reuse: the recorded session is provably dead,
   // so it is never signaled (the row is cleaned up instead).
@@ -150,7 +176,11 @@ test("killSession: refuses unverifiable identities and invalid pids", async (t) 
 
 test("killSession: non-TTY without --force is refused", async (t) => {
   const child = spawn("sleep", ["30"], { stdio: "ignore" });
-  t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+  t.after(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {}
+  });
   const row = makeRow(child.pid);
   const result = await killSession(row, { isTTY: false });
   assert.equal(result.ok, false);
@@ -172,7 +202,9 @@ test("killSession: already-exited session is acknowledged", async () => {
 function paneLookup() {
   return {
     ok: true,
-    panes: new Map([["ttys001", { session: "main", paneId: "%1", windowIndex: "0", paneIndex: "0" }]]),
+    panes: new Map([
+      ["ttys001", { session: "main", paneId: "%1", windowIndex: "0", paneIndex: "0" }],
+    ]),
   };
 }
 
@@ -182,7 +214,10 @@ test("attachSession inside tmux: switch-client then select-pane", () => {
   const result = attachSession(row, {
     insideTmux: true,
     lookup: paneLookup(),
-    runTmux: (argv) => { calls.push(argv); return { status: 0 }; },
+    runTmux: (argv) => {
+      calls.push(argv);
+      return { status: 0 };
+    },
   });
   assert.equal(result.ok, true, result.detail);
   assert.deepEqual(calls, [
@@ -198,7 +233,10 @@ test("attachSession outside tmux: select-window, select-pane then attach-session
     insideTmux: false,
     isTTY: true,
     lookup: paneLookup(),
-    runTmux: (argv) => { calls.push(argv); return { status: 0 }; },
+    runTmux: (argv) => {
+      calls.push(argv);
+      return { status: 0 };
+    },
   });
   assert.equal(result.ok, true, result.detail);
   assert.deepEqual(calls, [
@@ -210,7 +248,11 @@ test("attachSession outside tmux: select-window, select-pane then attach-session
 
 test("attachSession: missing pane, missing tmux and non-TTY errors", () => {
   const row = makeRow(process.pid, { tty: "ttys999" });
-  const missing = attachSession(row, { insideTmux: true, lookup: paneLookup(), runTmux: () => ({ status: 0 }) });
+  const missing = attachSession(row, {
+    insideTmux: true,
+    lookup: paneLookup(),
+    runTmux: () => ({ status: 0 }),
+  });
   assert.equal(missing.ok, false);
   assert.match(missing.detail, /not running inside tmux/);
 
@@ -223,7 +265,10 @@ test("attachSession: missing pane, missing tmux and non-TTY errors", () => {
     insideTmux: false,
     isTTY: false,
     lookup: paneLookup(),
-    runTmux: (argv) => { calls.push(argv); return { status: 0 }; },
+    runTmux: (argv) => {
+      calls.push(argv);
+      return { status: 0 };
+    },
   });
   assert.equal(nonTTY.ok, false);
   assert.match(nonTTY.detail, /interactive terminal/);
@@ -235,9 +280,8 @@ test("attachSession: tmux command failure propagates stderr", () => {
   const result = attachSession(row, {
     insideTmux: true,
     lookup: paneLookup(),
-    runTmux: (argv) => (argv[0] === "switch-client"
-      ? { status: 1, stderr: "no client\n" }
-      : { status: 0 }),
+    runTmux: (argv) =>
+      argv[0] === "switch-client" ? { status: 1, stderr: "no client\n" } : { status: 0 },
   });
   assert.equal(result.ok, false);
   assert.match(result.detail, /switch-client failed/);

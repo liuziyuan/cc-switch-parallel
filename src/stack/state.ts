@@ -9,8 +9,21 @@ import { _historyFrozen, loadHistory, saveHistory } from "../history.js";
 import { isPlainObject } from "../json-utils.js";
 import type { ProviderRow } from "../types.js";
 import { withFileLockSync } from "../file-lock.js";
-import { HOME, HISTORY_PATH, INSTANCES_DIR, LIVE_STATE_PATH, STACK_FALLBACK_BASE_URL, STATUSLINE_PREFS_PATH, VIRTUAL_STACK_APPS, VIRTUAL_STACK_PROVIDER_ID } from "../paths.js";
-import { CC_SWITCH_CATALOG_FILENAME, codexAggregationRoute, isCustomCodexModelProviderId } from "./aggregation.js";
+import {
+  HOME,
+  HISTORY_PATH,
+  INSTANCES_DIR,
+  LIVE_STATE_PATH,
+  STACK_FALLBACK_BASE_URL,
+  STATUSLINE_PREFS_PATH,
+  VIRTUAL_STACK_APPS,
+  VIRTUAL_STACK_PROVIDER_ID,
+} from "../paths.js";
+import {
+  CC_SWITCH_CATALOG_FILENAME,
+  codexAggregationRoute,
+  isCustomCodexModelProviderId,
+} from "./aggregation.js";
 import { buildUsageQueryConfig, resolveUsageIdentity } from "./usage.js";
 import { loadStatuslinePreferences } from "../statusline-colors.js";
 import { parseToml, stringifyToml } from "../toml.js";
@@ -59,8 +72,13 @@ function isLoopbackBaseUrl(baseUrl) {
 // "existing" Stack). Still no readStackState here: the merge decision must
 // not flip with desktop state (prepare determinism).
 function isAggregationProviderSettings(settingsConfig) {
-  const env = isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
-  return !!env && isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL) && env.ANTHROPIC_AUTH_TOKEN === "PROXY_MANAGED";
+  const env =
+    isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
+  return (
+    !!env &&
+    isLoopbackBaseUrl(env.ANTHROPIC_BASE_URL) &&
+    env.ANTHROPIC_AUTH_TOKEN === "PROXY_MANAGED"
+  );
 }
 
 // Codex mirror of isAggregationProviderSettings — same signature, TOML shape:
@@ -113,10 +131,14 @@ const AGGREGATION_IDENTITY_ENV_KEYS = [
 // billing. Row value wins when present; when the row lacks a key the common
 // value is harmless (no delete), unlike the identity keys above.
 const AGGREGATION_MODEL_ALIAS_KEYS = [
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
 ];
 
 // Post-merge guard for aggregation rows (called from
@@ -146,9 +168,8 @@ function readStackState(appType) {
     const raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8"));
     if (!isPlainObject(raw)) return null;
     if (raw.version !== undefined && raw.version !== 1) return null;
-    const app = isPlainObject(raw.apps) && isPlainObject(raw.apps[appType])
-      ? raw.apps[appType]
-      : null;
+    const app =
+      isPlainObject(raw.apps) && isPlainObject(raw.apps[appType]) ? raw.apps[appType] : null;
     const contract = isPlainObject(app?.contract) ? app.contract : null;
     if (contract?.version !== undefined && contract.version !== 1) return null;
     const stack = app && isPlainObject(app.stack) ? app.stack : null;
@@ -157,7 +178,9 @@ function readStackState(appType) {
       ? Object.fromEntries(Object.entries(stack.keys).filter(([, id]) => typeof id === "string"))
       : {};
     const members = Array.isArray(stack.members)
-      ? stack.members.filter((id) => typeof id === "string" && keys && Object.values(keys).includes(id))
+      ? stack.members.filter(
+          (id) => typeof id === "string" && keys && Object.values(keys).includes(id),
+        )
       : [];
     if (!Object.keys(keys).length || !members.length) return null;
     const proxyRoute = typeof app!.proxy_route === "string" ? app!.proxy_route : null;
@@ -180,7 +203,9 @@ function isCodexAggModelPath(appType, providerId, path) {
   try {
     const row = queryProviderById(providerId, "codex");
     return !!row && isCodexAggregationProviderSettings(JSON.parse(row.settings_config || "{}"));
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 // 300ms TCP probe of a base URL's host:port. Warn-only by design — the
@@ -193,10 +218,19 @@ async function probeTcpReachable(baseUrl: string, timeoutMs = 300): Promise<bool
     if (!u.hostname || !Number.isFinite(port)) return false;
     return await new Promise((resolve) => {
       const socket = net.connect({ host: u.hostname, port });
-      const done = (ok) => { socket.destroy(); resolve(ok); };
+      const done = (ok) => {
+        socket.destroy();
+        resolve(ok);
+      };
       const timer = setTimeout(() => done(false), timeoutMs);
-      socket.once("connect", () => { clearTimeout(timer); done(true); });
-      socket.once("error", () => { clearTimeout(timer); done(false); });
+      socket.once("connect", () => {
+        clearTimeout(timer);
+        done(true);
+      });
+      socket.once("error", () => {
+        clearTimeout(timer);
+        done(false);
+      });
     });
   } catch {
     return false;
@@ -231,8 +265,11 @@ function readGlobalModelPicker() {
 function buildStackSettingsFromGlobal() {
   let globalEnv: any = null;
   try {
-    globalEnv = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"))?.env || null;
-  } catch { globalEnv = null; }
+    globalEnv =
+      JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"))?.env || null;
+  } catch {
+    globalEnv = null;
+  }
   if (!isPlainObject(globalEnv) || !isLoopbackBaseUrl(globalEnv.ANTHROPIC_BASE_URL)) return null;
   const env: Record<string, any> = {
     ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
@@ -264,11 +301,17 @@ function buildStackSettingsFromGlobal() {
 // the token.
 function buildCodexStackSettingsFromGlobal() {
   let doc: any = null;
-  try { doc = parseToml(readFileSync(join(HOME, ".codex", "config.toml"), "utf8")); } catch { return null; }
+  try {
+    doc = parseToml(readFileSync(join(HOME, ".codex", "config.toml"), "utf8"));
+  } catch {
+    return null;
+  }
   if (!isPlainObject(doc)) return null;
   const providerId = typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
   if (!providerId || !isCustomCodexModelProviderId(providerId)) return null;
-  const table: any = isPlainObject(doc.model_providers?.[providerId]) ? doc.model_providers[providerId] : null;
+  const table: any = isPlainObject(doc.model_providers?.[providerId])
+    ? doc.model_providers[providerId]
+    : null;
   const baseUrl = typeof table?.base_url === "string" ? table.base_url.trim() : "";
   if (!baseUrl || !isLoopbackBaseUrl(baseUrl)) return null;
   const proj: any = {
@@ -276,7 +319,7 @@ function buildCodexStackSettingsFromGlobal() {
     model_catalog_json: CC_SWITCH_CATALOG_FILENAME,
     model_providers: {
       [providerId]: {
-        name: (typeof table.name === "string" && table.name.trim()) ? table.name : providerId,
+        name: typeof table.name === "string" && table.name.trim() ? table.name : providerId,
         base_url: baseUrl,
         wire_api: table.wire_api === "chat" ? "chat" : "responses",
         experimental_bearer_token: "PROXY_MANAGED",
@@ -367,11 +410,15 @@ function virtualStackProviderFor(appType) {
     // row named "Stack" keeps the name, the virtual entry shows as "Stack 2".
     let name = "Stack";
     try {
-      const taken = new Set(queryDB(
-        `SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`,
-      ).map((r) => r.name));
+      const taken = new Set(
+        queryDB(`SELECT name FROM providers WHERE app_type = ${sqlQuote(appType)}`).map(
+          (r) => r.name,
+        ),
+      );
       for (let i = 2; taken.has(name); i++) name = `Stack ${i}`;
-    } catch { /* DB unavailable — plain "Stack" is fine */ }
+    } catch {
+      /* DB unavailable — plain "Stack" is fine */
+    }
     return {
       id: VIRTUAL_STACK_PROVIDER_ID,
       app_type: appType,
@@ -416,8 +463,16 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
     if (!row) continue;
     let sc: any = null;
     let meta: any = null;
-    try { sc = JSON.parse(row.settings_config); } catch { sc = null; }
-    try { meta = JSON.parse(row.meta); } catch { meta = null; }
+    try {
+      sc = JSON.parse(row.settings_config);
+    } catch {
+      sc = null;
+    }
+    try {
+      meta = JSON.parse(row.meta);
+    } catch {
+      meta = null;
+    }
     const cfg = buildUsageQueryConfig(
       resolveUsageIdentity(sc, meta),
       join(instanceDir, `usage-stack-${key}.json`),
@@ -447,7 +502,9 @@ function buildStackUsageConfig(stack, instanceDir, wrapperPath) {
 // re-enabled). Returns { ids: Set, labels: Map<id, label> }, or null when no
 // aggregation provider exists at all.
 function buildAggregationGroup(appType) {
-  const rows = queryDB(`SELECT id, name, settings_config FROM providers WHERE app_type = ${sqlQuote(appType)}`);
+  const rows = queryDB(
+    `SELECT id, name, settings_config FROM providers WHERE app_type = ${sqlQuote(appType)}`,
+  );
   const aggRows: any[] = [];
   for (const r of rows) {
     try {
@@ -467,7 +524,11 @@ function buildAggregationGroup(appType) {
   const missingText = stack && missingCount > 0 ? `, ${missingCount} member(s) missing` : "";
   const memberText = members.length
     ? ` (${members.join(" + ")}${missingText})`
-    : stack ? (missingCount > 0 ? ` (${missingCount} member(s) missing)` : "") : " (inactive)";
+    : stack
+      ? missingCount > 0
+        ? ` (${missingCount} member(s) missing)`
+        : ""
+      : " (inactive)";
   return {
     ids: new Set(aggRows.map((r) => r.id)),
     labels: new Map(aggRows.map((r) => [r.id, `◆ Aggregation · ${r.name}${memberText}`])),
@@ -505,7 +566,10 @@ function cleanupLegacyStackRows() {
   const removed: any[] = [];
   const skippedCurrent: any[] = [];
   for (const r of legacy) {
-    if (r.is_current) { skippedCurrent.push(r.name); continue; }
+    if (r.is_current) {
+      skippedCurrent.push(r.name);
+      continue;
+    }
     try {
       execDB(`DELETE FROM providers WHERE id = ${sqlQuote(r.id)} AND app_type = 'claude'`);
       removed.push({ id: r.id, name: r.name });
@@ -513,7 +577,8 @@ function cleanupLegacyStackRows() {
       // locked mid-write — the row survives this pass, next run retries
     }
   }
-  if (!removed.length) return { removed, skippedCurrent, migratedHistory: false, migratedColors: false };
+  if (!removed.length)
+    return { removed, skippedCurrent, migratedHistory: false, migratedColors: false };
 
   // launch_history: point entries and pin slots at the virtual id; entries that
   // collide after the rewrite (same cli|id|hotkey) merge keeping the stronger
@@ -538,8 +603,15 @@ function cleanupLegacyStackRows() {
         for (const e of entries) {
           const k = `${e.cli}|${e.providerId ?? e.provider}|${e.hotkey ?? ""}`;
           const prev = byKey.get(k);
-          if (!prev) { byKey.set(k, e); merged.push(e); continue; }
-          if ((e.count || 0) > (prev.count || 0) || ((e.count || 0) === (prev.count || 0) && (e.lastUsed || 0) > (prev.lastUsed || 0))) {
+          if (!prev) {
+            byKey.set(k, e);
+            merged.push(e);
+            continue;
+          }
+          if (
+            (e.count || 0) > (prev.count || 0) ||
+            ((e.count || 0) === (prev.count || 0) && (e.lastUsed || 0) > (prev.lastUsed || 0))
+          ) {
             byKey.set(k, e);
             merged[merged.indexOf(prev)] = e;
           }
@@ -547,13 +619,18 @@ function cleanupLegacyStackRows() {
         }
         // Several legacy ids map to the same virtual id: dedupe the slots,
         // otherwise the same Recent row renders twice.
-        const slotMap = new Map(removed.map((r) => [ `claude|${r.id}`, `claude|${VIRTUAL_STACK_PROVIDER_ID}` ]));
+        const slotMap = new Map(
+          removed.map((r) => [`claude|${r.id}`, `claude|${VIRTUAL_STACK_PROVIDER_ID}`]),
+        );
         const seenOrder = new Set();
         let orderChanged = false;
         const nextOrder = order.map((slot) => {
           const mapped = slot && slotMap.has(slot) ? slotMap.get(slot) : slot;
           if (mapped !== slot) orderChanged = true;
-          if (mapped && seenOrder.has(mapped)) { orderChanged = true; return null; }
+          if (mapped && seenOrder.has(mapped)) {
+            orderChanged = true;
+            return null;
+          }
           if (mapped) seenOrder.add(mapped);
           return mapped;
         });
@@ -561,7 +638,9 @@ function cleanupLegacyStackRows() {
         return touched || orderChanged;
       });
       migratedHistory = locked.acquired ? locked.value : false;
-    } catch { /* history is best-effort — never block on it */ }
+    } catch {
+      /* history is best-effort — never block on it */
+    }
   }
 
   // statusline colors: same id-keyed move, existing value for the virtual id wins
@@ -574,7 +653,8 @@ function cleanupLegacyStackRows() {
       let changed = false;
       for (const oldId of removed.map((r) => r.id)) {
         if (bucket[oldId] === undefined) continue;
-        if (bucket[VIRTUAL_STACK_PROVIDER_ID] === undefined) bucket[VIRTUAL_STACK_PROVIDER_ID] = bucket[oldId];
+        if (bucket[VIRTUAL_STACK_PROVIDER_ID] === undefined)
+          bucket[VIRTUAL_STACK_PROVIDER_ID] = bucket[oldId];
         delete bucket[oldId];
         changed = true;
       }
@@ -582,7 +662,9 @@ function cleanupLegacyStackRows() {
       return changed;
     });
     migratedColors = locked.acquired ? locked.value : false;
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
 
   return { removed, skippedCurrent, migratedHistory, migratedColors };
 }
@@ -590,18 +672,48 @@ function cleanupLegacyStackRows() {
 function reportLegacyStackCleanup(result) {
   if (!result) return;
   for (const r of result.removed) {
-    console.error(`◇ Removed legacy aggregation provider row "${r.name}" (now served by runtime virtual entry ${VIRTUAL_STACK_PROVIDER_ID}; no longer shown in the desktop GUI)`);
+    console.error(
+      `◇ Removed legacy aggregation provider row "${r.name}" (now served by runtime virtual entry ${VIRTUAL_STACK_PROVIDER_ID}; no longer shown in the desktop GUI)`,
+    );
   }
   if (result.migratedHistory) {
-    console.error(`  Launch history and pins migrated to virtual entry ${VIRTUAL_STACK_PROVIDER_ID}`);
+    console.error(
+      `  Launch history and pins migrated to virtual entry ${VIRTUAL_STACK_PROVIDER_ID}`,
+    );
   }
   if (result.migratedColors) {
-    console.error(`  Statusline color preferences migrated to virtual entry ${VIRTUAL_STACK_PROVIDER_ID}`);
+    console.error(
+      `  Statusline color preferences migrated to virtual entry ${VIRTUAL_STACK_PROVIDER_ID}`,
+    );
   }
   for (const name of result.skippedCurrent) {
-    console.error(`\x1b[33m⚠ Aggregation row "${name}" is in use by the desktop app (is_current) — kept; it will be cleaned up on the next run after you switch away in the desktop app\x1b[0m`);
+    console.error(
+      `\x1b[33m⚠ Aggregation row "${name}" is in use by the desktop app (is_current) — kept; it will be cleaned up on the next run after you switch away in the desktop app\x1b[0m`,
+    );
   }
 }
 
-
-export { AGGREGATION_IDENTITY_ENV_KEYS, AGGREGATION_MODEL_ALIAS_KEYS, STACK_SETTINGS_DERIVERS, aggregationBaseUrlFor, appendVirtualStackRow, buildAggregationGroup, buildCodexStackSettingsFromGlobal, buildStackSettingsFromGlobal, buildStackUsageConfig, cleanupLegacyStackRows, codexStackDormantSettings, isAggregationProviderSettings, isCodexAggModelPath, isCodexAggregationProviderSettings, isLoopbackBaseUrl, probeTcpReachable, protectAggregationIdentityEnv, providerIsAggregation, readGlobalModelPicker, readStackState, reportLegacyStackCleanup, virtualStackProviderFor };
+export {
+  AGGREGATION_IDENTITY_ENV_KEYS,
+  AGGREGATION_MODEL_ALIAS_KEYS,
+  STACK_SETTINGS_DERIVERS,
+  aggregationBaseUrlFor,
+  appendVirtualStackRow,
+  buildAggregationGroup,
+  buildCodexStackSettingsFromGlobal,
+  buildStackSettingsFromGlobal,
+  buildStackUsageConfig,
+  cleanupLegacyStackRows,
+  codexStackDormantSettings,
+  isAggregationProviderSettings,
+  isCodexAggModelPath,
+  isCodexAggregationProviderSettings,
+  isLoopbackBaseUrl,
+  probeTcpReachable,
+  protectAggregationIdentityEnv,
+  providerIsAggregation,
+  readGlobalModelPicker,
+  readStackState,
+  reportLegacyStackCleanup,
+  virtualStackProviderFor,
+};

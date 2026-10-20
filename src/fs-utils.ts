@@ -1,6 +1,28 @@
 // ─── fs-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-import { mkdirSync, existsSync, symlinkSync, readlinkSync, lstatSync, readdirSync, unlinkSync, renameSync, rmSync, openSync, writeSync, fsyncSync, closeSync, chmodSync, readFileSync, linkSync, copyFileSync, cpSync, rmdirSync, utimesSync, constants as fsConstants } from "node:fs";
+import {
+  mkdirSync,
+  existsSync,
+  symlinkSync,
+  readlinkSync,
+  lstatSync,
+  readdirSync,
+  unlinkSync,
+  renameSync,
+  rmSync,
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
+  chmodSync,
+  readFileSync,
+  linkSync,
+  copyFileSync,
+  cpSync,
+  rmdirSync,
+  utimesSync,
+  constants as fsConstants,
+} from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, dirname, basename, extname } from "node:path";
 import { withFileLockSync } from "./file-lock.js";
@@ -24,7 +46,9 @@ function ensureSymlink(target, linkPath) {
         if (stats!.isDirectory()) {
           const dirEntries = readdirSyncSafe(linkPath);
           if (dirEntries && dirEntries.length > 0) {
-            console.error(`⚠ ${linkPath} already exists and is non-empty, skipping symlink (target: ${target})`);
+            console.error(
+              `⚠ ${linkPath} already exists and is non-empty, skipping symlink (target: ${target})`,
+            );
             return;
           }
           rmSync(linkPath, { recursive: true, force: true });
@@ -44,15 +68,27 @@ function ensureSymlink(target, linkPath) {
 }
 
 function isBrokenSymlink(path) {
-  try { return lstatSyncSafe(path)?.isSymbolicLink() === true; } catch { return false; }
+  try {
+    return lstatSyncSafe(path)?.isSymbolicLink() === true;
+  } catch {
+    return false;
+  }
 }
 
 function lstatSyncSafe(path) {
-  try { return lstatSync(path); } catch { return null; }
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
 }
 
 function readdirSyncSafe(path) {
-  try { return readdirSync(path); } catch { return null; }
+  try {
+    return readdirSync(path);
+  } catch {
+    return null;
+  }
 }
 
 // Paths shared from global ~/.claude/ into the instance dir.
@@ -74,7 +110,7 @@ const CLAUDE_SHARED_PATHS = [
   "keybindings.json",
   "settings.local.json",
   "config.json",
-  ".claude.json",  // contains OAuth login info (oauthAccount); missing forces re-login
+  ".claude.json", // contains OAuth login info (oauthAccount); missing forces re-login
 ];
 
 // Instance dirs hold credentials, so they are owner-only. Existing dirs from
@@ -82,7 +118,9 @@ const CLAUDE_SHARED_PATHS = [
 // exotic filesystem must not block the launch).
 function ensurePrivateDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { chmodSync(dir, 0o700); } catch {}
+  try {
+    chmodSync(dir, 0o700);
+  } catch {}
 }
 
 // ─── plans: one-time merge into the global directory ──────────────────
@@ -94,8 +132,14 @@ function ensurePrivateDir(dir) {
 // the next time they are launched or refreshed.
 
 function isCrossDeviceError(code: string | undefined): boolean {
-  return code === "EXDEV" || code === "EPERM" || code === "ENOTSUP"
-    || code === "EOPNOTSUPP" || code === "ENOSYS" || code === "EMLINK";
+  return (
+    code === "EXDEV" ||
+    code === "EPERM" ||
+    code === "ENOTSUP" ||
+    code === "EOPNOTSUPP" ||
+    code === "ENOSYS" ||
+    code === "EMLINK"
+  );
 }
 
 function filesAreIdentical(a: string, b: string): boolean {
@@ -126,7 +170,9 @@ function moveFileNoClobber(src: string, dst: string): "moved" | "exists" {
       } catch {}
     } catch (e2: any) {
       if (e2?.code === "EEXIST") return "exists";
-      try { unlinkSync(dst); } catch {} // never leave a half-written plan
+      try {
+        unlinkSync(dst);
+      } catch {} // never leave a half-written plan
       throw e2;
     }
   }
@@ -168,7 +214,12 @@ function moveDirNoClobber(src: string, dst: string): void {
     renameSync(src, dst);
   } catch (e: any) {
     if (!isCrossDeviceError(e?.code)) throw e;
-    cpSync(src, dst, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true });
+    cpSync(src, dst, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      preserveTimestamps: true,
+    });
     rmSync(src, { recursive: true, force: true });
   }
 }
@@ -200,7 +251,11 @@ function movePlanEntry(src: string, dst: string, providerId: string): void {
   moveFileWithConflicts(src, dst, providerId);
 }
 
-function migratePlans(instancePlansDir: string, globalPlansDir: string, providerId: string): { ok: boolean; failed: number } {
+function migratePlans(
+  instancePlansDir: string,
+  globalPlansDir: string,
+  providerId: string,
+): { ok: boolean; failed: number } {
   const st = lstatSyncSafe(instancePlansDir);
   if (!st || st.isSymbolicLink() || !st.isDirectory()) return { ok: true, failed: 0 };
 
@@ -208,7 +263,9 @@ function migratePlans(instancePlansDir: string, globalPlansDir: string, provider
   try {
     entries = readdirSync(instancePlansDir);
   } catch (e: any) {
-    console.error(`⚠ Cannot read ${instancePlansDir}: ${e.message} — plans stay local for this launch.`);
+    console.error(
+      `⚠ Cannot read ${instancePlansDir}: ${e.message} — plans stay local for this launch.`,
+    );
     return { ok: false, failed: 1 };
   }
   if (entries.length === 0) return { ok: true, failed: 0 }; // ensureSymlink removes the empty dir
@@ -219,11 +276,15 @@ function migratePlans(instancePlansDir: string, globalPlansDir: string, provider
       movePlanEntry(join(instancePlansDir, name), join(globalPlansDir, name), providerId);
     } catch (e: any) {
       failed++;
-      console.error(`⚠ Failed to merge plan "${name}": ${e.message} — it stays in ${instancePlansDir}.`);
+      console.error(
+        `⚠ Failed to merge plan "${name}": ${e.message} — it stays in ${instancePlansDir}.`,
+      );
     }
   }
   if (failed === 0) {
-    try { rmdirSync(instancePlansDir); } catch {}
+    try {
+      rmdirSync(instancePlansDir);
+    } catch {}
   }
   return { ok: failed === 0, failed };
 }
@@ -238,14 +299,18 @@ function setupClaudePlans(instanceDir: string, globalPlansDir: string, providerI
       // keeps its permissions.
       mkdirSync(globalPlansDir, { recursive: true });
     } catch (e: any) {
-      console.error(`⚠ Failed to create ${globalPlansDir}: ${e.message} — plans stay local for this launch.`);
+      console.error(
+        `⚠ Failed to create ${globalPlansDir}: ${e.message} — plans stay local for this launch.`,
+      );
       return;
     }
     const migrated = migratePlans(join(instanceDir, "plans"), globalPlansDir, providerId);
     if (!migrated.ok) {
       // Do NOT call ensureSymlink on a partially migrated dir: readdirSyncSafe
       // returning null would make ensureSymlink treat it as empty and delete it.
-      console.error(`⚠ Plans migration incomplete (${migrated.failed} left) — plans stay local for this launch.`);
+      console.error(
+        `⚠ Plans migration incomplete (${migrated.failed} left) — plans stay local for this launch.`,
+      );
       return;
     }
     ensureSymlink(globalPlansDir, join(instanceDir, "plans"));
@@ -289,18 +354,18 @@ function setupClaudeInstance(providerId) {
 // auth.json is NOT included here — it is handled per-provider by the codex adapter
 // (third-party providers get a standalone auth.json; official/OAuth providers symlink to global).
 const CODEX_SHARED_PATHS = [
-  "installation_id",       // device id; missing forces Codex to reinitialize
-  "hooks.json",             // user hook config
-  "models_cache.json",      // Codex CLI model cache; fallback source for catalog generation
-  "rules",                  // user-defined rules (prefix_rule, etc.)
-  "skills",                 // installed skills
+  "installation_id", // device id; missing forces Codex to reinitialize
+  "hooks.json", // user hook config
+  "models_cache.json", // Codex CLI model cache; fallback source for catalog generation
+  "rules", // user-defined rules (prefix_rule, etc.)
+  "skills", // installed skills
   ".personality_migration", // migration marker
-  ".sandbox_migration",     // migration marker
-  "version.json",           // version-check cache
-  "AGENTS.md",              // global instructions ($CODEX_HOME/AGENTS.md); a
-                            // customize'd instance replaces this symlink with
-                            // a real file — ensureSymlink never overwrites
-                            // real files, and uncustomize restores the link.
+  ".sandbox_migration", // migration marker
+  "version.json", // version-check cache
+  "AGENTS.md", // global instructions ($CODEX_HOME/AGENTS.md); a
+  // customize'd instance replaces this symlink with
+  // a real file — ensureSymlink never overwrites
+  // real files, and uncustomize restores the link.
 ];
 
 function setupCodexInstance(providerId) {
@@ -326,7 +391,10 @@ function setupCodexInstance(providerId) {
 function atomicWrite(path, data, mode = 0o600) {
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true });
-  const tmp = join(parent, `.tmp.${basename(path)}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`);
+  const tmp = join(
+    parent,
+    `.tmp.${basename(path)}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`,
+  );
   let fd: number | null = null;
   try {
     fd = openSync(tmp, "wx", mode);
@@ -336,13 +404,31 @@ function atomicWrite(path, data, mode = 0o600) {
     closeSync(fd);
     fd = null;
     renameSync(tmp, path);
-    try { chmodSync(path, mode); } catch {}
+    try {
+      chmodSync(path, mode);
+    } catch {}
   } catch (e) {
-    if (fd !== null) { try { closeSync(fd); } catch {} }
-    try { unlinkSync(tmp); } catch {}
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+    try {
+      unlinkSync(tmp);
+    } catch {}
     throw e;
   }
 }
 
-
-export { CLAUDE_SHARED_PATHS, CODEX_SHARED_PATHS, atomicWrite, ensurePrivateDir, ensureSymlink, isBrokenSymlink, lstatSyncSafe, readdirSyncSafe, setupClaudeInstance, setupCodexInstance };
+export {
+  CLAUDE_SHARED_PATHS,
+  CODEX_SHARED_PATHS,
+  atomicWrite,
+  ensurePrivateDir,
+  ensureSymlink,
+  isBrokenSymlink,
+  lstatSyncSafe,
+  readdirSyncSafe,
+  setupClaudeInstance,
+  setupCodexInstance,
+};

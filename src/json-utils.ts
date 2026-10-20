@@ -1,6 +1,5 @@
 // ─── json-utils (split from bin/cc-launch.mjs) ─────────────────────────────
 
-
 // ─── JSON utils (port of Rust json_deep_merge / json_is_subset) ────────
 
 import type { SettingsChange } from "./types.js";
@@ -18,7 +17,7 @@ function isSafeObjectKey(key: any): boolean {
   return !UNSAFE_OBJECT_KEYS.has(String(key));
 }
 function hasOwn(obj: any, key: string): boolean {
-  return  Object.hasOwn(obj, key);
+  return Object.hasOwn(obj, key);
 }
 
 // Parse a DB column that is supposed to hold a JSON object. Missing/empty
@@ -139,9 +138,7 @@ function jsonIsSubset(target, source) {
   }
   if (Array.isArray(source)) {
     if (!Array.isArray(target)) return false;
-    return source.every((srcItem) =>
-      target.some((tgtItem) => jsonIsSubset(tgtItem, srcItem)),
-    );
+    return source.every((srcItem) => target.some((tgtItem) => jsonIsSubset(tgtItem, srcItem)));
   }
   return target === source;
 }
@@ -198,7 +195,12 @@ function deepEqualJson(a, b) {
 // build time.
 // Callers filter the enabledPlugins subtree themselves — the plugin channel
 // owns that path, and this function must not know about channels.
-function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: string[] = []): SettingsChange[] {
+function diffSettingsLeaves(
+  baseline: any,
+  current: any,
+  prefix = "",
+  segments: string[] = [],
+): SettingsChange[] {
   const changes: SettingsChange[] = [];
   const b = isPlainObject(baseline) ? baseline : {};
   const c = isPlainObject(current) ? current : {};
@@ -230,5 +232,16 @@ function diffSettingsLeaves(baseline: any, current: any, prefix = "", segments: 
   return changes;
 }
 
-
-export { applyMergePatch, deepEqualJson, diffSettingsLeaves, isPlainObject, isSafeObjectKey, jsonDeepClone, jsonDeepMerge, jsonIsSubset, jsonNormalize, mergeCommonOverProvider, parseJsonObject };
+export {
+  applyMergePatch,
+  deepEqualJson,
+  diffSettingsLeaves,
+  isPlainObject,
+  isSafeObjectKey,
+  jsonDeepClone,
+  jsonDeepMerge,
+  jsonIsSubset,
+  jsonNormalize,
+  mergeCommonOverProvider,
+  parseJsonObject,
+};

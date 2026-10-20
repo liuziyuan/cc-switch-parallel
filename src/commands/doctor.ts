@@ -7,16 +7,34 @@ import type { DoctorCheck, DoctorFixResult, InstanceInfo } from "../types.js";
 import { APP_ADAPTERS } from "../adapters.js";
 import { instanceInstructionsPath } from "./customize.js";
 import { pruneInstanceBaselines } from "./ps.js";
-import { loadSettings, queryCommonConfig, queryDB, queryProviderById, queryProvidersByApp, readSchemaUserVersion } from "../db.js";
+import {
+  loadSettings,
+  queryCommonConfig,
+  queryDB,
+  queryProviderById,
+  queryProvidersByApp,
+  readSchemaUserVersion,
+} from "../db.js";
 import { ensureSymlink, lstatSyncSafe, readdirSyncSafe } from "../fs-utils.js";
 import { pruneInstanceSettingsBackups } from "../guard.js";
 import { deepEqualJson, isPlainObject, parseJsonObject } from "../json-utils.js";
 import { loadSyncState, readSessions, sessionLiveness } from "../sessions.js";
 import { recordInstanceBaseline } from "../drift.js";
-import { DB_PATH, INSTANCES_DIR, LIVE_STATE_PATH, SYNC_STATE_PATH, VIRTUAL_STACK_PROVIDER_ID } from "../paths.js";
+import {
+  DB_PATH,
+  INSTANCES_DIR,
+  LIVE_STATE_PATH,
+  SYNC_STATE_PATH,
+  VIRTUAL_STACK_PROVIDER_ID,
+} from "../paths.js";
 import { detectSharedConfigMode, readSharedConfig } from "../shared-config.js";
 import { codexAggregationRoute } from "../stack/catalog.js";
-import { isAggregationProviderSettings, probeTcpReachable, readStackState, virtualStackProviderFor } from "../stack/state.js";
+import {
+  isAggregationProviderSettings,
+  probeTcpReachable,
+  readStackState,
+  virtualStackProviderFor,
+} from "../stack/state.js";
 import { parseToml } from "../toml.js";
 import { tuiSelect } from "../tui.js";
 
@@ -38,7 +56,8 @@ function collectInstances(): InstanceInfo[] {
     if (!existsSync(dir)) continue;
     for (const name of readdirSyncSafe(dir) || []) {
       const full = join(dir, name);
-      if (lstatSyncSafe(full)?.isDirectory()) instances.push({ name, appType: adapter.appType, path: full });
+      if (lstatSyncSafe(full)?.isDirectory())
+        instances.push({ name, appType: adapter.appType, path: full });
     }
   }
   return instances;
@@ -64,7 +83,9 @@ function assertCleanable(instances: InstanceInfo[], force: boolean): boolean {
   if (!blocked.length) return true;
   console.error("✗ Refusing to remove instances with running sessions:");
   for (const b of blocked) {
-    console.error(`    ${b.inst.appType}/${b.inst.name} (pid ${b.session.pid ?? "?"}, ${b.status})`);
+    console.error(
+      `    ${b.inst.appType}/${b.inst.name} (pid ${b.session.pid ?? "?"}, ${b.status})`,
+    );
   }
   console.error("  Exit those sessions first, or rerun with --force.");
   return false;
@@ -77,19 +98,26 @@ function assertCleanable(instances: InstanceInfo[], force: boolean): boolean {
 // runDoctor's renderer, so the checks stay unit-testable without the UI.
 async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
-  const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
+  const add = (label: string, pass: boolean, detail: string) =>
+    checks.push({ label, pass, detail });
   if (!existsSync(LIVE_STATE_PATH)) {
     add("aggregation live-state", true, "not present (aggregation off)");
     return checks;
   }
   let raw: any = null;
-  try { raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8")); } catch {}
+  try {
+    raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8"));
+  } catch {}
   if (!isPlainObject(raw)) {
     add("aggregation live-state", false, "exists but unparseable");
     return checks;
   }
   if (raw!.version !== undefined && raw!.version !== 1) {
-    add("aggregation live-state", false, `unsupported contract version ${raw!.version} (expected 1) — read as off`);
+    add(
+      "aggregation live-state",
+      false,
+      `unsupported contract version ${raw!.version} (expected 1) — read as off`,
+    );
     return checks;
   }
   const stack = readStackState("claude");
@@ -99,9 +127,15 @@ async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
   }
   add("aggregation live-state", true, "readable (stack on)");
   const rowExists = (id) => {
-    try { return !!queryProviderById(id, "claude"); } catch { return false; }
+    try {
+      return !!queryProviderById(id, "claude");
+    } catch {
+      return false;
+    }
   };
-  const missing = Object.entries(stack.keys).filter(([, id]) => !rowExists(id)).map(([key]) => key);
+  const missing = Object.entries(stack.keys)
+    .filter(([, id]) => !rowExists(id))
+    .map(([key]) => key);
   add(
     "aggregation members",
     missing.length === 0,
@@ -115,11 +149,17 @@ async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
   // entry, which IS a failure (nothing to launch the stack through).
   const virtual = virtualStackProviderFor("claude");
   if (!virtual) {
-    add("aggregation Stack row", false, "live stack but no virtual entry derivable — global ~/.claude/settings.json env is missing or not loopback");
+    add(
+      "aggregation Stack row",
+      false,
+      "live stack but no virtual entry derivable — global ~/.claude/settings.json env is missing or not loopback",
+    );
     return checks;
   }
   let baseUrl: string | null = null;
-  try { baseUrl = JSON.parse(virtual.settings_config)?.env?.ANTHROPIC_BASE_URL ?? null; } catch {}
+  try {
+    baseUrl = JSON.parse(virtual.settings_config)?.env?.ANTHROPIC_BASE_URL ?? null;
+  } catch {}
   // Legacy auto-created DB rows (pre-virtualization) are cleaned up on the
   // next TUI open / launch; report them so the state is visible until then.
   let legacy = 0;
@@ -130,14 +170,20 @@ async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
       } catch {}
     }
   } catch {}
-  add("aggregation Stack row", true, legacy
-    ? `virtual entry derived (${baseUrl}, not stored in DB); ${legacy} legacy DB row(s) pending auto-cleanup`
-    : `virtual entry derived (${baseUrl}, not stored in DB)`);
+  add(
+    "aggregation Stack row",
+    true,
+    legacy
+      ? `virtual entry derived (${baseUrl}, not stored in DB); ${legacy} legacy DB row(s) pending auto-cleanup`
+      : `virtual entry derived (${baseUrl}, not stored in DB)`,
+  );
   const reachable = typeof baseUrl === "string" ? await probeTcpReachable(baseUrl) : false;
   add(
     "aggregation proxy",
     reachable,
-    reachable ? `${baseUrl} reachable` : `${baseUrl ?? "?"} unreachable — open the cc-switch desktop app with aggregation on`,
+    reachable
+      ? `${baseUrl} reachable`
+      : `${baseUrl ?? "?"} unreachable — open the cc-switch desktop app with aggregation on`,
   );
   return checks;
 }
@@ -152,13 +198,17 @@ async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
 // catalog check (prepare's copy warning already surfaces that).
 async function codexAggregationDoctorChecks(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
-  const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
+  const add = (label: string, pass: boolean, detail: string) =>
+    checks.push({ label, pass, detail });
   const stack = readStackState("codex");
   if (!stack) return checks;
   const virtual = virtualStackProviderFor("codex");
   if (!virtual) {
-    add("codex aggregation Stack row", false,
-      "live stack but no virtual entry derivable — global ~/.codex/config.toml is missing, has no custom model_provider, or its base_url is not loopback");
+    add(
+      "codex aggregation Stack row",
+      false,
+      "live stack but no virtual entry derivable — global ~/.codex/config.toml is missing, has no custom model_provider, or its base_url is not loopback",
+    );
     return checks;
   }
   let baseUrl: string | null = null;
@@ -166,12 +216,18 @@ async function codexAggregationDoctorChecks(): Promise<DoctorCheck[]> {
     const r = codexAggregationRoute(JSON.parse(virtual.settings_config)?.config || "");
     baseUrl = r?.baseUrl ?? null;
   } catch {}
-  add("codex aggregation Stack row", true, `virtual entry derived (${baseUrl ?? "?"}, not stored in DB)`);
+  add(
+    "codex aggregation Stack row",
+    true,
+    `virtual entry derived (${baseUrl ?? "?"}, not stored in DB)`,
+  );
   const reachable = typeof baseUrl === "string" ? await probeTcpReachable(baseUrl) : false;
   add(
     "codex aggregation proxy",
     reachable,
-    reachable ? `${baseUrl} reachable` : `${baseUrl ?? "?"} unreachable — open the cc-switch desktop app with aggregation on`,
+    reachable
+      ? `${baseUrl} reachable`
+      : `${baseUrl ?? "?"} unreachable — open the cc-switch desktop app with aggregation on`,
   );
   return checks;
 }
@@ -188,7 +244,13 @@ function baselineFixSafe(adapter: any, row: any, appType: string, snapshot: any)
     const shared = readSharedConfig(appType);
     if (shared.mode === "live" && shared.unavailable) return false;
     const effective = adapter.computeEffectiveSettings(
-      settingsConfig, meta, row.category, shared, row.id, loadSettings(), { writeWrapper: false },
+      settingsConfig,
+      meta,
+      row.category,
+      shared,
+      row.id,
+      loadSettings(),
+      { writeWrapper: false },
     );
     return isPlainObject(effective) && deepEqualJson(snapshot, effective);
   } catch {
@@ -198,11 +260,16 @@ function baselineFixSafe(adapter: any, row: any, appType: string, snapshot: any)
 
 async function collectDoctorChecks(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
-  const add = (label: string, pass: boolean, detail: string) => checks.push({ label, pass, detail });
+  const add = (label: string, pass: boolean, detail: string) =>
+    checks.push({ label, pass, detail });
 
   // sqlite3
   const sqliteOk = !!which("sqlite3");
-  add("sqlite3 CLI", sqliteOk, sqliteOk ? "available" : "not found on PATH — required to read the cc-switch DB");
+  add(
+    "sqlite3 CLI",
+    sqliteOk,
+    sqliteOk ? "available" : "not found on PATH — required to read the cc-switch DB",
+  );
 
   // DB + providers
   let dbOk = false;
@@ -211,7 +278,9 @@ async function collectDoctorChecks(): Promise<DoctorCheck[]> {
     counts = "DB file not found";
   } else {
     try {
-      const tables = queryDB(`SELECT name FROM sqlite_master WHERE type='table' AND name='providers'`);
+      const tables = queryDB(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='providers'`,
+      );
       if (tables.length === 0) {
         counts = "providers table missing";
       } else {
@@ -268,10 +337,21 @@ async function collectDoctorChecks(): Promise<DoctorCheck[]> {
       continue;
     }
     const snip = queryCommonConfig(adapter.appType);
-    if (!snip) { add(`common_config_${adapter.appType}`, true, "not set"); continue; }
+    if (!snip) {
+      add(`common_config_${adapter.appType}`, true, "not set");
+      continue;
+    }
     let pass = true;
-    try { adapter.appType === "claude" ? JSON.parse(snip) : parseToml(snip); } catch { pass = false; }
-    add(`common_config_${adapter.appType}`, pass, pass ? "parseable (legacy source)" : "unparseable");
+    try {
+      adapter.appType === "claude" ? JSON.parse(snip) : parseToml(snip);
+    } catch {
+      pass = false;
+    }
+    add(
+      `common_config_${adapter.appType}`,
+      pass,
+      pass ? "parseable (legacy source)" : "unparseable",
+    );
   }
 
   // instance dirs
@@ -314,13 +394,19 @@ async function collectDoctorChecks(): Promise<DoctorCheck[]> {
         detail: globalOk
           ? `broken symlink at ${linkPath} — run with --fix to relink it to ${globalPath}`
           : `broken symlink at ${linkPath}; global ${adapter.instructions.fileName} is missing`,
-        ...(globalOk ? { fixable: true, fixId: `instructions-link:${adapter.appType}:${name}` } : {}),
+        ...(globalOk
+          ? { fixable: true, fixId: `instructions-link:${adapter.appType}:${name}` }
+          : {}),
       });
     }
   }
 
   // sync state
-  add("sync-state.json", existsSync(SYNC_STATE_PATH), existsSync(SYNC_STATE_PATH) ? "present" : "not yet created (first run)");
+  add(
+    "sync-state.json",
+    existsSync(SYNC_STATE_PATH),
+    existsSync(SYNC_STATE_PATH) ? "present" : "not yet created (first run)",
+  );
 
   // Per-instance self-heal candidates (doctor --fix whitelist). A recorded
   // baseline is the evidence that switch launched the instance before; a
@@ -378,7 +464,10 @@ async function collectDoctorChecks(): Promise<DoctorCheck[]> {
   return checks;
 }
 
-function renderDoctorText(checks: DoctorCheck[], opts: { fixMode?: boolean; fixes?: DoctorFixResult[] } = {}): void {
+function renderDoctorText(
+  checks: DoctorCheck[],
+  opts: { fixMode?: boolean; fixes?: DoctorFixResult[] } = {},
+): void {
   console.log("\n  \x1b[1mcc-switch-parallel doctor\x1b[0m\n");
   for (const f of opts.fixes || []) {
     const ok = f.status === "fixed";
@@ -417,7 +506,8 @@ function applyOneFix(kind: string, appType: string, providerId: string): string 
   if (!adapter) throw new Error(`unknown app type "${appType}"`);
   if (kind === "instance-dir") {
     const dir = adapter.setupInstance(providerId);
-    if (!lstatSyncSafe(dir)?.isDirectory()) throw new Error(`instance directory was not created at ${dir}`);
+    if (!lstatSyncSafe(dir)?.isDirectory())
+      throw new Error(`instance directory was not created at ${dir}`);
     return `recreated ${dir}`;
   }
   if (kind === "instructions-link") {
@@ -430,7 +520,8 @@ function applyOneFix(kind: string, appType: string, providerId: string): string 
     ensureSymlink(globalPath, linkPath);
     // ensureSymlink swallows creation errors; verify the result instead.
     const st = lstatSyncSafe(linkPath);
-    if (!st?.isSymbolicLink() || !existsSync(linkPath)) throw new Error(`symlink is still broken at ${linkPath}`);
+    if (!st?.isSymbolicLink() || !existsSync(linkPath))
+      throw new Error(`symlink is still broken at ${linkPath}`);
     if (resolve(readlinkSync(linkPath)) !== resolve(globalPath)) {
       throw new Error(`${linkPath} does not point at ${globalPath}`);
     }
@@ -440,7 +531,8 @@ function applyOneFix(kind: string, appType: string, providerId: string): string 
     const dir = join(INSTANCES_DIR, appType, providerId);
     const row = queryProviderById(providerId, appType);
     if (!row) throw new Error(`provider row "${providerId}" not found (${appType})`);
-    if (!adapter.readInstanceSettingsSnapshot) throw new Error(`adapter "${appType}" has no settings snapshot`);
+    if (!adapter.readInstanceSettingsSnapshot)
+      throw new Error(`adapter "${appType}" has no settings snapshot`);
     const snapshot = adapter.readInstanceSettingsSnapshot(dir);
     if (!isPlainObject(snapshot)) throw new Error(`cannot read the instance config at ${dir}`);
     if (!baselineFixSafe(adapter, row, appType, snapshot)) {
@@ -460,16 +552,29 @@ function applyDoctorFixes(checks: DoctorCheck[]): DoctorFixResult[] {
   const seen = new Set<string>();
   const fixable = checks
     .filter((c) => !c.pass && c.fixable === true && typeof c.fixId === "string")
-    .sort((a, b) => FIX_ORDER.indexOf(a.fixId!.split(":")[0]) - FIX_ORDER.indexOf(b.fixId!.split(":")[0]));
+    .sort(
+      (a, b) =>
+        FIX_ORDER.indexOf(a.fixId!.split(":")[0]) - FIX_ORDER.indexOf(b.fixId!.split(":")[0]),
+    );
   for (const check of fixable) {
     const fixId = check.fixId!;
     if (seen.has(fixId)) continue;
     seen.add(fixId);
     const [kind, appType, providerId] = fixId.split(":");
     try {
-      results.push({ fixId, label: check.label, status: "fixed", detail: applyOneFix(kind, appType, providerId) });
+      results.push({
+        fixId,
+        label: check.label,
+        status: "fixed",
+        detail: applyOneFix(kind, appType, providerId),
+      });
     } catch (e: any) {
-      results.push({ fixId, label: check.label, status: "failed", detail: e?.message || String(e) });
+      results.push({
+        fixId,
+        label: check.label,
+        status: "failed",
+        detail: e?.message || String(e),
+      });
     }
   }
   return results;
@@ -477,13 +582,17 @@ function applyDoctorFixes(checks: DoctorCheck[]): DoctorFixResult[] {
 
 function renderDoctorJson(checks: DoctorCheck[], fixes?: DoctorFixResult[]): string {
   const failed = checks.filter((c) => !c.pass).length;
-  return JSON.stringify({
-    version: 1,
-    ok: failed === 0,
-    summary: { total: checks.length, passed: checks.length - failed, failed },
-    ...(fixes ? { fixes } : {}),
-    checks,
-  }, null, 2);
+  return JSON.stringify(
+    {
+      version: 1,
+      ok: failed === 0,
+      summary: { total: checks.length, passed: checks.length - failed, failed },
+      ...(fixes ? { fixes } : {}),
+      checks,
+    },
+    null,
+    2,
+  );
 }
 
 async function runDoctor(args: string[] = []): Promise<void> {
@@ -532,7 +641,9 @@ async function runClean(args) {
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
     pruneInstanceBaselines(instances);
     pruneInstanceSettingsBackups(instances);
-    console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
+    console.log(
+      `✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`,
+    );
     return;
   }
 
@@ -551,7 +662,9 @@ async function runClean(args) {
     for (const inst of instances) rmSync(inst.path, { recursive: true, force: true });
     pruneInstanceBaselines(instances);
     pruneInstanceSettingsBackups(instances);
-    console.log(`✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`);
+    console.log(
+      `✓ Removed ${instances.length} instance director${instances.length === 1 ? "y" : "ies"}.`,
+    );
   } else {
     const targets = instances.filter((i) => i.path === choice.value);
     if (!assertCleanable(targets, force)) process.exit(1);
@@ -562,5 +675,18 @@ async function runClean(args) {
   }
 }
 
-
-export { aggregationDoctorChecks, applyDoctorFixes, assertCleanable, blockingSessions, codexAggregationDoctorChecks, collectDoctorChecks, collectInstances, parseDoctorArgs, renderDoctorJson, renderDoctorText, runClean, runDoctor, which };
+export {
+  aggregationDoctorChecks,
+  applyDoctorFixes,
+  assertCleanable,
+  blockingSessions,
+  codexAggregationDoctorChecks,
+  collectDoctorChecks,
+  collectInstances,
+  parseDoctorArgs,
+  renderDoctorJson,
+  renderDoctorText,
+  runClean,
+  runDoctor,
+  which,
+};

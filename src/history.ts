@@ -46,12 +46,13 @@ function frozenView() {
 function normalizeOrder(raw: any): (string | null)[] {
   const out: (string | null)[] = [null, null, null, null, null];
   const seen = new Set<string>();
-  if (Array.isArray(raw)) raw.slice(0, 5).forEach((v, i) => {
-    if (typeof v === "string" && !seen.has(v)) {
-      out[i] = v;
-      seen.add(v);
-    }
-  });
+  if (Array.isArray(raw))
+    raw.slice(0, 5).forEach((v, i) => {
+      if (typeof v === "string" && !seen.has(v)) {
+        out[i] = v;
+        seen.add(v);
+      }
+    });
   return out;
 }
 
@@ -74,13 +75,20 @@ function loadHistory(): { entries: HistoryEntry[]; order: (string | null)[] } {
     // and freeze every write. The next recordLaunch would otherwise save the
     // empty in-memory history over the file and destroy counts/pins forever.
     _historyFrozen = true;
-    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
-    try { renameSync(HISTORY_PATH, `${HISTORY_PATH}.corrupt-${stamp}`); } catch {}
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\..+/, "")
+      .replace("T", "-");
+    try {
+      renameSync(HISTORY_PATH, `${HISTORY_PATH}.corrupt-${stamp}`);
+    } catch {}
     _historyFrozenSnapshot = { entries: [], order: normalizeOrder(undefined) };
     return _historyFrozenSnapshot;
   }
   const version = data.version;
-  const knownVersion = version === undefined || version === null || version === 1 || version === HISTORY_VERSION;
+  const knownVersion =
+    version === undefined || version === null || version === 1 || version === HISTORY_VERSION;
   if (!knownVersion) {
     // A newer/unknown writer owns this file. Never migrate it down or
     // overwrite it; render the readable part in read-only mode.
@@ -170,8 +178,9 @@ function mutateHistory<T>(fn: (entries: HistoryEntry[], order: (string | null)[]
 // provider is left unbound (providerId:null) instead of silently picking the
 // first row — those entries surface as missing and can be cleaned with `c`.
 function migrateHistory(data) {
-  const entries = (Array.isArray(data?.entries) ? data.entries : [])
-    .filter((e) => e && typeof e.cli === "string" && typeof e.provider === "string");
+  const entries = (Array.isArray(data?.entries) ? data.entries : []).filter(
+    (e) => e && typeof e.cli === "string" && typeof e.provider === "string",
+  );
   const appTypes = new Set<string>();
   for (const e of entries) {
     const t = APP_ADAPTERS[e.cli]?.appType;
@@ -205,10 +214,12 @@ function migrateHistory(data) {
   for (const { appType, name, ids } of ambiguous.values()) {
     console.error(
       `⚠ ${ids.length} providers named "${name}" (${appType}) make history entries ambiguous ` +
-      `(${ids.join(", ")}) — left unbound (shown as missing); launch with --id to rebind or rename one provider.`,
+        `(${ids.join(", ")}) — left unbound (shown as missing); launch with --id to rebind or rename one provider.`,
     );
   }
-  const order = normalizeOrder(data?.order).map((slot) => (slot && keyMap.has(slot) ? keyMap.get(slot) : null));
+  const order = normalizeOrder(data?.order).map((slot) =>
+    slot && keyMap.has(slot) ? keyMap.get(slot) : null,
+  );
   return { entries, order };
 }
 
@@ -255,7 +266,7 @@ function snapshotAliveByCli() {
 // edit would land on a different row than the one the user highlighted).
 function byStrength(a, b, aliveByCli) {
   const liveness = (e) => (isDeadEntry(e, aliveByCli) ? 0 : 1);
-  return (liveness(b) - liveness(a)) || (b.count - a.count) || (b.lastUsed - a.lastUsed);
+  return liveness(b) - liveness(a) || b.count - a.count || b.lastUsed - a.lastUsed;
 }
 
 // Merge pinned slots with the natural count ranking. Rows are deduped per
@@ -361,7 +372,10 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
     mutateHistory((entries, order) => {
       const now = Date.now();
       const stored = stripOneShotFlags(extraArgs);
-      const hit = entries.find((e) => e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`);
+      const hit = entries.find(
+        (e) =>
+          e.providerId === providerId && e.cli === cli && `${e.hotkey ?? ""}` === `${hotkey ?? ""}`,
+      );
       if (hit) {
         hit.count = (hit.count || 0) + 1;
         hit.lastUsed = now;
@@ -373,8 +387,13 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
         // pushing a sibling entry — otherwise the first real launch of a pinned
         // pair forks history into two rows. count>0 null-hotkey entries are real
         // Default history, never placeholders — the count===0 guard protects them.
-        const ph = entries.find((e) =>
-          e.providerId === providerId && e.cli === cli && e.hotkey == null && (e.count || 0) === 0);
+        const ph = entries.find(
+          (e) =>
+            e.providerId === providerId &&
+            e.cli === cli &&
+            e.hotkey == null &&
+            (e.count || 0) === 0,
+        );
         if (ph) {
           ph.hotkey = hotkey ?? null;
           ph.count = 1;
@@ -383,8 +402,13 @@ function recordLaunch(cli, providerId, providerName, hotkey, extraArgs) {
           ph.extraArgs = stored;
         } else {
           entries.push({
-            cli, providerId, provider: providerName, hotkey: hotkey ?? null,
-            extraArgs: stored, count: 1, lastUsed: now,
+            cli,
+            providerId,
+            provider: providerName,
+            hotkey: hotkey ?? null,
+            extraArgs: stored,
+            count: 1,
+            lastUsed: now,
           });
         }
       }
@@ -413,7 +437,10 @@ function stripPermissionArgs(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (single.has(a)) continue;
-    if (a === "--permission-mode") { i++; continue; } // flag + separate value
+    if (a === "--permission-mode") {
+      i++;
+      continue;
+    } // flag + separate value
     if (a.startsWith("--permission-mode=")) continue; // joined = form
     out.push(a);
   }
@@ -519,8 +546,13 @@ function insertManualOrder(item, pos, aliveByCli) {
         // launch will create its own (hotkey-keyed) entry; this one just sits
         // at count 0 and ranks last until then.
         entries.push({
-          cli: item.cli, providerId: item.providerId ?? null, provider: item.provider,
-          hotkey: null, extraArgs: [], count: 0, lastUsed: 0,
+          cli: item.cli,
+          providerId: item.providerId ?? null,
+          provider: item.provider,
+          hotkey: null,
+          extraArgs: [],
+          count: 0,
+          lastUsed: 0,
         });
       }
       const displayed = mergeTop5(entries, order, aliveByCli)
@@ -531,7 +563,9 @@ function insertManualOrder(item, pos, aliveByCli) {
       const nextOrder = Array(5).fill(null); // always persist the full 5-slot array
       displayed
         .slice(0, 5) // whatever falls past slot 5 loses its pin
-        .forEach((x, i) => { nextOrder[i] = (x === key || order.includes(x)) ? x : null; });
+        .forEach((x, i) => {
+          nextOrder[i] = x === key || order.includes(x) ? x : null;
+        });
       saveHistory(entries, nextOrder);
       return idx + 1;
     });
@@ -560,5 +594,31 @@ function permLabel(hotkey) {
   return "Default";
 }
 
-
-export { HISTORY_VERSION, ONE_SHOT_FLAGS, QUICK_KEYS, _historyFrozen, byStrength, entryKey, healRecordedArgs, insertManualOrder, isDeadEntry, loadHistory, mergeTop5, migrateHistory, normalizeOrder, permLabel, quickItemsFor, recordLaunch, relTime, removeAllDeadPairs, removeHistoryPair, saveHistory, setEntryHotkey, snapshotAliveByCli, stripOneShotFlags, stripPermissionArgs, top5, unpinPair };
+export {
+  HISTORY_VERSION,
+  ONE_SHOT_FLAGS,
+  QUICK_KEYS,
+  _historyFrozen,
+  byStrength,
+  entryKey,
+  healRecordedArgs,
+  insertManualOrder,
+  isDeadEntry,
+  loadHistory,
+  mergeTop5,
+  migrateHistory,
+  normalizeOrder,
+  permLabel,
+  quickItemsFor,
+  recordLaunch,
+  relTime,
+  removeAllDeadPairs,
+  removeHistoryPair,
+  saveHistory,
+  setEntryHotkey,
+  snapshotAliveByCli,
+  stripOneShotFlags,
+  stripPermissionArgs,
+  top5,
+  unpinPair,
+};

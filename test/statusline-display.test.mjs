@@ -14,7 +14,12 @@ process.env.CC_SWITCH_TEST_HOME = testHome;
 
 const { buildStatuslinePanelLines } = await import("../src/tui.ts");
 const { buildStatusLineWrapperScript } = await import("../src/statusline.ts");
-const { loadStatuslineDisplay, saveStatuslineDisplay, detectStatuslineRelay, STATUSLINE_DISPLAY_ITEMS } = await import("../src/statusline-colors.ts");
+const {
+  loadStatuslineDisplay,
+  saveStatuslineDisplay,
+  detectStatuslineRelay,
+  STATUSLINE_DISPLAY_ITEMS,
+} = await import("../src/statusline-colors.ts");
 
 const CC = join(testHome, ".cc-switch");
 const PREFS = join(CC, "statusline-preferences.json");
@@ -24,7 +29,10 @@ mkdirSync(WRAPPER_DIR, { recursive: true });
 
 function writeGlobalSettings(statusLine) {
   mkdirSync(join(testHome, ".claude"), { recursive: true });
-  writeFileSync(GLOBAL_SETTINGS, JSON.stringify(statusLine === undefined ? {} : { statusLine }, null, 2));
+  writeFileSync(
+    GLOBAL_SETTINGS,
+    JSON.stringify(statusLine === undefined ? {} : { statusLine }, null, 2),
+  );
 }
 
 function writePrefs(body) {
@@ -45,7 +53,14 @@ function makeWrapper(extra = {}) {
   const path = join(WRAPPER_DIR, `wrapper-${wrapperSeq++}.mjs`);
   writeFileSync(
     path,
-    buildStatusLineWrapperScript("Prov", GLOBAL_SETTINGS, extra.relay ?? null, "auto", extra.usage ?? null, extra.stack ?? null),
+    buildStatusLineWrapperScript(
+      "Prov",
+      GLOBAL_SETTINGS,
+      extra.relay ?? null,
+      "auto",
+      extra.usage ?? null,
+      extra.stack ?? null,
+    ),
   );
   return path;
 }
@@ -112,7 +127,12 @@ test("display: one switch saves without touching colors; invalid writes rejected
 });
 
 test("display: a display-only file is valid; a corrupt file fails open", () => {
-  writePrefs({ version: 1, display: { showUsage: false }, gitStatus: { enabled: false }, pathLevels: 2 });
+  writePrefs({
+    version: 1,
+    display: { showUsage: false },
+    gitStatus: { enabled: false },
+    pathLevels: 2,
+  });
   const d = loadStatuslineDisplay();
   assert.equal(d.display.showUsage, false);
   assert.equal(d.gitStatus.enabled, false);
@@ -128,7 +148,13 @@ test("display: a display-only file is valid; a corrupt file fails open", () => {
 test("display items: five switches, stable dotted keys", () => {
   assert.deepEqual(
     STATUSLINE_DISPLAY_ITEMS.map((i) => i.key),
-    ["display.showModel", "display.showProject", "gitStatus.enabled", "display.showContext", "display.showUsage"],
+    [
+      "display.showModel",
+      "display.showProject",
+      "gitStatus.enabled",
+      "display.showContext",
+      "display.showUsage",
+    ],
   );
 });
 
@@ -192,12 +218,19 @@ test("self-draw: switches hide model/project/git/context; the tag remains", () =
 });
 
 test("self-draw: showContextBar=false keeps the percentage without a bar", () => {
-  writePrefs({ version: 1, display: { showModel: false, showProject: false, showContextBar: false }, gitStatus: { enabled: false } });
+  writePrefs({
+    version: 1,
+    display: { showModel: false, showProject: false, showContextBar: false },
+    gitStatus: { enabled: false },
+  });
   writeGlobalSettings(undefined);
   const { lines } = runWrapper(makeWrapper(), {
     model: { display_name: "Opus" },
     cwd: "/tmp",
-    context_window: { context_window_size: 200000, current_usage: { input_tokens: 50000, cache_read_input_tokens: 40000 } },
+    context_window: {
+      context_window_size: 200000,
+      current_usage: { input_tokens: 50000, cache_read_input_tokens: 40000 },
+    },
   });
   assert.deepEqual(lines, ["[Prov]", "Context 45%"]);
 });
@@ -208,7 +241,10 @@ test("self-draw: context falls back to current_usage when used_percentage is abs
   const { lines } = runWrapper(makeWrapper(), {
     model: { display_name: "Opus" },
     cwd: "/tmp",
-    context_window: { context_window_size: 100000, current_usage: { input_tokens: 30000, cache_read_input_tokens: 20000 } },
+    context_window: {
+      context_window_size: 100000,
+      current_usage: { input_tokens: 30000, cache_read_input_tokens: 20000 },
+    },
   });
   assert.equal(lines[1], "Context █████░░░░░ 50%");
 });

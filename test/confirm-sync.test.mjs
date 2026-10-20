@@ -14,8 +14,12 @@ function fakeTTY({ isTTY = true, rawThrows = false } = {}) {
   };
   let resumed = 0;
   let paused = 0;
-  stdin.resume = () => { resumed++; };
-  stdin.pause = () => { paused++; };
+  stdin.resume = () => {
+    resumed++;
+  };
+  stdin.pause = () => {
+    paused++;
+  };
   const out = [];
   return {
     stdin,

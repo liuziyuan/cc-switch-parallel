@@ -44,12 +44,16 @@ const USAGE_AUTH_STYLE = { zhipu: "bearer", deepseek: "bearer" };
 // {baseUrl, token} out of a Claude provider settings_config; null when
 // either is missing (no creds → no usage segment).
 function extractClaudeUsageSource(settingsConfig) {
-  const env = isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
+  const env =
+    isPlainObject(settingsConfig) && isPlainObject(settingsConfig.env) ? settingsConfig.env : null;
   if (!env) return null;
   const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL.trim() : "";
-  const token = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim()
-    ? env.ANTHROPIC_AUTH_TOKEN.trim()
-    : typeof env.ANTHROPIC_API_KEY === "string" ? env.ANTHROPIC_API_KEY.trim() : "";
+  const token =
+    typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim()
+      ? env.ANTHROPIC_AUTH_TOKEN.trim()
+      : typeof env.ANTHROPIC_API_KEY === "string"
+        ? env.ANTHROPIC_API_KEY.trim()
+        : "";
   if (!baseUrl || !token) return null;
   return { baseUrl, token };
 }
@@ -57,7 +61,9 @@ function extractClaudeUsageSource(settingsConfig) {
 // Loopback check kept local on purpose: importing isLoopbackBaseUrl from
 // stack/state.ts would create a state → usage → state cycle. Same host set.
 function isLoopbackHost(hostname) {
-  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  const host = String(hostname || "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
@@ -70,8 +76,13 @@ function isLoopbackHost(hostname) {
 // schemes (file:, ftp: …); the protocol check below rejects those.
 function usageEndpointFor(kind, baseUrl) {
   let url;
-  try { url = new URL(baseUrl); } catch { return null; }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHost(url.hostname))) return null;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHost(url.hostname)))
+    return null;
   const origin = url.origin;
   if (kind === "zhipu") return origin + "/api/monitor/usage/quota/limit";
   if (kind === "deepseek") return origin + "/user/balance";
@@ -93,16 +104,34 @@ function resolveUsageIdentity(settingsConfig, meta) {
   const source = extractClaudeUsageSource(settingsConfig);
   if (!source) return null;
   let host = "";
-  try { host = new URL(source.baseUrl).hostname.toLowerCase(); } catch { return null; }
-  const matched = USAGE_HOST_MATCHERS.find((m) => host === m.suffix || host.endsWith("." + m.suffix));
-  const explicit = usage && typeof usage.codingPlanProvider === "string" ? usage.codingPlanProvider.trim().toLowerCase() : "";
-  const kind = (explicit && USAGE_AUTH_STYLE[explicit] ? explicit : "") || (matched ? matched.kind : "");
+  try {
+    host = new URL(source.baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const matched = USAGE_HOST_MATCHERS.find(
+    (m) => host === m.suffix || host.endsWith("." + m.suffix),
+  );
+  const explicit =
+    usage && typeof usage.codingPlanProvider === "string"
+      ? usage.codingPlanProvider.trim().toLowerCase()
+      : "";
+  const kind =
+    (explicit && USAGE_AUTH_STYLE[explicit] ? explicit : "") || (matched ? matched.kind : "");
   if (!kind) return null;
   const endpoint = usageEndpointFor(kind, source.baseUrl);
   if (!endpoint) return null;
   const intervalRaw = Number(usage && usage.autoQueryInterval);
-  const intervalMin = Number.isFinite(intervalRaw) && intervalRaw >= 1 ? Math.min(Math.round(intervalRaw), 60) : 5;
-  return { kind, baseUrl: source.baseUrl, token: source.token, authStyle: USAGE_AUTH_STYLE[kind], intervalMin, endpoint };
+  const intervalMin =
+    Number.isFinite(intervalRaw) && intervalRaw >= 1 ? Math.min(Math.round(intervalRaw), 60) : 5;
+  return {
+    kind,
+    baseUrl: source.baseUrl,
+    token: source.token,
+    authStyle: USAGE_AUTH_STYLE[kind],
+    intervalMin,
+    endpoint,
+  };
 }
 
 // Serializable runtime config inlined into the wrapper. Deterministic in
@@ -126,5 +155,12 @@ function buildUsageQueryConfig(identity, cachePath, selfPath) {
   };
 }
 
-
-export { USAGE_AUTH_STYLE, USAGE_CACHE_FILENAME, USAGE_HOST_MATCHERS, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor };
+export {
+  USAGE_AUTH_STYLE,
+  USAGE_CACHE_FILENAME,
+  USAGE_HOST_MATCHERS,
+  buildUsageQueryConfig,
+  extractClaudeUsageSource,
+  resolveUsageIdentity,
+  usageEndpointFor,
+};

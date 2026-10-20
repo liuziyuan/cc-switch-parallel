@@ -16,6 +16,8 @@
     "test": "node --import tsx --test",
     "test:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=85 --test-coverage-branches=79 --test-coverage-functions=82 --test",
     "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit"
   },

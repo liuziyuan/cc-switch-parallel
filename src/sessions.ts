@@ -46,17 +46,25 @@ function psField(pid, field, inheritLocale = false) {
 function writeSessionFile(instanceDir, pid, bin, extraArgs) {
   try {
     let file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}.json`);
-    for (let n = 2; existsSync(file); n++) file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}-${n}.json`);
-    atomicWrite(file, JSON.stringify({
-      pid,
-      lstart: psField(pid, "lstart"),
-      cli: bin,
-      providerId: basename(instanceDir),
-      startedAt: Date.now(),
-      extraArgs,
-      tty: psField(process.pid, "tty"),
-      cwd: process.cwd(),
-    }, null, 2));
+    for (let n = 2; existsSync(file); n++)
+      file = join(sessionsDir(instanceDir), `${pid}-${Date.now()}-${n}.json`);
+    atomicWrite(
+      file,
+      JSON.stringify(
+        {
+          pid,
+          lstart: psField(pid, "lstart"),
+          cli: bin,
+          providerId: basename(instanceDir),
+          startedAt: Date.now(),
+          extraArgs,
+          tty: psField(process.pid, "tty"),
+          cwd: process.cwd(),
+        },
+        null,
+        2,
+      ),
+    );
     return file;
   } catch {
     // best-effort: a tracking failure must never block the launch
@@ -65,7 +73,9 @@ function writeSessionFile(instanceDir, pid, bin, extraArgs) {
 }
 
 function removeSessionFile(sessionFilePath) {
-  try { unlinkSync(sessionFilePath); } catch {}
+  try {
+    unlinkSync(sessionFilePath);
+  } catch {}
 }
 
 // All sessions of an instance: the per-session files plus the legacy
@@ -155,7 +165,9 @@ function launchTracked(bin, extraArgs, instanceDir, envKey, onExit, extraEnv) {
   // Belt-and-suspenders for the flowing-stdin hazard: any missed cleanup
   // upstream would let the parent keep consuming (and discarding) keystrokes
   // that belong to the spawned CLI. pause() is idempotent and cheap.
-  try { process.stdin.pause(); } catch {}
+  try {
+    process.stdin.pause();
+  } catch {}
   const child = spawn(bin, extraArgs, {
     stdio: "inherit",
     env: {
@@ -173,7 +185,9 @@ function launchTracked(bin, extraArgs, instanceDir, envKey, onExit, extraEnv) {
   child.on("exit", (code, signal) => {
     if (sessionFile) removeSessionFile(sessionFile);
     const exitCode = exitCodeFor(code, signal);
-    try { onExit?.(exitCode, signal); } catch {}
+    try {
+      onExit?.(exitCode, signal);
+    } catch {}
     process.exit(exitCode);
   });
 }
@@ -215,5 +229,23 @@ function shallowEqualPlugins(a, b) {
   return true;
 }
 
-
-export { LEGACY_SESSION_FILENAME, SESSIONS_SUBDIR, buildLaunchExtraEnv, exitCodeFor, launchTracked, legacySessionFilePath, loadSyncState, psField, readSessions, removeSessionFile, saveSyncState, sessionIsAlive, sessionLiveness, sessionsDir, sha256, shallowEqualPlugins, withSyncStateLock, writeSessionFile };
+export {
+  LEGACY_SESSION_FILENAME,
+  SESSIONS_SUBDIR,
+  buildLaunchExtraEnv,
+  exitCodeFor,
+  launchTracked,
+  legacySessionFilePath,
+  loadSyncState,
+  psField,
+  readSessions,
+  removeSessionFile,
+  saveSyncState,
+  sessionIsAlive,
+  sessionLiveness,
+  sessionsDir,
+  sha256,
+  shallowEqualPlugins,
+  withSyncStateLock,
+  writeSessionFile,
+};

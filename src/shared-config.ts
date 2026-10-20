@@ -134,10 +134,12 @@ function claudeFloorTop(key: string): boolean {
 }
 
 function claudeFloorEnv(key: string): boolean {
-  return CLAUDE_FLOOR_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
-    || CLAUDE_PROTOCOL_SELECTORS.includes(key)
-    || CLAUDE_FLOOR_ENV_KEYS.includes(key)
-    || (key.startsWith("CLAUDE_CODE_SKIP_") && key.endsWith("_AUTH"));
+  return (
+    CLAUDE_FLOOR_ENV_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+    CLAUDE_PROTOCOL_SELECTORS.includes(key) ||
+    CLAUDE_FLOOR_ENV_KEYS.includes(key) ||
+    (key.startsWith("CLAUDE_CODE_SKIP_") && key.endsWith("_AUTH"))
+  );
 }
 
 function claudeExclusiveEnv(key: string): boolean {
@@ -226,13 +228,18 @@ function detectSharedConfigMode(): SharedConfigMode {
 function canonicalJson(value: any): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (isPlainObject(value)) {
-    return `{${Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k])).join(",")}}`;
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k]))
+      .join(",")}}`;
   }
   return JSON.stringify(value ?? null);
 }
 
 function sha256(text: string): string {
-  return createHash("sha256").update(String(text || ""), "utf8").digest("hex");
+  return createHash("sha256")
+    .update(String(text || ""), "utf8")
+    .digest("hex");
 }
 
 // legacy: hash the raw snippet (byte-identical to the old commonHash, so
@@ -250,7 +257,11 @@ function sharedConfigHash(shared: SharedConfig): string {
 
 const warnedUnavailable = new Set<string>();
 
-function emptyShared(mode: SharedConfigMode, sourcePath: string | null, unavailable: boolean): SharedConfig {
+function emptyShared(
+  mode: SharedConfigMode,
+  sourcePath: string | null,
+  unavailable: boolean,
+): SharedConfig {
   return { mode, text: "", parsed: {}, unavailable, sourcePath };
 }
 
@@ -258,9 +269,14 @@ function readLegacyShared(appType: string): SharedConfig {
   const text = queryCommonConfig(appType) || "";
   let parsed: any = {};
   try {
-    parsed = appType === "claude"
-      ? (isPlainObject(JSON.parse(text)) ? JSON.parse(text) : {})
-      : (text.trim() ? parseToml(text) : {});
+    parsed =
+      appType === "claude"
+        ? isPlainObject(JSON.parse(text))
+          ? JSON.parse(text)
+          : {}
+        : text.trim()
+          ? parseToml(text)
+          : {};
   } catch {
     parsed = {};
   }
@@ -298,9 +314,7 @@ function readLiveShared(appType: string): SharedConfig {
 }
 
 function readSharedConfig(appType: string): SharedConfig {
-  return detectSharedConfigMode() === "live"
-    ? readLiveShared(appType)
-    : readLegacyShared(appType);
+  return detectSharedConfigMode() === "live" ? readLiveShared(appType) : readLegacyShared(appType);
 }
 
 // ─── Compatibility helpers ─────────────────────────────────────────────
@@ -324,12 +338,24 @@ function resetSharedConfigWarnings(): void {
 }
 
 export {
-  CLAUDE_EXCLUSIVE_ENV, CLAUDE_FLOOR_ENV_KEYS, CLAUDE_FLOOR_ENV_PREFIXES,
-  CLAUDE_FLOOR_TOP, CLAUDE_PROTOCOL_SELECTORS, CODEX_EXCLUSIVE_TOP,
-  CODEX_FLOOR_NESTED, CODEX_FLOOR_TOP,
-  claudeExclusiveEnv, claudeFloorEnv, claudeFloorTop,
-  detectSharedConfigMode, isLiveSharedSnippet, projectClaudeSharedKeys,
-  projectCodexSharedKeys, readSharedConfig, resetSharedConfigWarnings,
-  sharedConfigHash, sharedSnippetText,
+  CLAUDE_EXCLUSIVE_ENV,
+  CLAUDE_FLOOR_ENV_KEYS,
+  CLAUDE_FLOOR_ENV_PREFIXES,
+  CLAUDE_FLOOR_TOP,
+  CLAUDE_PROTOCOL_SELECTORS,
+  CODEX_EXCLUSIVE_TOP,
+  CODEX_FLOOR_NESTED,
+  CODEX_FLOOR_TOP,
+  claudeExclusiveEnv,
+  claudeFloorEnv,
+  claudeFloorTop,
+  detectSharedConfigMode,
+  isLiveSharedSnippet,
+  projectClaudeSharedKeys,
+  projectCodexSharedKeys,
+  readSharedConfig,
+  resetSharedConfigWarnings,
+  sharedConfigHash,
+  sharedSnippetText,
 };
 export type { SharedConfig, SharedConfigMode };

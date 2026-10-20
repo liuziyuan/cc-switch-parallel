@@ -11,8 +11,19 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-runtime-state-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { resolvePathSegments, getPathValue, pathExistsInSnippet, buildNestedAssign, splitChangesByTarget } = await import("../src/upward.ts");
-const { isCodexRuntimeStatePath, isCodexRuntimeStateChange, mergeCodexRuntimeState, codexInstanceDirFor } = await import("../src/stack/catalog.ts");
+const {
+  resolvePathSegments,
+  getPathValue,
+  pathExistsInSnippet,
+  buildNestedAssign,
+  splitChangesByTarget,
+} = await import("../src/upward.ts");
+const {
+  isCodexRuntimeStatePath,
+  isCodexRuntimeStateChange,
+  mergeCodexRuntimeState,
+  codexInstanceDirFor,
+} = await import("../src/stack/catalog.ts");
 
 // ─── dotted-key path resolution (2026-10-17 provider-row corruption) ────
 // Codex TOML keys like [hooks.state."<abs path>"] contain dots; the dotted
@@ -26,10 +37,11 @@ const HOOKS_TREE = {
 };
 
 test("resolvePathSegments: flat dotted key resolves as ONE segment", () => {
-  assert.deepEqual(
-    resolvePathSegments(HOOKS_TREE, `hooks.state.${FLAT_KEY}`),
-    ["hooks", "state", FLAT_KEY],
-  );
+  assert.deepEqual(resolvePathSegments(HOOKS_TREE, `hooks.state.${FLAT_KEY}`), [
+    "hooks",
+    "state",
+    FLAT_KEY,
+  ]);
 });
 
 test("resolvePathSegments: dot-free paths unchanged", () => {
@@ -69,10 +81,21 @@ test("splitChangesByTarget: provider patch for a dotted key stays single-keyed",
     hooks: { state: { [FLAT_KEY]: { trusted_hash: "sha256:old" } } },
   };
   const { providerPatch } = splitChangesByTarget(
-    [{ path: `hooks.state.${FLAT_KEY}`, op: "change", from: { trusted_hash: "sha256:old" }, to: { trusted_hash: "sha256:new" } }],
-    "pid", {}, providerSettings,
+    [
+      {
+        path: `hooks.state.${FLAT_KEY}`,
+        op: "change",
+        from: { trusted_hash: "sha256:old" },
+        to: { trusted_hash: "sha256:new" },
+      },
+    ],
+    "pid",
+    {},
+    providerSettings,
   );
-  assert.deepEqual(providerPatch, { hooks: { state: { [FLAT_KEY]: { trusted_hash: "sha256:new" } } } });
+  assert.deepEqual(providerPatch, {
+    hooks: { state: { [FLAT_KEY]: { trusted_hash: "sha256:new" } } },
+  });
 });
 
 // ─── runtime-state filter (2026-10-17 sync prompt noise) ────────────────
@@ -83,15 +106,18 @@ test("isCodexRuntimeStatePath: exact runtime keys, user config untouched", () =>
     "hooks.state./Users/u/.codex/hooks.json:stop:0:0",
     "tui.screen_reader_detection_done",
     "tui.model_availability_nux.gpt-5.6-sol",
-  ]) assert.equal(isCodexRuntimeStatePath(p), true, p);
+  ])
+    assert.equal(isCodexRuntimeStatePath(p), true, p);
 
   for (const p of [
     "projects", // bare table — only leaves are runtime state
-    "model", "model_providers.custom.base_url",
+    "model",
+    "model_providers.custom.base_url",
     "tui.terminal_title", // user-configured [tui] keys keep syncing
     "tui.notifications",
     "hooks", // the [hooks] table itself is config, only .state is runtime
-  ]) assert.equal(isCodexRuntimeStatePath(p), false, p);
+  ])
+    assert.equal(isCodexRuntimeStatePath(p), false, p);
 });
 
 // Regressions behind the 2026-10-18 "every launch asks to sync hooks" bug:
@@ -101,18 +127,36 @@ test("isCodexRuntimeStatePath: exact runtime keys, user config untouched", () =>
 // without widening the path contract ("hooks" alone stays config).
 test("isCodexRuntimeStateChange: whole-subtree runtime adds filtered, user hooks kept", () => {
   // runtime: the first session materializes the whole table
-  const hooksState = { op: "add", to: { state: { "/abs/hooks.json:stop:0:0": { trusted_hash: "sha256:a" } } } };
+  const hooksState = {
+    op: "add",
+    to: { state: { "/abs/hooks.json:stop:0:0": { trusted_hash: "sha256:a" } } },
+  };
   assert.equal(isCodexRuntimeStateChange("hooks", hooksState), true);
-  assert.equal(isCodexRuntimeStateChange("projects", { op: "add", to: { "/x": { trust_level: "trusted" } } }), true);
-  assert.equal(isCodexRuntimeStateChange("tui.model_availability_nux", { op: "add", to: { "gpt-6": 1 } }), true);
+  assert.equal(
+    isCodexRuntimeStateChange("projects", { op: "add", to: { "/x": { trust_level: "trusted" } } }),
+    true,
+  );
+  assert.equal(
+    isCodexRuntimeStateChange("tui.model_availability_nux", { op: "add", to: { "gpt-6": 1 } }),
+    true,
+  );
   assert.equal(isCodexRuntimeStateChange("hooks", { op: "remove", from: { state: {} } }), true);
 
   // genuine user config must still surface
-  assert.equal(isCodexRuntimeStateChange("hooks", { op: "add", to: { custom: { command: "x" } } }), false);
-  assert.equal(isCodexRuntimeStateChange("hooks", { op: "add", to: { state: {}, custom: {} } }), false);
+  assert.equal(
+    isCodexRuntimeStateChange("hooks", { op: "add", to: { custom: { command: "x" } } }),
+    false,
+  );
+  assert.equal(
+    isCodexRuntimeStateChange("hooks", { op: "add", to: { state: {}, custom: {} } }),
+    false,
+  );
   // leaf paths keep their existing contract
   assert.equal(isCodexRuntimeStateChange("hooks.state./abs/hooks.json:stop:0:0"), true);
-  assert.equal(isCodexRuntimeStateChange("tui.terminal_title", { op: "change", to: ["thread"] }), false);
+  assert.equal(
+    isCodexRuntimeStateChange("tui.terminal_title", { op: "change", to: ["thread"] }),
+    false,
+  );
 });
 
 // ─── runtime state survives prepare regeneration ────────────────────────
@@ -120,25 +164,28 @@ test("isCodexRuntimeStateChange: whole-subtree runtime adds filtered, user hooks
 test("mergeCodexRuntimeState: carries projects/hooks.state/tui markers across regeneration", () => {
   const dir = join(testHome, "codex-merge-test");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "config.toml"), [
-    'model = "gpt-5"',
-    '',
-    '[projects."/Users/x/repo"]',
-    'trust_level = "trusted"',
-    '',
-    '[hooks.state]',
-    '',
-    `[hooks.state."${FLAT_KEY}"]`,
-    'trusted_hash = "sha256:live"',
-    '',
-    "[tui]",
-    'status_line = [ "model-with-reasoning" ]',
-    "screen_reader_detection_done = true",
-    "",
-    "[tui.model_availability_nux]",
-    '"gpt-5.6-sol" = 2',
-    "",
-  ].join("\n"));
+  writeFileSync(
+    join(dir, "config.toml"),
+    [
+      'model = "gpt-5"',
+      "",
+      '[projects."/Users/x/repo"]',
+      'trust_level = "trusted"',
+      "",
+      "[hooks.state]",
+      "",
+      `[hooks.state."${FLAT_KEY}"]`,
+      'trusted_hash = "sha256:live"',
+      "",
+      "[tui]",
+      'status_line = [ "model-with-reasoning" ]',
+      "screen_reader_detection_done = true",
+      "",
+      "[tui.model_availability_nux]",
+      '"gpt-5.6-sol" = 2',
+      "",
+    ].join("\n"),
+  );
 
   const regenerated = mergeCodexRuntimeState('model = "gpt-5"\n', dir);
   assert.ok(regenerated.includes('trust_level = "trusted"'), "projects carried");
@@ -165,7 +212,10 @@ test("mergeCodexRuntimeState: no state on disk → input unchanged; corrupt file
 });
 
 test("codexInstanceDirFor: same derivation as setupCodexInstance", () => {
-  assert.equal(codexInstanceDirFor("abc"), join(testHome, ".cc-switch", "instances", "codex", "abc"));
+  assert.equal(
+    codexInstanceDirFor("abc"),
+    join(testHome, ".cc-switch", "instances", "codex", "abc"),
+  );
 });
 
 // ─── write-back segments: NEW dotted keys must stay flat ────────────────

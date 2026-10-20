@@ -3,19 +3,57 @@
 import { readFileSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildClaudeEffectiveSettings, isClaudeRuntimeStatePath } from "./claude-config.js";
-import { buildCodexInstructionsTemplate, refreshCodexInstructionsSnapshot } from "./commands/customize.js";
+import {
+  buildCodexInstructionsTemplate,
+  refreshCodexInstructionsSnapshot,
+} from "./commands/customize.js";
 import { patchCommonConfigClaude, queryProviderById, queryProvidersByApp } from "./db.js";
-import { atomicWrite, ensureSymlink, readdirSyncSafe, setupClaudeInstance, setupCodexInstance } from "./fs-utils.js";
+import {
+  atomicWrite,
+  ensureSymlink,
+  readdirSyncSafe,
+  setupClaudeInstance,
+  setupCodexInstance,
+} from "./fs-utils.js";
 import { isPluginChannelPath } from "./guard.js";
-import { deepEqualJson, diffSettingsLeaves, isPlainObject, jsonDeepMerge, jsonNormalize, parseJsonObject } from "./json-utils.js";
+import {
+  deepEqualJson,
+  diffSettingsLeaves,
+  isPlainObject,
+  jsonDeepMerge,
+  jsonNormalize,
+  parseJsonObject,
+} from "./json-utils.js";
 import { HOME, INSTANCES_DIR } from "./paths.js";
 import { buildLaunchExtraEnv, launchTracked, shallowEqualPlugins } from "./sessions.js";
 import { detectSharedConfigMode, readSharedConfig, sharedSnippetText } from "./shared-config.js";
-import { CC_SWITCH_CATALOG_FILENAME, buildCodexConfig, codexAuthHasLoginMaterial, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexStatusLineChannelPath, mergeCodexRuntimeState } from "./stack/catalog.js";
+import {
+  CC_SWITCH_CATALOG_FILENAME,
+  buildCodexConfig,
+  codexAuthHasLoginMaterial,
+  codexInstanceDirFor,
+  copyGlobalCodexCatalogIntoInstance,
+  isCodexRuntimeStateChange,
+  isCodexStatusLineChannelPath,
+  mergeCodexRuntimeState,
+} from "./stack/catalog.js";
 import { isCodexAggModelPath } from "./stack/state.js";
-import { claudeProviderName, collectEnabledPluginsPatch, isStatusLineChannelPath } from "./statusline.js";
+import {
+  claudeProviderName,
+  collectEnabledPluginsPatch,
+  isStatusLineChannelPath,
+} from "./statusline.js";
 import { parseToml } from "./toml.js";
-import { applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyClaudeSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, applyCodexSettingsFieldPatches, normalizeInstalledPluginPaths, pathExistsInSnippet, splitChangesByTarget } from "./upward.js";
+import {
+  applyClaudeLivePluginPatch,
+  applyClaudeLiveSettingsFieldPatches,
+  applyClaudeSettingsFieldPatches,
+  applyCodexLiveSettingsFieldPatches,
+  applyCodexSettingsFieldPatches,
+  normalizeInstalledPluginPaths,
+  pathExistsInSnippet,
+  splitChangesByTarget,
+} from "./upward.js";
 
 // ─── App adapters (per-CLI strategy) ──────────────────────────────────
 // Each CLI implements a small adapter so adding a new CLI (e.g. gemini) means
@@ -100,15 +138,24 @@ const APP_ADAPTERS = {
     prepare(instanceDir, providerId, settingsConfig, meta, category, shared, settings) {
       normalizeInstalledPluginPaths();
       const effective = buildClaudeEffectiveSettings(
-        settingsConfig, meta, shared, claudeProviderName(providerId), providerId,
+        settingsConfig,
+        meta,
+        shared,
+        claudeProviderName(providerId),
+        providerId,
       );
       atomicWrite(join(instanceDir, "settings.json"), JSON.stringify(effective, null, 2));
     },
 
     launch(instanceDir, extraArgs, ctx) {
-      process.stderr.write(`\x1b[2mCLAUDE_CONFIG_DIR=${instanceDir} claude ${extraArgs.join(" ")}\x1b[0m\n`);
+      process.stderr.write(
+        `\x1b[2mCLAUDE_CONFIG_DIR=${instanceDir} claude ${extraArgs.join(" ")}\x1b[0m\n`,
+      );
       launchTracked(
-        "claude", extraArgs, instanceDir, "CLAUDE_CONFIG_DIR",
+        "claude",
+        extraArgs,
+        instanceDir,
+        "CLAUDE_CONFIG_DIR",
         () => normalizeInstalledPluginPaths(),
         buildLaunchExtraEnv(ctx?.providerName, ctx?.providerId),
       );
@@ -158,15 +205,34 @@ const APP_ADAPTERS = {
     // source is naturally normalized, so no jsonNormalize needed here. [C3]
     // providerName/providerId must match prepare's pair exactly, or the
     // statusline injection makes the two derivations fork.
-    computeEffectiveSettings(settingsConfig, meta, _category, shared, providerId, _settings, opts = {}) {
-      return jsonNormalize(buildClaudeEffectiveSettings(
-        settingsConfig, meta, shared, claudeProviderName(providerId), providerId, opts,
-      ));
+    computeEffectiveSettings(
+      settingsConfig,
+      meta,
+      _category,
+      shared,
+      providerId,
+      _settings,
+      opts = {},
+    ) {
+      return jsonNormalize(
+        buildClaudeEffectiveSettings(
+          settingsConfig,
+          meta,
+          shared,
+          claudeProviderName(providerId),
+          providerId,
+          opts,
+        ),
+      );
     },
 
     // [C6] — claude's settings_config IS the diffable document.
     parseCommonSnippet(text) {
-      try { return JSON.parse(text); } catch { return null; }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
     },
     providerDocFromSettingsConfig(settingsConfigObj) {
       return isPlainObject(settingsConfigObj) ? settingsConfigObj : null;
@@ -183,8 +249,12 @@ const APP_ADAPTERS = {
     // no snapshot region and no refreshSnapshot.
     instructions: {
       fileName: "CLAUDE.md",
-      globalPath() { return join(HOME, ".claude", "CLAUDE.md"); },
-      missingGlobalWarn(p) { return `⚠ ${p} not found — the @import line will resolve once it exists`; },
+      globalPath() {
+        return join(HOME, ".claude", "CLAUDE.md");
+      },
+      missingGlobalWarn(p) {
+        return `⚠ ${p} not found — the @import line will resolve once it exists`;
+      },
       buildTemplate(_globalText, globalPath) {
         return [
           `@${globalPath}`,
@@ -210,11 +280,19 @@ const APP_ADAPTERS = {
       const removed = [...prevKeys].filter((k) => !curKeys.has(k));
       const toggled: any[] = [];
       for (const [k, v] of Object.entries(patch || {})) {
-        if (v !== null && v !== prevEnabled[k]) toggled.push({ key: k, from: prevEnabled[k], to: v });
+        if (v !== null && v !== prevEnabled[k])
+          toggled.push({ key: k, from: prevEnabled[k], to: v });
       }
 
       if (!added.length && !removed.length && !toggled.length) return null;
-      return { added, removed, toggled, patch, installedKeys, sharedMode: detectSharedConfigMode() };
+      return {
+        added,
+        removed,
+        toggled,
+        patch,
+        installedKeys,
+        sharedMode: detectSharedConfigMode(),
+      };
     },
 
     // Write-back: apply the plugin patch into the shared document — the live
@@ -287,7 +365,11 @@ const APP_ADAPTERS = {
     runtimeStatePath: isCodexRuntimeStateChange,
 
     parseCommonSnippet(text) {
-      try { return jsonNormalize(parseToml(text || "")); } catch { return null; }
+      try {
+        return jsonNormalize(parseToml(text || ""));
+      } catch {
+        return null;
+      }
     },
     // The diffable document is the `config` TOML inside the settings_config
     // JSON envelope ({config, auth, modelCatalog}) — auth and modelCatalog
@@ -304,11 +386,17 @@ const APP_ADAPTERS = {
 
     prepare(instanceDir, providerId, settingsConfig, meta, category, commonSnippet, settings) {
       const { configText, auth, catalog, apiKey, stackCatalog } = buildCodexConfig(
-        settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
+        settingsConfig,
+        meta,
+        category,
+        commonSnippet,
+        { id: providerId },
+        settings,
       );
-      atomicWrite(join(instanceDir, "config.toml"), mergeCodexRuntimeState(
-        configText, instanceDir, stackCatalog,
-      ));
+      atomicWrite(
+        join(instanceDir, "config.toml"),
+        mergeCodexRuntimeState(configText, instanceDir, stackCatalog),
+      );
 
       const authPath = join(instanceDir, "auth.json");
       const globalAuthPath = join(HOME, ".codex", "auth.json");
@@ -341,14 +429,15 @@ const APP_ADAPTERS = {
       } else {
         // API-key credentials (or the preserve opt-out): a deterministic DB
         // artifact the CLI never rewrites — an independent file is correct.
-        const authContent = apiKey
-          ? { OPENAI_API_KEY: apiKey }
-          : hasLoginMaterial ? auth : {};
+        const authContent = apiKey ? { OPENAI_API_KEY: apiKey } : hasLoginMaterial ? auth : {};
         atomicWrite(authPath, JSON.stringify(authContent, null, 2));
       }
 
       if (catalog) {
-        atomicWrite(join(instanceDir, CC_SWITCH_CATALOG_FILENAME), JSON.stringify(catalog, null, 2));
+        atomicWrite(
+          join(instanceDir, CC_SWITCH_CATALOG_FILENAME),
+          JSON.stringify(catalog, null, 2),
+        );
       } else if (stackCatalog) {
         // Aggregation row: the catalog is NOT regenerated — the global one is
         // copied verbatim (see readGlobalCodexCatalogText). A failed copy
@@ -359,9 +448,15 @@ const APP_ADAPTERS = {
     },
 
     launch(instanceDir, extraArgs, ctx) {
-      process.stderr.write(`\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`);
+      process.stderr.write(
+        `\x1b[2mCODEX_HOME=${instanceDir} codex ${extraArgs.join(" ")}\x1b[0m\n`,
+      );
       launchTracked(
-        "codex", extraArgs, instanceDir, "CODEX_HOME", null,
+        "codex",
+        extraArgs,
+        instanceDir,
+        "CODEX_HOME",
+        null,
         buildLaunchExtraEnv(ctx?.providerName, ctx?.providerId),
       );
     },
@@ -370,14 +465,29 @@ const APP_ADAPTERS = {
     // instance's runtime state across (same merge prepare does), and parse
     // the TOML, normalized identically to the C2 snapshot so the guard's
     // backfill comparison is deterministic. [C3]
-    computeEffectiveSettings(settingsConfig, meta, category, commonSnippet, providerId, settings, _opts = {}) {
+    computeEffectiveSettings(
+      settingsConfig,
+      meta,
+      category,
+      commonSnippet,
+      providerId,
+      settings,
+      _opts = {},
+    ) {
       try {
         const { configText, stackCatalog } = buildCodexConfig(
-          settingsConfig, meta, category, commonSnippet, { id: providerId }, settings,
+          settingsConfig,
+          meta,
+          category,
+          commonSnippet,
+          { id: providerId },
+          settings,
         );
-        return jsonNormalize(parseToml(mergeCodexRuntimeState(
-          configText, codexInstanceDirFor(providerId), stackCatalog,
-        )));
+        return jsonNormalize(
+          parseToml(
+            mergeCodexRuntimeState(configText, codexInstanceDirFor(providerId), stackCatalog),
+          ),
+        );
       } catch {
         return null;
       }
@@ -429,8 +539,12 @@ const APP_ADAPTERS = {
     // re-running customize) above the instance-only section.
     instructions: {
       fileName: "AGENTS.md",
-      globalPath() { return join(HOME, ".codex", "AGENTS.md"); },
-      missingGlobalWarn(p) { return `⚠ ${p} not found — the snapshot block will note it until it exists`; },
+      globalPath() {
+        return join(HOME, ".codex", "AGENTS.md");
+      },
+      missingGlobalWarn(p) {
+        return `⚠ ${p} not found — the snapshot block will note it until it exists`;
+      },
       buildTemplate(globalText, globalPath) {
         return buildCodexInstructionsTemplate(globalText, globalPath);
       },
@@ -473,12 +587,16 @@ function detectConfigDriftGeneric(adapter, state) {
       if (!isPlainObject(baseline)) continue; // no v3 baseline — no vote
       if (current === null || deepEqualJson(current, baseline)) continue; // unchanged/corrupt mirror
       const changes = diffSettingsLeaves(baseline, current).filter(
-        (ch) => !adapter.channelOwnedPath?.(ch.path) && !adapter.runtimeStatePath?.(ch.path, ch)
-          && !isCodexAggModelPath(adapter.appType, name, ch.path),
+        (ch) =>
+          !adapter.channelOwnedPath?.(ch.path) &&
+          !adapter.runtimeStatePath?.(ch.path, ch) &&
+          !isCodexAggModelPath(adapter.appType, name, ch.path),
       );
       if (changes.length === 0) continue; // only channel-owned edits
       let mtimeMs = 0;
-      try { mtimeMs = lstatSync(join(instDir, adapter.instanceSettingsFileName)).mtimeMs; } catch {}
+      try {
+        mtimeMs = lstatSync(join(instDir, adapter.instanceSettingsFileName)).mtimeMs;
+      } catch {}
       candidates.push({ providerId: name, changes, mtimeMs });
     } catch {
       // missing/corrupt instance config — skip
@@ -516,7 +634,9 @@ function detectConfigDriftGeneric(adapter, state) {
     if (row && !parsedRowSettings) {
       if (!warnedMalformedRows.has(row.id)) {
         warnedMalformedRows.add(row.id);
-        console.error(`⚠ Provider "${row.name || row.id}" has malformed settings_config JSON — skipping its drift write-back.`);
+        console.error(
+          `⚠ Provider "${row.name || row.id}" has malformed settings_config JSON — skipping its drift write-back.`,
+        );
       }
       continue;
     }
@@ -525,8 +645,15 @@ function detectConfigDriftGeneric(adapter, state) {
       : null;
     if (!providerSettings || !row) continue; // provider row gone — provider-target path is dropped
 
-    const { commonPatch: cp, providerPatch: pp, rejected: rj } = splitChangesByTarget(
-      [winner.ch], winner.cand.providerId, commonObj, providerSettings,
+    const {
+      commonPatch: cp,
+      providerPatch: pp,
+      rejected: rj,
+    } = splitChangesByTarget(
+      [winner.ch],
+      winner.cand.providerId,
+      commonObj,
+      providerSettings,
       // The virtual Stack entry has no DB row: provider-target edits cannot be
       // written back (they'd be silently rebuilt by the next prepare anyway) —
       // route them to rejected so the prompt says so instead of dropping them.
@@ -545,13 +672,19 @@ function detectConfigDriftGeneric(adapter, state) {
     // merge it under the WINNING provider's id.
     if (Object.keys(pp).length) {
       providerPatches[winner.cand.providerId] = jsonDeepMerge(
-        providerPatches[winner.cand.providerId] || {}, pp,
+        providerPatches[winner.cand.providerId] || {},
+        pp,
       );
     }
   }
   // All-rejected drift must still surface: every change was refused, but
   // the prompt has to say so instead of going silent.
-  if (!Object.keys(commonPatch).length && !Object.keys(providerPatches).length && !rejectedPaths.length) return null;
+  if (
+    !Object.keys(commonPatch).length &&
+    !Object.keys(providerPatches).length &&
+    !rejectedPaths.length
+  )
+    return null;
 
   // Display-facing: one entry per candidate instance with its (filtered)
   // changes, plus the name resolution for the prompt lines.
@@ -563,8 +696,13 @@ function detectConfigDriftGeneric(adapter, state) {
     mtimeMs: c.mtimeMs,
   }));
   return {
-    instances, commonPatch, providerPatches, conflicts,
-    rejected: rejectedPaths, rejectedReasons, virtualBlocked,
+    instances,
+    commonPatch,
+    providerPatches,
+    conflicts,
+    rejected: rejectedPaths,
+    rejectedReasons,
+    virtualBlocked,
     sharedMode: shared.mode,
   };
 }
@@ -642,7 +780,9 @@ function computeEnabledPluginsPatch(state) {
           const ep = collectEnabledPluginsPatch(cur);
           if (!ep) continue;
           let mtimeMs = 0;
-          try { mtimeMs = lstatSync(settingsPath).mtimeMs; } catch {}
+          try {
+            mtimeMs = lstatSync(settingsPath).mtimeMs;
+          } catch {}
           candidates.push({ ep, known, mtimeMs });
         } catch {
           // missing/corrupt instance settings — skip
@@ -659,13 +799,19 @@ function computeEnabledPluginsPatch(state) {
       for (const [k, v] of Object.entries(ep)) {
         // Only honor states for plugins still installed at user scope;
         // stale entries for uninstalled plugins are ignored.
-        if (installedUser.has(k)) { epPatch[k] = v; has = true; }
+        if (installedUser.has(k)) {
+          epPatch[k] = v;
+          has = true;
+        }
       }
     }
     // Remove from the shared document any plugin no longer installed at user
     // scope.
     for (const k of readSharedEnabledPluginKeys()) {
-      if (!installedUser.has(k) && !(k in epPatch)) { epPatch[k] = null; has = true; }
+      if (!installedUser.has(k) && !(k in epPatch)) {
+        epPatch[k] = null;
+        has = true;
+      }
     }
     return { patch: has ? epPatch : null, installedKeys: [...installedUser] };
   } catch {
@@ -687,5 +833,13 @@ function applyEnabledPluginsPatch(patch, sharedMode = detectSharedConfigMode()) 
   }
 }
 
-
-export { APP_ADAPTERS, applyEnabledPluginsPatch, computeEnabledPluginsPatch, detectConfigDriftGeneric, readCommonEnabledPluginKeys, readSharedEnabledPluginKeys, readSharedEnabledPlugins, readUserInstalledPluginSet };
+export {
+  APP_ADAPTERS,
+  applyEnabledPluginsPatch,
+  computeEnabledPluginsPatch,
+  detectConfigDriftGeneric,
+  readCommonEnabledPluginKeys,
+  readSharedEnabledPluginKeys,
+  readSharedEnabledPlugins,
+  readUserInstalledPluginSet,
+};

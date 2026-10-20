@@ -2,10 +2,20 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isPlainObject, jsonDeepClone, jsonIsSubset, mergeCommonOverProvider } from "./json-utils.js";
+import {
+  isPlainObject,
+  jsonDeepClone,
+  jsonIsSubset,
+  mergeCommonOverProvider,
+} from "./json-utils.js";
 import { INSTANCES_DIR } from "./paths.js";
 import { isLiveSharedSnippet, sharedSnippetText } from "./shared-config.js";
-import { isAggregationProviderSettings, protectAggregationIdentityEnv, readGlobalModelPicker, readStackState } from "./stack/state.js";
+import {
+  isAggregationProviderSettings,
+  protectAggregationIdentityEnv,
+  readGlobalModelPicker,
+  readStackState,
+} from "./stack/state.js";
 import { applyStatusLineInjection } from "./statusline.js";
 import { parseToml } from "./toml.js";
 import { tomlIsSubset } from "./toml-utils.js";
@@ -28,7 +38,9 @@ function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
     try {
       const source = JSON.parse(snippetTrimmed);
       if (isPlainObject(source)) return jsonIsSubset(settings, source);
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   } else if (appType === "codex") {
     const configToml = settings?.config || "";
     if (!configToml.trim()) return false;
@@ -36,7 +48,9 @@ function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
       const targetDoc = parseToml(configToml);
       const sourceDoc = parseToml(snippetTrimmed);
       return tomlIsSubset(targetDoc, sourceDoc);
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   }
   return false;
 }
@@ -44,8 +58,10 @@ function settingsContainCommonConfig(appType, settings, snippetTrimmed) {
 // ─── Claude config generation ─────────────────────────────────────────
 
 const CLAUDE_SANITIZE_KEYS = [
-  "api_format", "apiFormat",
-  "openrouter_compat_mode", "openrouterCompatMode",
+  "api_format",
+  "apiFormat",
+  "openrouter_compat_mode",
+  "openrouterCompatMode",
 ];
 
 function sanitizeClaudeSettings(settings) {
@@ -92,7 +108,14 @@ function isClaudeRuntimeStatePath(path) {
 // computeEffectiveSettings [C3] MUST pass the same pair — C3 exists to
 // recompute exactly what prepare would write, and a fork between the two
 // derivations makes the overwrite guard misfire.
-function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName, providerId, opts: { writeWrapper?: boolean } = {}) {
+function buildClaudeEffectiveSettings(
+  settingsConfig,
+  meta,
+  shared,
+  providerName,
+  providerId,
+  opts: { writeWrapper?: boolean } = {},
+) {
   // Defensive: callers pass parsed DB columns. A non-object (null, array,
   // scalar) would be cloned and handed to prepare, which writes it back as
   // the instance settings.json — degrade to {} instead.
@@ -116,14 +139,14 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
   // is only kept upstream for old-version compatibility). legacy mode keeps
   // the historical subset/forced-aggregation rules byte-identically.
   const isAgg = isAggregationProviderSettings(settingsConfig);
-  const useShared = !!sharedTrimmed && (
-    meta?.commonConfigEnabled === false
+  const useShared =
+    !!sharedTrimmed &&
+    (meta?.commonConfigEnabled === false
       ? false
       : liveShared
         ? true
         : (isAgg && meta?.commonConfigEnabled !== false) ||
-          providerUsesCommonConfig("claude", settingsConfig, meta, sharedText)
-  );
+          providerUsesCommonConfig("claude", settingsConfig, meta, sharedText));
   if (useShared) {
     try {
       const source = JSON.parse(sharedText);
@@ -202,7 +225,9 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
           const stack = readStackState("claude");
           const key = ccs[1].toLowerCase();
           if (!stack || !(key in stack.keys)) {
-            console.error(`\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`);
+            console.error(
+              `\x1b[2mℹ Aggregation model "${model}" is no longer in the current aggregation stack (stack off or member removed) — falling back to the default model for this launch; reselect it in /model after it returns\x1b[0m`,
+            );
             model = null;
           }
         }
@@ -215,5 +240,13 @@ function buildClaudeEffectiveSettings(settingsConfig, meta, shared, providerName
   return effective;
 }
 
-
-export { CLAUDE_SANITIZE_KEYS, applyKimiForCodingContextDefaults, buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath, providerUsesCommonConfig, sanitizeClaudeSettings, settingsContainCommonConfig };
+export {
+  CLAUDE_SANITIZE_KEYS,
+  applyKimiForCodingContextDefaults,
+  buildClaudeEffectiveSettings,
+  claudeInstanceSettingsPath,
+  isClaudeRuntimeStatePath,
+  providerUsesCommonConfig,
+  sanitizeClaudeSettings,
+  settingsContainCommonConfig,
+};

@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, lstatSync, readlinkSync, readFileSync, readdirSync, chmodSync, statSync, existsSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  lstatSync,
+  readlinkSync,
+  readFileSync,
+  readdirSync,
+  chmodSync,
+  statSync,
+  existsSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -72,7 +85,10 @@ test("atomicWrite: new files are 0600 and leave no temp file behind", () => {
   atomicWrite(file, '{"token":"x"}');
   assert.equal(statSync(file).mode & 0o777, 0o600);
   assert.equal(readFileSync(file, "utf8"), '{"token":"x"}');
-  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith(".tmp.")), []);
+  assert.deepEqual(
+    readdirSync(dir).filter((n) => n.startsWith(".tmp.")),
+    [],
+  );
 });
 
 test("atomicWrite: an existing permissive file is tightened to 0600", () => {
@@ -107,7 +123,14 @@ test("statusline wrapper: generated script is 0600 (it inlines usage tokens)", (
     "Z.AI GLM",
     providerId,
   );
-  const wrapper = join(TEST_HOME, ".cc-switch", "instances", "claude", providerId, "statusline-wrapper.mjs");
+  const wrapper = join(
+    TEST_HOME,
+    ".cc-switch",
+    "instances",
+    "claude",
+    providerId,
+    "statusline-wrapper.mjs",
+  );
   assert.equal(statSync(wrapper).mode & 0o777, 0o600);
 });
 
@@ -133,7 +156,11 @@ test("plans: a fresh instance links to the global plans dir", () => {
   const link = join(instanceDirFor(providerId), "plans");
   assert.equal(lstatSync(link).isSymbolicLink(), true);
   assert.equal(readlinkSync(link), globalPlansDir());
-  assert.equal(statSync(globalPlansDir()).isDirectory(), true, "the global dir is created on demand");
+  assert.equal(
+    statSync(globalPlansDir()).isDirectory(),
+    true,
+    "the global dir is created on demand",
+  );
 });
 
 test("plans: non-empty instance plans are merged into the global dir", () => {
@@ -176,8 +203,14 @@ test("plans: conflicting same-name files keep both", () => {
 
   setupClaudeInstance(providerId);
 
-  assert.equal(readFileSync(join(globalPlansDir(), "conflict-plan.md"), "utf8"), "# global\n", "never overwrite");
-  const copies = readdirSync(globalPlansDir()).filter((n) => /^conflict-plan\.plans-conflict.*\.md$/.test(n));
+  assert.equal(
+    readFileSync(join(globalPlansDir(), "conflict-plan.md"), "utf8"),
+    "# global\n",
+    "never overwrite",
+  );
+  const copies = readdirSync(globalPlansDir()).filter((n) =>
+    /^conflict-plan\.plans-conflict.*\.md$/.test(n),
+  );
   assert.equal(copies.length, 1);
   assert.equal(readFileSync(join(globalPlansDir(), copies[0]), "utf8"), "# instance\n");
 });
@@ -206,8 +239,16 @@ test("plans: repeated setup calls are idempotent", () => {
 
   assert.deepEqual(readdirSync(globalPlansDir()).sort(), before);
   assert.equal(lstatSync(join(instanceDir, "plans")).isSymbolicLink(), true);
-  assert.equal(existsSync(join(TEST_HOME, ".claude", ".plans-migration.lock")), false, "the lock is released");
-  assert.equal(existsSync(join(globalPlansDir(), ".plans-migration.lock")), false, "the lock never lives in plans/");
+  assert.equal(
+    existsSync(join(TEST_HOME, ".claude", ".plans-migration.lock")),
+    false,
+    "the lock is released",
+  );
+  assert.equal(
+    existsSync(join(globalPlansDir(), ".plans-migration.lock")),
+    false,
+    "the lock never lives in plans/",
+  );
 });
 
 test("plans: an existing symlink is left in place", () => {
@@ -235,7 +276,10 @@ test("plans: only the instance being set up is migrated", () => {
 
   assert.equal(lstatSync(join(instanceDirFor(ids[0]), "plans")).isSymbolicLink(), true);
   assert.equal(lstatSync(join(instanceDirFor(ids[1]), "plans")).isSymbolicLink(), false);
-  assert.equal(readFileSync(join(instanceDirFor(ids[1]), "plans", `${ids[1]}.md`), "utf8"), "# x\n");
+  assert.equal(
+    readFileSync(join(instanceDirFor(ids[1]), "plans", `${ids[1]}.md`), "utf8"),
+    "# x\n",
+  );
 });
 
 test("plans: an unusable global plans path does not break setup", () => {

@@ -54,7 +54,9 @@ async function main() {
   if (args[0] === "sync") {
     const result = await detectAndPromptSync({ tui: true });
     if (result.needsTTY) {
-      console.error("✗ switch sync requires an interactive terminal — run it directly in a terminal.");
+      console.error(
+        "✗ switch sync requires an interactive terminal — run it directly in a terminal.",
+      );
       process.exit(1);
     }
     if (result.interrupted) process.exit(130);
@@ -113,7 +115,9 @@ async function main() {
   if (args[0] === "-v" || args[0] === "--version" || args[0] === "version") {
     const v = VERSION;
     const latest = queryLatestVersion();
-    console.log(`cc-switch-parallel v${v}${latest ? (v === latest ? " (latest)" : ` (latest: ${latest})`) : ""}`);
+    console.log(
+      `cc-switch-parallel v${v}${latest ? (v === latest ? " (latest)" : ` (latest: ${latest})`) : ""}`,
+    );
     process.exit(0);
   }
 
@@ -170,7 +174,11 @@ async function main() {
   await launchProvider(cmd, { name: providerName }, extraArgs, syncFlag);
 }
 
-
-
-export { isVoltaManagedInstall, queryLatestVersion, readInstalledVersion, reportUpdateOutcome, runUpdate } from "./commands/update.js";
+export {
+  isVoltaManagedInstall,
+  queryLatestVersion,
+  readInstalledVersion,
+  reportUpdateOutcome,
+  runUpdate,
+} from "./commands/update.js";
 export { main };

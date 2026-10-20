@@ -6,7 +6,9 @@ import { parse as parseToml } from "smol-toml";
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 
 const { applyTomlPatchText } = await import("../src/toml-utils.ts");
-const { jsonDeepMerge, applyMergePatch, jsonNormalize, deepEqualJson } = await import("../src/json-utils.ts");
+const { jsonDeepMerge, applyMergePatch, jsonNormalize, deepEqualJson } = await import(
+  "../src/json-utils.ts"
+);
 
 // ─── applyMergePatch: true RFC 7396 ───────────────────────────────────
 

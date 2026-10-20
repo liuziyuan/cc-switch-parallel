@@ -2,8 +2,12 @@ import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync,
-  existsSync, readdirSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,8 +42,15 @@ let stderrBuf = "";
 function captureStderr(fn) {
   stderrBuf = "";
   const orig = process.stderr.write;
-  process.stderr.write = (s) => { stderrBuf += s; return true; };
-  try { fn(); } finally { process.stderr.write = orig; }
+  process.stderr.write = (s) => {
+    stderrBuf += s;
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = orig;
+  }
 }
 
 function backupsFor(appType, providerId) {
@@ -58,10 +69,15 @@ test("guard claude: faithful mirror — silent, no backup", () => {
   const doc = { env: { A: "1" } };
   writeFileSync(join(dir, "settings.json"), JSON.stringify(doc));
   writeState("claude", "p-mirror", baselineOf(doc));
-  captureStderr(() => guardInstanceConfigBeforeOverwrite(
-    claude, { id: "p-mirror", name: "Mirror", settings_config: "{}", meta: "{}", category: "custom" },
-    dir, "", {},
-  ));
+  captureStderr(() =>
+    guardInstanceConfigBeforeOverwrite(
+      claude,
+      { id: "p-mirror", name: "Mirror", settings_config: "{}", meta: "{}", category: "custom" },
+      dir,
+      "",
+      {},
+    ),
+  );
   assert.equal(stderrBuf.includes("⚠"), false);
   assert.deepEqual(backupsFor("claude", "p-mirror"), []);
 });
@@ -75,7 +91,8 @@ test("guard claude: unsynced edit — warning + backup, max 10 kept", () => {
   // Pre-seed 11 old backups: the new one must push the oldest out (BACKUP_KEEP=10).
   const bdir = join(BACKUPS, "claude", id);
   mkdirSync(bdir, { recursive: true });
-  for (let i = 1; i <= 11; i++) writeFileSync(join(bdir, `settings.json.2026010${i < 10 ? `0${i}` : i}-000000`), "{}");
+  for (let i = 1; i <= 11; i++)
+    writeFileSync(join(bdir, `settings.json.2026010${i < 10 ? `0${i}` : i}-000000`), "{}");
 
   const row = { id, name: "Edited", settings_config: "{}", meta: "{}", category: "custom" };
   captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
@@ -89,10 +106,13 @@ test("guard claude: enabledPlugins edits yield to the plugin channel — silent"
   const id = "p-plugin";
   const dir = join(CC, "instances", "claude", id);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "settings.json"), JSON.stringify({
-    enabledPlugins: { "a@b": false },
-    env: { A: "1" },
-  }));
+  writeFileSync(
+    join(dir, "settings.json"),
+    JSON.stringify({
+      enabledPlugins: { "a@b": false },
+      env: { A: "1" },
+    }),
+  );
   writeState("claude", id, baselineOf({ enabledPlugins: { "a@b": true }, env: { A: "1" } }));
   const row = { id, name: "Plugin", settings_config: "{}", meta: "{}", category: "custom" };
   captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
@@ -104,10 +124,13 @@ test("guard claude: in-session /model switch yields to the runtime-state filter 
   const id = "p-model";
   const dir = join(CC, "instances", "claude", id);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "settings.json"), JSON.stringify({
-    model: "sonnet",
-    env: { A: "1" },
-  }));
+  writeFileSync(
+    join(dir, "settings.json"),
+    JSON.stringify({
+      model: "sonnet",
+      env: { A: "1" },
+    }),
+  );
   writeState("claude", id, baselineOf({ model: "opus", env: { A: "1" } }));
   const row = { id, name: "Model", settings_config: "{}", meta: "{}", category: "custom" };
   captureStderr(() => guardInstanceConfigBeforeOverwrite(claude, row, dir, "", {}));
@@ -120,12 +143,19 @@ test("guard claude: no baseline + recompute equal — silent (self-healing backf
   const dir = join(CC, "instances", "claude", id);
   mkdirSync(dir, { recursive: true });
   const row = {
-    id, name: "Backfill",
+    id,
+    name: "Backfill",
     settings_config: JSON.stringify({ env: { A: "1" } }),
-    meta: "{}", category: "custom",
+    meta: "{}",
+    category: "custom",
   };
   const effective = claude.computeEffectiveSettings(
-    JSON.parse(row.settings_config), {}, row.category, "", id, {},
+    JSON.parse(row.settings_config),
+    {},
+    row.category,
+    "",
+    id,
+    {},
   );
   writeFileSync(join(dir, "settings.json"), JSON.stringify(effective));
   writeState("claude", id, { commonHash: "x", preparedAt: 1 }); // v2-shaped: no preparedSettings
@@ -139,9 +169,11 @@ test("guard claude: no baseline + recompute differs — one silent backup + dim 
   const dir = join(CC, "instances", "claude", id);
   mkdirSync(dir, { recursive: true });
   const row = {
-    id, name: "Ambiguous",
+    id,
+    name: "Ambiguous",
     settings_config: JSON.stringify({ env: { A: "1" } }),
-    meta: "{}", category: "custom",
+    meta: "{}",
+    category: "custom",
   };
   writeFileSync(join(dir, "settings.json"), JSON.stringify({ env: { A: "1", EXTRA: true } }));
   writeState("claude", id, { commonHash: "x", preparedAt: 1 });
@@ -153,10 +185,15 @@ test("guard claude: no baseline + recompute differs — one silent backup + dim 
 
 test("guard: adapter without C2/C3 capabilities is a no-op", () => {
   const dir = join(CC, "instances", "claude", "p-nocap");
-  captureStderr(() => guardInstanceConfigBeforeOverwrite(
-    { appType: "stub" }, { id: "p-nocap", name: "Stub", settings_config: "{}", meta: "{}" },
-    dir, "", {},
-  ));
+  captureStderr(() =>
+    guardInstanceConfigBeforeOverwrite(
+      { appType: "stub" },
+      { id: "p-nocap", name: "Stub", settings_config: "{}", meta: "{}" },
+      dir,
+      "",
+      {},
+    ),
+  );
   assert.equal(stderrBuf, "");
 });
 
@@ -177,7 +214,13 @@ test("guard codex: prepare-equivalent TOML round-trip compares equal (normalizat
   assert.ok(snap);
   assert.equal(deepEqualJson(snap, effective), true);
   writeState("codex", id, baselineOf(effective));
-  const row = { id, name: "RoundTrip", settings_config: JSON.stringify(settingsConfig), meta: "{}", category: "custom" };
+  const row = {
+    id,
+    name: "RoundTrip",
+    settings_config: JSON.stringify(settingsConfig),
+    meta: "{}",
+    category: "custom",
+  };
   captureStderr(() => guardInstanceConfigBeforeOverwrite(codex, row, dir, "", {}));
   assert.equal(stderrBuf.includes("⚠"), false);
   assert.deepEqual(backupsFor("codex", id), []);
@@ -189,9 +232,18 @@ test("guard codex: unsynced config.toml edit — warning names the file + TOML b
   mkdirSync(dir, { recursive: true });
   const settingsConfig = { config: 'model = "gpt-5"\n' };
   const effective = codex.computeEffectiveSettings(settingsConfig, {}, "custom", "", id, {});
-  writeFileSync(join(dir, "config.toml"), stringifyToml({ ...parseToml(stringifyToml(effective)), approval_policy: "never" }));
+  writeFileSync(
+    join(dir, "config.toml"),
+    stringifyToml({ ...parseToml(stringifyToml(effective)), approval_policy: "never" }),
+  );
   writeState("codex", id, baselineOf(effective));
-  const row = { id, name: "CxEdited", settings_config: JSON.stringify(settingsConfig), meta: "{}", category: "custom" };
+  const row = {
+    id,
+    name: "CxEdited",
+    settings_config: JSON.stringify(settingsConfig),
+    meta: "{}",
+    category: "custom",
+  };
   captureStderr(() => guardInstanceConfigBeforeOverwrite(codex, row, dir, "", {}));
   assert.equal(stderrBuf.includes("⚠ Instance config.toml"), true);
   assert.equal(stderrBuf.includes("approval_policy"), true);

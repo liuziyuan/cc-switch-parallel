@@ -11,7 +11,12 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-tui-color-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { statuslineColorFor, saveStatuslineColor, loadStatuslinePreferences, STATUSLINE_COLOR_CHOICES } = await import("../src/statusline-colors.ts");
+const {
+  statuslineColorFor,
+  saveStatuslineColor,
+  loadStatuslinePreferences,
+  STATUSLINE_COLOR_CHOICES,
+} = await import("../src/statusline-colors.ts");
 
 const PREFS = join(testHome, ".cc-switch", "statusline-preferences.json");
 

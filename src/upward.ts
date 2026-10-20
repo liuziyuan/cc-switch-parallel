@@ -4,10 +4,30 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { join, basename } from "node:path";
 import { withFileLockSync } from "./file-lock.js";
-import { DB_PROC_TIMEOUT_MS, patchCommonConfigClaude, patchProviderSettingsConfig, queryCommonConfig, queryProviderById, sqlQuote } from "./db.js";
+import {
+  DB_PROC_TIMEOUT_MS,
+  patchCommonConfigClaude,
+  patchProviderSettingsConfig,
+  queryCommonConfig,
+  queryProviderById,
+  sqlQuote,
+} from "./db.js";
 import { atomicWrite, ensurePrivateDir, readdirSyncSafe } from "./fs-utils.js";
-import { applyMergePatch, deepEqualJson, isPlainObject, isSafeObjectKey, jsonDeepClone } from "./json-utils.js";
-import { CC_SWITCH_DIR, DB_PATH, GLOBAL_CLAUDE_SETTINGS_PATH, GLOBAL_CODEX_CONFIG_PATH, HOME, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
+import {
+  applyMergePatch,
+  deepEqualJson,
+  isPlainObject,
+  isSafeObjectKey,
+  jsonDeepClone,
+} from "./json-utils.js";
+import {
+  CC_SWITCH_DIR,
+  DB_PATH,
+  GLOBAL_CLAUDE_SETTINGS_PATH,
+  GLOBAL_CODEX_CONFIG_PATH,
+  HOME,
+  VIRTUAL_STACK_PROVIDER_ID,
+} from "./paths.js";
 import { applyTomlPatchText } from "./toml-utils.js";
 
 // ─── Settings-field upward channel (detect → arbitrate → split → write) ─
@@ -31,9 +51,8 @@ function resolvePathSegmentsDetailed(obj, path): { parts: string[]; resolved: bo
   const parts = String(path).split(".");
   function walk(node, i): string[] | null {
     if (!isPlainObject(node)) return null;
-    if (i === parts.length - 1) return  Object.hasOwn(node, parts[i]) ? [parts[i]] : null;
-    const exact = Object.hasOwn(node, parts[i])
-      ? walk(node[parts[i]], i + 1) : null;
+    if (i === parts.length - 1) return Object.hasOwn(node, parts[i]) ? [parts[i]] : null;
+    const exact = Object.hasOwn(node, parts[i]) ? walk(node[parts[i]], i + 1) : null;
     if (exact) return [parts[i], ...exact];
     for (const k of Object.keys(node)) {
       if (!k.includes(".")) continue;
@@ -93,16 +112,49 @@ function pathExistsInSnippet(snippetObj, path) {
 function isSensitiveConfigKey(name) {
   const upper = String(name).toUpperCase();
   const SENSITIVE_SUFFIXES = [
-    "_KEY", "_API_KEY", "_ACCESS_KEY", "_ACCESS_KEY_ID", "_KEY_ID",
-    "_PRIVATE_KEY", "_APIKEY", "_ACCESSKEY", "_SECRETKEY", "_APITOKEN",
-    "_AUTH_TOKEN", "_TOKEN", "_PAT", "_PWD", "_PASS", "_PASSPHRASE",
-    "_CREDS", "_CUSTOM_HEADERS",
+    "_KEY",
+    "_API_KEY",
+    "_ACCESS_KEY",
+    "_ACCESS_KEY_ID",
+    "_KEY_ID",
+    "_PRIVATE_KEY",
+    "_APIKEY",
+    "_ACCESSKEY",
+    "_SECRETKEY",
+    "_APITOKEN",
+    "_AUTH_TOKEN",
+    "_TOKEN",
+    "_PAT",
+    "_PWD",
+    "_PASS",
+    "_PASSPHRASE",
+    "_CREDS",
+    "_CUSTOM_HEADERS",
   ];
-  const SENSITIVE_EXACT = ["APIKEY", "API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIALS", "HEADERS"];
-  const SENSITIVE_CONTAINS = ["SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY", "BEARER_TOKEN", "COOKIE", "AUTHORIZATION"];
-  return SENSITIVE_EXACT.includes(upper)
-    || SENSITIVE_SUFFIXES.some((s) => upper.endsWith(s))
-    || SENSITIVE_CONTAINS.some((c) => upper.includes(c));
+  const SENSITIVE_EXACT = [
+    "APIKEY",
+    "API_KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "CREDENTIALS",
+    "HEADERS",
+  ];
+  const SENSITIVE_CONTAINS = [
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+    "BEARER_TOKEN",
+    "COOKIE",
+    "AUTHORIZATION",
+  ];
+  return (
+    SENSITIVE_EXACT.includes(upper) ||
+    SENSITIVE_SUFFIXES.some((s) => upper.endsWith(s)) ||
+    SENSITIVE_CONTAINS.some((c) => upper.includes(c))
+  );
 }
 
 // Dotted-path variant for the smart split: every segment of a change path is
@@ -111,9 +163,8 @@ function isSensitiveConfigKey(name) {
 function isSensitiveConfigPath(path, segments: string[] | null = null) {
   // Segments are the real key sequence when the caller has them (a key may
   // contain dots); the string split is the backward-compatible fallback.
-  const parts = Array.isArray(segments) && segments.length
-    ? segments
-    : String(path || "").split(".");
+  const parts =
+    Array.isArray(segments) && segments.length ? segments : String(path || "").split(".");
   return parts.some((seg) => isSensitiveConfigKey(seg));
 }
 
@@ -162,7 +213,11 @@ function backupLiveFile(appType, filePath) {
       .filter((n) => n.startsWith(`${basename(filePath)}.`))
       .sort()
       .slice(0, -LIVE_BACKUP_KEEP);
-    for (const name of keep) { try { unlinkSync(join(dir, name)); } catch {} }
+    for (const name of keep) {
+      try {
+        unlinkSync(join(dir, name));
+      } catch {}
+    }
     return dest;
   } catch {
     return null;
@@ -196,13 +251,17 @@ function casWriteLiveFile(filePath, appType, transform) {
     }
     let mode = 0o600;
     if (existed) {
-      try { mode = statSync(filePath).mode & 0o777; } catch {}
+      try {
+        mode = statSync(filePath).mode & 0o777;
+      } catch {}
     }
     backupLiveFile(appType, filePath);
     atomicWrite(filePath, next, mode);
     return;
   }
-  throw new Error(`${filePath} kept changing under us (desktop app writing concurrently?) — run switch sync again`);
+  throw new Error(
+    `${filePath} kept changing under us (desktop app writing concurrently?) — run switch sync again`,
+  );
 }
 
 function patchClaudeLiveFile(patchObj) {
@@ -211,13 +270,16 @@ function patchClaudeLiveFile(patchObj) {
       let doc: any = {};
       if (raw.trim()) {
         doc = JSON.parse(raw);
-        if (!isPlainObject(doc)) throw new Error(`${GLOBAL_CLAUDE_SETTINGS_PATH} is not a JSON object`);
+        if (!isPlainObject(doc))
+          throw new Error(`${GLOBAL_CLAUDE_SETTINGS_PATH} is not a JSON object`);
       }
       return JSON.stringify(applyMergePatch(doc, jsonDeepClone(patchObj)), null, 2) + "\n";
     }),
   );
   if (!result.acquired) {
-    throw new Error(`could not lock ${GLOBAL_CLAUDE_SETTINGS_PATH} (${result.reason}) — run switch sync again`);
+    throw new Error(
+      `could not lock ${GLOBAL_CLAUDE_SETTINGS_PATH} (${result.reason}) — run switch sync again`,
+    );
   }
 }
 
@@ -226,7 +288,9 @@ function patchCodexLiveFile(patchObj) {
     casWriteLiveFile(GLOBAL_CODEX_CONFIG_PATH, "codex", (raw) => applyTomlPatchText(raw, patchObj)),
   );
   if (!result.acquired) {
-    throw new Error(`could not lock ${GLOBAL_CODEX_CONFIG_PATH} (${result.reason}) — run switch sync again`);
+    throw new Error(
+      `could not lock ${GLOBAL_CODEX_CONFIG_PATH} (${result.reason}) — run switch sync again`,
+    );
   }
 }
 
@@ -240,7 +304,9 @@ function applyClaudeProviderPatches(providerPatches) {
     try {
       patchProviderSettingsConfig(providerId, "claude", patchObj);
     } catch (e: any) {
-      process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} settings: ${e.message}\x1b[0m\n`);
+      process.stderr.write(
+        `\x1b[31m✗ Failed to write provider ${providerId} settings: ${e.message}\x1b[0m\n`,
+      );
     }
   }
 }
@@ -339,7 +405,9 @@ function patchCodexCommonConfig(patchObj) {
     }
     if (attempt < 2) sleepSync(50);
   }
-  throw new Error("common_config_codex kept changing under us (desktop app writing concurrently?) — run switch sync again");
+  throw new Error(
+    "common_config_codex kept changing under us (desktop app writing concurrently?) — run switch sync again",
+  );
 }
 
 function patchCodexProviderConfig(providerId, patchObj) {
@@ -356,7 +424,8 @@ function patchCodexProviderConfig(providerId, patchObj) {
     // Patch ONLY the config document; auth and modelCatalog pass through
     // untouched — the field channel never owns them.
     sc.config = applyTomlPatchText(sc.config || "", patchObj);
-    const casClause = original == null ? "settings_config IS NULL" : `settings_config = ${sqlQuote(original)}`;
+    const casClause =
+      original == null ? "settings_config IS NULL" : `settings_config = ${sqlQuote(original)}`;
     try {
       const n = execDBWithChanges(
         `UPDATE providers SET settings_config = ${sqlQuote(JSON.stringify(sc))} WHERE id = ${sqlQuote(providerId)} AND app_type = 'codex' AND ${casClause}`,
@@ -378,7 +447,9 @@ function applyCodexProviderPatches(providerPatches) {
     try {
       patchCodexProviderConfig(providerId, patchObj);
     } catch (e: any) {
-      process.stderr.write(`\x1b[31m✗ Failed to write provider ${providerId} config: ${e.message}\x1b[0m\n`);
+      process.stderr.write(
+        `\x1b[31m✗ Failed to write provider ${providerId} config: ${e.message}\x1b[0m\n`,
+      );
     }
   }
 }
@@ -457,7 +528,13 @@ function foldRemovalPatch(patch, target) {
 // virtualProvider — the winning provider row is the runtime-virtual Stack
 // entry (no DB row to write back to): provider-target changes land in
 // rejected too (surfaced as "blocked"), common-target changes still flow.
-function splitChangesByTarget(changes: any[], providerId: string, commonObj: any, providerSettings: any, opts: any = {}) {
+function splitChangesByTarget(
+  changes: any[],
+  providerId: string,
+  commonObj: any,
+  providerSettings: any,
+  opts: any = {},
+) {
   const commonPatch = {};
   const providerPatch = {};
   const rejected: any[] = [];
@@ -467,15 +544,29 @@ function splitChangesByTarget(changes: any[], providerId: string, commonObj: any
         rejected.push(ch);
         continue;
       }
-      if (!deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)) {
-        buildNestedAssign(commonPatch, ch.path, ch.op === "remove" ? null : ch.to, commonObj, ch.segments);
+      if (
+        !deepEqualJson(getPathValue(commonObj, ch.path), ch.op === "remove" ? undefined : ch.to)
+      ) {
+        buildNestedAssign(
+          commonPatch,
+          ch.path,
+          ch.op === "remove" ? null : ch.to,
+          commonObj,
+          ch.segments,
+        );
       }
     } else if (opts.virtualProvider) {
       rejected.push(ch);
     } else {
       const cur = getPathValue(providerSettings, ch.path);
       if (!deepEqualJson(cur, ch.op === "remove" ? undefined : ch.to)) {
-        buildNestedAssign(providerPatch, ch.path, ch.op === "remove" ? null : ch.to, providerSettings, ch.segments);
+        buildNestedAssign(
+          providerPatch,
+          ch.path,
+          ch.op === "remove" ? null : ch.to,
+          providerSettings,
+          ch.segments,
+        );
       }
     }
   }
@@ -563,5 +654,25 @@ function normalizeInstalledPluginPaths() {
   }
 }
 
-
-export { INSTANCE_PLUGIN_PATH_RE, applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyClaudeSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, applyCodexSettingsFieldPatches, buildNestedAssign, collectPatchPaths, execDBWithChanges, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, normalizeInstalledPluginPaths, patchCodexCommonConfig, patchCodexLiveFile, patchCodexProviderConfig, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget };
+export {
+  INSTANCE_PLUGIN_PATH_RE,
+  applyClaudeLivePluginPatch,
+  applyClaudeLiveSettingsFieldPatches,
+  applyClaudeSettingsFieldPatches,
+  applyCodexLiveSettingsFieldPatches,
+  applyCodexSettingsFieldPatches,
+  buildNestedAssign,
+  collectPatchPaths,
+  execDBWithChanges,
+  foldRemovalPatch,
+  getPathValue,
+  isSensitiveConfigKey,
+  isSensitiveConfigPath,
+  normalizeInstalledPluginPaths,
+  patchCodexCommonConfig,
+  patchCodexLiveFile,
+  patchCodexProviderConfig,
+  pathExistsInSnippet,
+  resolvePathSegments,
+  splitChangesByTarget,
+};

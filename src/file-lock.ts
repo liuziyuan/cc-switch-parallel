@@ -5,7 +5,16 @@
 // window); a timeout means another process is stuck, so callers skip the
 // write and keep going — state files are rebuildable, launches are not.
 
-import { openSync, writeSync, fsyncSync, closeSync, unlinkSync, readFileSync, statSync, mkdirSync } from "node:fs";
+import {
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
+  unlinkSync,
+  readFileSync,
+  statSync,
+  mkdirSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -98,7 +107,9 @@ function tryReclaim(lockPath: string, staleMs: number): boolean {
 function warnOnce(lockPath: string): void {
   if (warned.has(lockPath)) return;
   warned.add(lockPath);
-  process.stderr.write(`⚠ The state file is being written by another process (${lockPath}); this save was skipped (the launch is unaffected).\n`);
+  process.stderr.write(
+    `⚠ The state file is being written by another process (${lockPath}); this save was skipped (the launch is unaffected).\n`,
+  );
 }
 
 /**
@@ -137,7 +148,12 @@ export function withFileLockSync<T>(
     try {
       const fd = openSync(lockPath, "wx", 0o600);
       try {
-        writeSync(fd, JSON.stringify({ pid: process.pid, host: HOST, createdAt: Date.now(), nonce }), null, "utf8");
+        writeSync(
+          fd,
+          JSON.stringify({ pid: process.pid, host: HOST, createdAt: Date.now(), nonce }),
+          null,
+          "utf8",
+        );
         fsyncSync(fd);
       } finally {
         closeSync(fd);
@@ -164,7 +180,9 @@ export function withFileLockSync<T>(
     // nonce differs, and deleting it would let a second process in.
     const current = readLock(lockPath);
     if (current && current.nonce === nonce) {
-      try { unlinkSync(lockPath); } catch {}
+      try {
+        unlinkSync(lockPath);
+      } catch {}
     }
   }
 }

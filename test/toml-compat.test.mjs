@@ -11,7 +11,11 @@ test("parseToml keeps plain-object semantics after the smol-toml upgrade", () =>
   const doc = parseToml(`[a]\nb = 1\n[[items]]\nname = "x"\n`);
   assert.equal(Object.getPrototypeOf(doc), Object.prototype);
   assert.equal(Object.getPrototypeOf(doc.a), Object.prototype, "nested table is a plain object");
-  assert.equal(Object.getPrototypeOf(doc.items[0]), Object.prototype, "array element is a plain object");
+  assert.equal(
+    Object.getPrototypeOf(doc.items[0]),
+    Object.prototype,
+    "array element is a plain object",
+  );
   assert.deepEqual(doc, { a: { b: 1 }, items: [{ name: "x" }] });
 });
 

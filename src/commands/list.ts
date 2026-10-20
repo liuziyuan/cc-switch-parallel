@@ -33,7 +33,10 @@ function parseListArgs(args: string[]): ListArgs {
   const apps: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--json") { json = true; continue; }
+    if (a === "--json") {
+      json = true;
+      continue;
+    }
     if (a === "--app") {
       const v = args[++i];
       if (!v) return { error: "missing --app value" };
@@ -51,7 +54,8 @@ function parseListArgs(args: string[]): ListArgs {
   const known = Object.keys(APP_ADAPTERS);
   const unique: string[] = [];
   for (const app of apps) {
-    if (!known.includes(app)) return { error: `unknown app "${app}". Supported: ${known.join(", ")}` };
+    if (!known.includes(app))
+      return { error: `unknown app "${app}". Supported: ${known.join(", ")}` };
     if (!unique.includes(app)) unique.push(app);
   }
   return { json, apps: unique.length ? unique : known };
@@ -65,7 +69,11 @@ function settingsIssues(appType: string, row: ProviderRow): string[] {
   if (!isPlainObject(parsed)) return ["settings_config is not a JSON object"];
   const issues: string[] = [];
   if (appType === "codex" && typeof parsed.config === "string" && parsed.config.trim()) {
-    try { parseToml(parsed.config); } catch { issues.push("config TOML is unparseable"); }
+    try {
+      parseToml(parsed.config);
+    } catch {
+      issues.push("config TOML is unparseable");
+    }
   }
   return issues;
 }
@@ -75,7 +83,9 @@ function listProviders(apps: string[]): ListProviderRow[] {
   for (const app of apps) {
     const rows = queryProviderRowsByApp(app, true);
     let stack: any = null;
-    try { stack = readStackState(app); } catch {}
+    try {
+      stack = readStackState(app);
+    } catch {}
     const nameById = new Map(rows.map((r) => [r.id, r.name]));
     const nameCounts = new Map<string, number>();
     for (const r of rows) nameCounts.set(r.name, (nameCounts.get(r.name) || 0) + 1);
@@ -142,8 +152,8 @@ function renderListTable(rows: ListProviderRow[]): void {
   for (const c of all) {
     console.log(
       `  ${padDisplay(c.app, wApp)}  ${padDisplay(c.name, wName)}  ${padDisplay(c.id, wId)}  ` +
-      `${padDisplay(c.kind, wKind)}  ${padDisplay(c.current, wCurrent)}  ` +
-      `${padDisplay(c.members, wMembers)}  ${c.status}`,
+        `${padDisplay(c.kind, wKind)}  ${padDisplay(c.current, wCurrent)}  ` +
+        `${padDisplay(c.members, wMembers)}  ${c.status}`,
     );
   }
   console.log("");
@@ -170,6 +180,5 @@ function runList(args: string[]): void {
   if (parsed.json) console.log(renderListJson(rows));
   else renderListTable(rows);
 }
-
 
 export { listProviders, parseListArgs, renderListJson, renderListTable, runList };

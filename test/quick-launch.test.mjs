@@ -16,8 +16,14 @@ const { quickItemsFor } = await import("../src/history.ts");
 const { isQuickLaunchKey } = await import("../src/commands/quick.ts");
 
 const entry = (over = {}) => ({
-  cli: "claude", providerId: "p1", provider: "P1", hotkey: null,
-  extraArgs: [], count: 1, lastUsed: 1, ...over,
+  cli: "claude",
+  providerId: "p1",
+  provider: "P1",
+  hotkey: null,
+  extraArgs: [],
+  count: 1,
+  lastUsed: 1,
+  ...over,
 });
 
 // The command line's `switch a|s|d|f|g` is the twin of the TUI's quick keys:
@@ -31,9 +37,18 @@ test("slots map to QUICK_KEYS in display order", () => {
     entry({ providerId: "c", provider: "C", count: 10 }),
   ];
   const items = quickItemsFor(entries, [null, null, null, null, null], new Map());
-  assert.deepEqual(items.map((q) => q.key), ["a", "s", "d"]);
-  assert.deepEqual(items.map((q) => q.providerId), ["a", "b", "c"]);
-  assert.deepEqual(items.map((q) => q.provider), ["A", "B", "C"]);
+  assert.deepEqual(
+    items.map((q) => q.key),
+    ["a", "s", "d"],
+  );
+  assert.deepEqual(
+    items.map((q) => q.providerId),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(
+    items.map((q) => q.provider),
+    ["A", "B", "C"],
+  );
 });
 
 test("pinned slots keep their position on the command line too", () => {
@@ -44,17 +59,25 @@ test("pinned slots keep their position on the command line too", () => {
   ];
   // Pin C into slot 1: `switch a` must launch C, identical to the TUI.
   const items = quickItemsFor(entries, ["claude|c", null, null, null, null], new Map());
-  assert.deepEqual(items.map((q) => q.providerId), ["c", "a", "b"]);
+  assert.deepEqual(
+    items.map((q) => q.providerId),
+    ["c", "a", "b"],
+  );
   assert.equal(items[0].pinned, true);
   assert.equal(items[1].pinned, false);
 });
 
 test("rename in cc-switch follows through the alive snapshot", () => {
   const entries = [entry({ providerId: "p1", provider: "Old name", count: 5 })];
-  const alive = new Map([["claude", {
-    idSet: new Set(["p1"]),
-    nameById: new Map([["p1", "New name"]]),
-  }]]);
+  const alive = new Map([
+    [
+      "claude",
+      {
+        idSet: new Set(["p1"]),
+        nameById: new Map([["p1", "New name"]]),
+      },
+    ],
+  ]);
   const [item] = quickItemsFor(entries, [null, null, null, null, null], alive);
   assert.equal(item.provider, "New name");
   assert.equal(item.dead, false);
@@ -68,10 +91,12 @@ test("provider deleted in cc-switch is flagged dead, not launchable by the comma
 });
 
 test("replay argv carries the recorded extra args and the launch mode", () => {
-  const entries = [entry({
-    hotkey: "2",
-    extraArgs: ["--permission-mode", "acceptEdits", "--continue"],
-  })];
+  const entries = [
+    entry({
+      hotkey: "2",
+      extraArgs: ["--permission-mode", "acceptEdits", "--continue"],
+    }),
+  ];
   const [item] = quickItemsFor(entries, [null, null, null, null, null], new Map());
   assert.equal(item.hotkey, "2");
   assert.deepEqual(item.extraArgs, ["--permission-mode", "acceptEdits", "--continue"]);
@@ -93,14 +118,18 @@ test("isQuickLaunchKey accepts only the bare lowercase slot keys", () => {
 });
 
 test("resolveQuickItem reads the same slots from history on disk", async () => {
-  writeFileSync(HISTORY_PATH, JSON.stringify({
-    version: 2,
-    entries: [
-      entry({ providerId: "p1", provider: "P1", count: 30 }),
-      entry({ cli: "codex", providerId: "p2", provider: "P2", count: 20 }),
-    ],
-    order: [null, null, null, null, null],
-  }), "utf8");
+  writeFileSync(
+    HISTORY_PATH,
+    JSON.stringify({
+      version: 2,
+      entries: [
+        entry({ providerId: "p1", provider: "P1", count: 30 }),
+        entry({ cli: "codex", providerId: "p2", provider: "P2", count: 20 }),
+      ],
+      order: [null, null, null, null, null],
+    }),
+    "utf8",
+  );
   const { resolveQuickItem } = await import("../src/commands/quick.ts");
   assert.equal(resolveQuickItem("a").providerId, "p1");
   assert.equal(resolveQuickItem("s").cli, "codex");

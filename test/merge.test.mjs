@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 
-const { mergeCommonOverProvider, jsonDeepMerge, deepEqualJson, diffSettingsLeaves, parseJsonObject } = await import("../src/json-utils.ts");
+const {
+  mergeCommonOverProvider,
+  jsonDeepMerge,
+  deepEqualJson,
+  diffSettingsLeaves,
+  parseJsonObject,
+} = await import("../src/json-utils.ts");
 const { foldRemovalPatch } = await import("../src/upward.ts");
 const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
 

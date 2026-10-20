@@ -7,7 +7,12 @@ import { isPlainObject } from "../json-utils.js";
 import { parseToml } from "../toml.js";
 
 const CODEX_RESERVED_MODEL_PROVIDER_IDS = [
-  "amazon-bedrock", "openai", "ollama", "lmstudio", "oss", "ollama-chat",
+  "amazon-bedrock",
+  "openai",
+  "ollama",
+  "lmstudio",
+  "oss",
+  "ollama-chat",
 ];
 
 const CC_SWITCH_CATALOG_FILENAME = "cc-switch-model-catalog.json";
@@ -17,7 +22,11 @@ const CC_SWITCH_CATALOG_FILENAME = "cc-switch-model-catalog.json";
 // Null on unparsable input; baseUrl/bearer are non-empty strings or null.
 function codexAggregationRoute(configText) {
   let doc;
-  try { doc = parseToml(configText || ""); } catch { return null; }
+  try {
+    doc = parseToml(configText || "");
+  } catch {
+    return null;
+  }
   if (!isPlainObject(doc)) return null;
   const pid = typeof doc.model_provider === "string" ? doc.model_provider.trim() : "";
   const table = pid && isPlainObject(doc.model_providers?.[pid]) ? doc.model_providers[pid] : null;
@@ -32,8 +41,15 @@ function codexAggregationRoute(configText) {
 
 function isCustomCodexModelProviderId(id) {
   const trimmed = id.trim();
-  return trimmed.length > 0 && !CODEX_RESERVED_MODEL_PROVIDER_IDS.some((r) => r.toLowerCase() === trimmed.toLowerCase());
+  return (
+    trimmed.length > 0 &&
+    !CODEX_RESERVED_MODEL_PROVIDER_IDS.some((r) => r.toLowerCase() === trimmed.toLowerCase())
+  );
 }
 
-
-export { CC_SWITCH_CATALOG_FILENAME, CODEX_RESERVED_MODEL_PROVIDER_IDS, codexAggregationRoute, isCustomCodexModelProviderId };
+export {
+  CC_SWITCH_CATALOG_FILENAME,
+  CODEX_RESERVED_MODEL_PROVIDER_IDS,
+  codexAggregationRoute,
+  isCustomCodexModelProviderId,
+};

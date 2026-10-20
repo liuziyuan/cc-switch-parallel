@@ -85,10 +85,15 @@ function findCustomizeProviderOrExit(cmd, providerId, providerName, usage) {
     console.error(formatAvailableProviders(queryProvidersByApp(adapter.appType)));
     process.exit(1);
   }
-  console.error(formatAmbiguousProvider(
-    providerName, adapter.appType, matches, cmd,
-    `switch customize ${cmd} --id <providerId>`,
-  ));
+  console.error(
+    formatAmbiguousProvider(
+      providerName,
+      adapter.appType,
+      matches,
+      cmd,
+      `switch customize ${cmd} --id <providerId>`,
+    ),
+  );
   process.exit(1);
 }
 
@@ -99,7 +104,8 @@ function buildCodexInstructionsTemplate(globalText, globalPathDisplay) {
   const body = (globalText || "").trimEnd();
   return [
     `<!-- cc-switch: snapshot of ${globalPathDisplay} — re-run \`switch customize codex <provider>\` to refresh this block -->`,
-    body || "(global AGENTS.md is missing or empty — this snapshot will stay as-is until refreshed)",
+    body ||
+      "(global AGENTS.md is missing or empty — this snapshot will stay as-is until refreshed)",
     "",
     CODEX_INSTRUCTIONS_INSTANCE_MARK,
     "<!-- delete this file to fall back to the shared global AGENTS.md -->",
@@ -118,7 +124,8 @@ function refreshCodexInstructionsSnapshot(existingText, newGlobalText, globalPat
   const body = (newGlobalText || "").trimEnd();
   return [
     `<!-- cc-switch: snapshot of ${globalPathDisplay} — re-run \`switch customize codex <provider>\` to refresh this block -->`,
-    body || "(global AGENTS.md is missing or empty — this snapshot will stay as-is until refreshed)",
+    body ||
+      "(global AGENTS.md is missing or empty — this snapshot will stay as-is until refreshed)",
     "",
     tail,
   ].join("\n");
@@ -132,14 +139,20 @@ function refreshCodexInstructionsSnapshot(existingText, newGlobalText, globalPat
 // re-linking the shared global one.
 function runCustomize(args) {
   const parsed = parseCustomizeArgs(args);
-  const usage = "Usage: switch customize [claude|codex] <provider>\n       switch customize [claude|codex] --id <providerId>";
+  const usage =
+    "Usage: switch customize [claude|codex] <provider>\n       switch customize [claude|codex] --id <providerId>";
   if (!parsed) {
     console.error(usage);
     process.exit(1);
   }
   const adapter = APP_ADAPTERS[parsed.cmd];
   const inst = adapter.instructions;
-  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerId, parsed.providerName, usage);
+  const row = findCustomizeProviderOrExit(
+    parsed.cmd,
+    parsed.providerId,
+    parsed.providerName,
+    usage,
+  );
   mkdirSync(join(INSTANCES_DIR, adapter.appType, row.id), { recursive: true });
   const file = instanceInstructionsPath(adapter.appType, row.id);
   const stats = lstatSyncSafe(file);
@@ -149,7 +162,9 @@ function runCustomize(args) {
   }
   const globalPath = inst.globalPath();
   let globalText = "";
-  try { globalText = readFileSync(globalPath, "utf8"); } catch {}
+  try {
+    globalText = readFileSync(globalPath, "utf8");
+  } catch {}
   if (!stats || stats.isSymbolicLink()) {
     if (!existsSync(globalPath)) {
       console.error(inst.missingGlobalWarn(globalPath));
@@ -194,14 +209,20 @@ function runCustomize(args) {
 async function runUncustomize(args) {
   const yes = args.includes("--yes");
   const parsed = parseCustomizeArgs(args);
-  const usage = "Usage: switch uncustomize [claude|codex] <provider> [--yes]\n       switch uncustomize [claude|codex] --id <providerId> [--yes]";
+  const usage =
+    "Usage: switch uncustomize [claude|codex] <provider> [--yes]\n       switch uncustomize [claude|codex] --id <providerId> [--yes]";
   if (!parsed) {
     console.error(usage);
     process.exit(1);
   }
   const adapter = APP_ADAPTERS[parsed.cmd];
   const inst = adapter.instructions;
-  const row = findCustomizeProviderOrExit(parsed.cmd, parsed.providerId, parsed.providerName, usage);
+  const row = findCustomizeProviderOrExit(
+    parsed.cmd,
+    parsed.providerId,
+    parsed.providerName,
+    usage,
+  );
   const file = instanceInstructionsPath(adapter.appType, row.id);
   const stats = lstatSyncSafe(file);
   if (!stats) {
@@ -305,5 +326,15 @@ function printHelp() {
   console.log(buildHelpText());
 }
 
-
-export { CODEX_INSTRUCTIONS_INSTANCE_MARK, buildCodexInstructionsTemplate, buildHelpText, findCustomizeProviderOrExit, instanceInstructionsPath, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize };
+export {
+  CODEX_INSTRUCTIONS_INSTANCE_MARK,
+  buildCodexInstructionsTemplate,
+  buildHelpText,
+  findCustomizeProviderOrExit,
+  instanceInstructionsPath,
+  parseCustomizeArgs,
+  printHelp,
+  refreshCodexInstructionsSnapshot,
+  runCustomize,
+  runUncustomize,
+};

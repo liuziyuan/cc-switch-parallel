@@ -7,9 +7,19 @@ import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
 import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
 import { recordLaunch } from "./history.js";
 import { parseJsonObject } from "./json-utils.js";
-import { formatAmbiguousProvider, formatAvailableProviders, resolveProviderRef, type ProviderRef } from "./provider-ref.js";
+import {
+  formatAmbiguousProvider,
+  formatAvailableProviders,
+  resolveProviderRef,
+  type ProviderRef,
+} from "./provider-ref.js";
 import { readSharedConfig } from "./shared-config.js";
-import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, reportLegacyStackCleanup } from "./stack/state.js";
+import {
+  aggregationBaseUrlFor,
+  cleanupLegacyStackRows,
+  probeTcpReachable,
+  reportLegacyStackCleanup,
+} from "./stack/state.js";
 
 // ─── Launch logic ──────────────────────────────────────────────────────
 
@@ -19,10 +29,18 @@ import { aggregationBaseUrlFor, cleanupLegacyStackRows, probeTcpReachable, repor
 // record: optional {hotkey} from the TUI quick/permission selection — the
 //         mode the user actually picked, preferred over inferring it back
 //         out of extraArgs (which quick-launch replays without flags).
-async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[], syncFlag: string | null = null, record: { hotkey?: string } | null = null) {
+async function launchProvider(
+  cmd: string,
+  ref: ProviderRef,
+  extraArgs: string[],
+  syncFlag: string | null = null,
+  record: { hotkey?: string } | null = null,
+) {
   const adapter = APP_ADAPTERS[cmd];
   if (!adapter) {
-    console.error(`✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`);
+    console.error(
+      `✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`,
+    );
     process.exit(1);
   }
 
@@ -48,7 +66,9 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
   const resolved = resolveProviderRef(ref, adapter.appType);
   if (!resolved.ok) {
     if (resolved.error === "ambiguous") {
-      console.error(formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd));
+      console.error(
+        formatAmbiguousProvider(ref?.name || "", adapter.appType, resolved.matches, cmd),
+      );
       process.exit(1);
     }
     const label = ref?.id ? `id "${ref.id}"` : `"${ref?.name || ""}"`;
@@ -64,7 +84,9 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
   // "[]" or a quoted scalar as the instance's settings.json. Degrade to {}
   // with a loud warning instead of aborting the launch.
   if (!parsedSettingsConfig) {
-    console.error(`⚠ Provider "${row.name}" has malformed settings_config JSON — launching with an empty config (repair the row in cc-switch).`);
+    console.error(
+      `⚠ Provider "${row.name}" has malformed settings_config JSON — launching with an empty config (repair the row in cc-switch).`,
+    );
   }
   if (!parsedMeta) {
     console.error(`⚠ Provider "${row.name}" has malformed meta JSON — launching with empty meta.`);
@@ -85,7 +107,8 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
   // launch (adapter.launch execs and never returns). This is the single
   // recording point — both TUI and command mode pass through here, and the
   // extraArgs are stored so quick-launch replays the full original argv.
-  const hotkey = record?.hotkey !== undefined ? record.hotkey : adapter.inferHotkeyFromArgs?.(extraArgs);
+  const hotkey =
+    record?.hotkey !== undefined ? record.hotkey : adapter.inferHotkeyFromArgs?.(extraArgs);
   recordLaunch(cmd, row.id, row.name, hotkey, extraArgs);
   // Aggregation instances route through the desktop app's loopback proxy —
   // if it is down (desktop quit/crashed/mid-upgrade) every request would die
@@ -96,11 +119,12 @@ async function launchProvider(cmd: string, ref: ProviderRef, extraArgs: string[]
   if (aggBaseUrl) {
     const reachable = await probeTcpReachable(aggBaseUrl);
     if (!reachable) {
-      console.error(`⚠ Aggregation proxy ${aggBaseUrl} is unreachable — make sure the cc-switch desktop app has aggregation enabled (the instance still launches; requests will fail until the proxy is back)`);
+      console.error(
+        `⚠ Aggregation proxy ${aggBaseUrl} is unreachable — make sure the cc-switch desktop app has aggregation enabled (the instance still launches; requests will fail until the proxy is back)`,
+      );
     }
   }
   adapter.launch(instanceDir, extraArgs, { providerName: row.name, providerId: row.id });
 }
-
 
 export { launchProvider };

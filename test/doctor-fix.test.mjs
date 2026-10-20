@@ -2,7 +2,14 @@ import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,13 +30,16 @@ const GLOBAL_SETTINGS = join(GLOBAL_DIR, "settings.json");
 mkdirSync(GLOBAL_DIR, { recursive: true });
 mkdirSync(CC, { recursive: true });
 writeFileSync(GLOBAL_SETTINGS, "{}");
-execFileSync("sqlite3", [DB, `
+execFileSync("sqlite3", [
+  DB,
+  `
   CREATE TABLE providers (
     id TEXT PRIMARY KEY, name TEXT, settings_config TEXT,
     category TEXT, meta TEXT, app_type TEXT
   );
   PRAGMA user_version = 20;
-`]);
+`,
+]);
 
 const { applyDoctorFixes, collectDoctorChecks } = await import("../src/commands/doctor.ts");
 const { APP_ADAPTERS } = await import("../src/adapters.ts");
@@ -53,10 +63,11 @@ function writeSync(instances) {
 }
 
 function providerSnapshot(id) {
-  return execFileSync("sqlite3", [
-    DB,
-    `SELECT id||':'||name||':'||settings_config FROM providers WHERE id=${q(id)};`,
-  ], { encoding: "utf8" }).trim();
+  return execFileSync(
+    "sqlite3",
+    [DB, `SELECT id||':'||name||':'||settings_config FROM providers WHERE id=${q(id)};`],
+    { encoding: "utf8" },
+  ).trim();
 }
 
 test("fixes a broken instructions symlink, keeps user files, and is idempotent", async () => {
@@ -80,7 +91,11 @@ test("fixes a broken instructions symlink, keeps user files, and is idempotent",
 
   const after = await collectDoctorChecks();
   assert.equal(fixFor(after, `instructions-link:claude:${id}`), undefined);
-  assert.equal(applyDoctorFixes(after).filter((x) => x.fixId.includes(id)).length, 0, "second pass is a no-op");
+  assert.equal(
+    applyDoctorFixes(after).filter((x) => x.fixId.includes(id)).length,
+    0,
+    "second pass is a no-op",
+  );
   assert.equal(readFileSync(join(instDir(id), "keep.txt"), "utf8"), "keep", "user file survives");
 });
 
@@ -128,7 +143,13 @@ test("backfills a baseline when the instance matches the effective config", asyn
   writeSync({ [id]: { preparedAt: Date.now(), sharedMode: "live", sharedHash: "x" } });
   mkdirSync(instDir(id), { recursive: true });
   const effective = APP_ADAPTERS.claude.computeEffectiveSettings(
-    {}, {}, null, readSharedConfig("claude"), id, loadSettings(), { writeWrapper: false },
+    {},
+    {},
+    null,
+    readSharedConfig("claude"),
+    id,
+    loadSettings(),
+    { writeWrapper: false },
   );
   writeFileSync(join(instDir(id), "settings.json"), JSON.stringify(effective, null, 2));
 
@@ -152,19 +173,34 @@ test("does not backfill a baseline over user-edited content", async () => {
   writeSync({ [id]: { preparedAt: Date.now(), sharedMode: "live", sharedHash: "x" } });
   mkdirSync(instDir(id), { recursive: true });
   const effective = APP_ADAPTERS.claude.computeEffectiveSettings(
-    {}, {}, null, readSharedConfig("claude"), id, loadSettings(), { writeWrapper: false },
+    {},
+    {},
+    null,
+    readSharedConfig("claude"),
+    id,
+    loadSettings(),
+    { writeWrapper: false },
   );
-  writeFileSync(join(instDir(id), "settings.json"), JSON.stringify({ ...effective, userEdit: "keep-me" }, null, 2));
+  writeFileSync(
+    join(instDir(id), "settings.json"),
+    JSON.stringify({ ...effective, userEdit: "keep-me" }, null, 2),
+  );
 
   const checks = await collectDoctorChecks();
   const c = checks.find((x) => x.label === `claude instance baseline "${id}"`);
   assert.ok(c && !c.pass);
   assert.notEqual(c.fixable, true, "hand-edited content is not auto-fixable");
-  assert.equal(applyDoctorFixes(checks).filter((x) => x.fixId === `baseline:claude:${id}`).length, 0);
+  assert.equal(
+    applyDoctorFixes(checks).filter((x) => x.fixId === `baseline:claude:${id}`).length,
+    0,
+  );
 
   const state = JSON.parse(readFileSync(SYNC, "utf8"));
   assert.equal(state.instances.claude[id].preparedSettings, undefined, "no baseline written");
-  assert.equal(JSON.parse(readFileSync(join(instDir(id), "settings.json"), "utf8")).userEdit, "keep-me");
+  assert.equal(
+    JSON.parse(readFileSync(join(instDir(id), "settings.json"), "utf8")).userEdit,
+    "keep-me",
+  );
 });
 
 test("reports a failed fix when the instance path is a regular file", async () => {

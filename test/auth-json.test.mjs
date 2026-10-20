@@ -2,7 +2,13 @@ import process from "node:process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync, rmSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  lstatSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,11 +35,23 @@ function freshInstance(id) {
 }
 
 function prepareAuth(dir, auth, settings = {}) {
-  codex.prepare(dir, "auth-probe", { config: 'model = "gpt-5"\n', auth }, {}, "custom", "", settings);
+  codex.prepare(
+    dir,
+    "auth-probe",
+    { config: 'model = "gpt-5"\n', auth },
+    {},
+    "custom",
+    "",
+    settings,
+  );
 }
 
 function isSymlink(p) {
-  try { return lstatSync(p).isSymbolicLink(); } catch { return false; }
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 test("API-key credentials: independent real file, never a link", () => {
@@ -53,7 +71,11 @@ test("OAuth credentials with no global file: seed it, then symlink (claude .cred
   prepareAuth(dir, auth);
   const p = join(dir, "auth.json");
   assert.equal(isSymlink(p), true, "OAuth auth must be a symlink to the shared global file");
-  assert.deepEqual(JSON.parse(readFileSync(GLOBAL_AUTH, "utf8")), auth, "global file seeded from DB login material");
+  assert.deepEqual(
+    JSON.parse(readFileSync(GLOBAL_AUTH, "utf8")),
+    auth,
+    "global file seeded from DB login material",
+  );
   // the instance file resolves to the SAME bytes — one live copy
   assert.deepEqual(JSON.parse(readFileSync(p, "utf8")), auth);
 });
@@ -61,12 +83,26 @@ test("OAuth credentials with no global file: seed it, then symlink (claude .cred
 test("OAuth credentials with a global file present: link, never overwrite the seed", () => {
   // The previous test seeded the global file. Rewrite it to simulate a
   // CLI-rotated token and confirm prepare does NOT resurrect the DB copy.
-  writeFileSync(GLOBAL_AUTH, JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "rotated", refresh_token: "r2" } }, null, 2));
+  writeFileSync(
+    GLOBAL_AUTH,
+    JSON.stringify(
+      { auth_mode: "chatgpt", tokens: { access_token: "rotated", refresh_token: "r2" } },
+      null,
+      2,
+    ),
+  );
   const dir = freshInstance("probe-oauth2");
-  prepareAuth(dir, { auth_mode: "chatgpt", tokens: { access_token: "stale-db", refresh_token: "old" } });
+  prepareAuth(dir, {
+    auth_mode: "chatgpt",
+    tokens: { access_token: "stale-db", refresh_token: "old" },
+  });
   const p = join(dir, "auth.json");
   assert.equal(isSymlink(p), true);
-  assert.deepEqual(JSON.parse(readFileSync(p, "utf8")).tokens, { access_token: "rotated", refresh_token: "r2" }, "rotation survives prepare");
+  assert.deepEqual(
+    JSON.parse(readFileSync(p, "utf8")).tokens,
+    { access_token: "rotated", refresh_token: "r2" },
+    "rotation survives prepare",
+  );
 });
 
 test("preserveCodexOfficialAuthOnSwitch: legacy per-instance behavior, no linking", () => {

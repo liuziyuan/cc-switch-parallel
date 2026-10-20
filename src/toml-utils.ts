@@ -27,9 +27,10 @@ function tomlIsSubset(target, source) {
       if (!tomlIsSubset(targetValue, sourceValue)) return false;
     } else if (Array.isArray(sourceValue)) {
       if (!Array.isArray(targetValue)) return false;
-      if (!sourceValue.every((s) =>
-        targetValue.some((t) => JSON.stringify(t) === JSON.stringify(s))
-      )) return false;
+      if (
+        !sourceValue.every((s) => targetValue.some((t) => JSON.stringify(t) === JSON.stringify(s)))
+      )
+        return false;
     } else {
       if (JSON.stringify(targetValue) !== JSON.stringify(sourceValue)) return false;
     }
@@ -47,6 +48,5 @@ function tomlIsSubset(target, source) {
 function applyTomlPatchText(tomlText, patchObj) {
   return stringifyToml(applyMergePatch(parseToml(tomlText || ""), jsonDeepClone(patchObj)));
 }
-
 
 export { applyTomlPatchText, tomlDeepMerge, tomlIsSubset };

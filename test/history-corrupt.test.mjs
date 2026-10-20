@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +29,9 @@ test("corrupt history: bytes preserved under .corrupt-* and writes frozen", () =
 
   // Every later write in this process stays frozen too.
   recordLaunch("claude", "p1", "P1", null, []);
-  assert.equal(readdirSync(DIR).filter((n) => n.startsWith("launch_history.json.corrupt-")).length, 1);
+  assert.equal(
+    readdirSync(DIR).filter((n) => n.startsWith("launch_history.json.corrupt-")).length,
+    1,
+  );
   assert.equal(existsSync(HISTORY_PATH), false);
 });

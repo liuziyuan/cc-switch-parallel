@@ -7,7 +7,12 @@ import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./
 import { isPlainObject, parseJsonObject } from "./json-utils.js";
 import { VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
 import { loadSyncState, saveSyncState, sha256, withSyncStateLock } from "./sessions.js";
-import { detectSharedConfigMode, readSharedConfig, sharedConfigHash, sharedSnippetText } from "./shared-config.js";
+import {
+  detectSharedConfigMode,
+  readSharedConfig,
+  sharedConfigHash,
+  sharedSnippetText,
+} from "./shared-config.js";
 import { classifyConfirmKey, fitLine, sanitizeAnsiLine, sanitizeText } from "./terminal-utils.js";
 import { collectPatchPaths } from "./upward.js";
 
@@ -107,7 +112,9 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
         const parsedSettings = parseJsonObject(row.settings_config);
         const parsedMeta = parseJsonObject(row.meta);
         if (!parsedSettings || !parsedMeta) {
-          console.error(`⚠ Provider "${row.name || row.id}" has malformed ${!parsedSettings ? "settings_config" : "meta"} JSON — skipping refresh.`);
+          console.error(
+            `⚠ Provider "${row.name || row.id}" has malformed ${!parsedSettings ? "settings_config" : "meta"} JSON — skipping refresh.`,
+          );
           continue; // keep the old baseline so the drift stays visible
         }
         const settingsConfig = parsedSettings;
@@ -117,9 +124,7 @@ function refreshStaleInstances(state: any, staleByApp: Record<string, string[]>)
         // wiped other instances' own unsynced edits with zero warning.
         guardInstanceConfigBeforeOverwrite(adapter, row, instanceDir, shared, settings);
         adapter.prepare(instanceDir, row.id, settingsConfig, meta, row.category, shared, settings);
-        state.instances[appType][row.id] = buildInstanceBaselineEntry(
-          adapter, instanceDir, shared,
-        );
+        state.instances[appType][row.id] = buildInstanceBaselineEntry(adapter, instanceDir, shared);
         refreshedIds[appType] ||= [];
         refreshedIds[appType].push(row.id);
         refreshed.push(row.name);
@@ -176,7 +181,9 @@ function recordInstanceBaseline(adapter, providerId, instanceDir, shared) {
       state.instances = state.instances || {};
       state.instances[adapter.appType] = state.instances[adapter.appType] || {};
       state.instances[adapter.appType][providerId] = buildInstanceBaselineEntry(
-        adapter, instanceDir, shared,
+        adapter,
+        instanceDir,
+        shared,
       );
       state.version = 3;
       saveSyncState(state);
@@ -268,7 +275,9 @@ function confirmSync(
     const cleanup = () => {
       if (done) return;
       done = true;
-      try { stdin.setRawMode(false); } catch {}
+      try {
+        stdin.setRawMode(false);
+      } catch {}
       stdin.removeListener("data", onData);
       stdin.removeListener("end", onEnd);
       stdin.removeListener("close", onEnd);
@@ -277,7 +286,9 @@ function confirmSync(
       // mode after the earlier resume(), and a flowing stream with no data
       // listeners still READS and DISCARDS tty bytes — the spawned CLI would
       // lose keystrokes.
-      try { stdin.pause(); } catch {}
+      try {
+        stdin.pause();
+      } catch {}
     };
     const onData = (data) => {
       const key = data.toString();
@@ -365,7 +376,9 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
   const lines: string[] = [];
   for (const [appType, names] of Object.entries(commonDrift)) {
     const source = detectSharedConfigMode() === "live" ? "live shared config" : "common config";
-    lines.push(`\x1b[33m${source} (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`);
+    lines.push(
+      `\x1b[33m${source} (${appType})\x1b[0m changed — restart to apply: ${names.join(", ")}`,
+    );
   }
   for (const [cmd, d] of Object.entries(settingsDrifts)) {
     // Per-instance settings lines, target-tagged so the user knows where each
@@ -373,7 +386,9 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // patches) are shown; mirror-instance noise is already filtered upstream.
     const providerPatchByPath = new Map();
     for (const [pid, patchObj] of Object.entries(d.providerPatches || {})) {
-      collectPatchPaths(patchObj, "").forEach((p) => { providerPatchByPath.set(p, pid); });
+      collectPatchPaths(patchObj, "").forEach((p) => {
+        providerPatchByPath.set(p, pid);
+      });
     }
     const commonPaths = new Set(collectPatchPaths(d.commonPatch || {}, ""));
     const blockedPaths = new Set(d.rejected || []);
@@ -381,14 +396,23 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
       const shown = inst.changes.slice(0, 15);
       for (const ch of shown) {
         const target = blockedPaths.has(ch.path)
-          ? (d.rejectedReasons?.[ch.path] === "virtual" ? "blocked-virtual" : "blocked-sensitive")
-          : commonPaths.has(ch.path) ? (d.sharedMode === "live" ? "shared-live" : "common")
-          : providerPatchByPath.has(ch.path) ? "provider" : null;
+          ? d.rejectedReasons?.[ch.path] === "virtual"
+            ? "blocked-virtual"
+            : "blocked-sensitive"
+          : commonPaths.has(ch.path)
+            ? d.sharedMode === "live"
+              ? "shared-live"
+              : "common"
+            : providerPatchByPath.has(ch.path)
+              ? "provider"
+              : null;
         if (!target) continue; // losing vote / already equal in DB — not written
         lines.push(formatSettingsChangeLine(ch, target));
       }
       if (inst.changes.length > shown.length) {
-        lines.push(`\x1b[2m… and ${inst.changes.length - shown.length} more fields for ${inst.name}\x1b[0m`);
+        lines.push(
+          `\x1b[2m… and ${inst.changes.length - shown.length} more fields for ${inst.name}\x1b[0m`,
+        );
       }
     }
     for (const [path, count] of Object.entries(d.conflicts || {})) {
@@ -403,12 +427,16 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
       Object.keys(d.commonPatch || {}).length
     ) {
       const where = d.sharedMode === "live" ? "the global live config" : "common config";
-      lines.push(`\x1b[2m(note: write-back rewrites ${where} (${cmd}) — comments and formatting in the TOML will be lost)\x1b[0m`);
+      lines.push(
+        `\x1b[2m(note: write-back rewrites ${where} (${cmd}) — comments and formatting in the TOML will be lost)\x1b[0m`,
+      );
     }
     // Virtual Stack entry: provider-target edits have no DB row to land in —
     // shown as blocked above; spell out why so it doesn't read as a bug.
     if (d.virtualBlocked) {
-      lines.push(`\x1b[2m(the aggregation entry "${VIRTUAL_STACK_PROVIDER_ID}" is a runtime virtual row and is not written back to the database — the instance config is regenerated from desktop-app state on every launch)\x1b[0m`);
+      lines.push(
+        `\x1b[2m(the aggregation entry "${VIRTUAL_STACK_PROVIDER_ID}" is a runtime virtual row and is not written back to the database — the instance config is regenerated from desktop-app state on every launch)\x1b[0m`,
+      );
     }
   }
   for (const d of Object.values(pluginDrifts)) {
@@ -425,7 +453,9 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     // command mode: non-blocking warning, no write-back.
     process.stderr.write(`\x1b[33m⚠ Config drift detected:\x1b[0m\n`);
     for (const line of lines) process.stderr.write(`  ${line}\n`);
-    process.stderr.write(`  Run \x1b[1mswitch sync\x1b[0m (or \x1b[1mswitch --sync\x1b[0m) to review and sync.\n`);
+    process.stderr.write(
+      `  Run \x1b[1mswitch sync\x1b[0m (or \x1b[1mswitch --sync\x1b[0m) to review and sync.\n`,
+    );
     return { synced: false, drifted: true };
   }
 
@@ -461,15 +491,29 @@ async function detectAndPromptSync({ tui = false, quiet = false } = {}) {
     const refreshResult = refreshStaleInstances(state, collectStaleInstanceIds(state));
     snapshotSyncState(state, syncedCmds);
     const stateSaved = mergeAndSaveSyncState(
-      state, refreshResult.refreshedIds, refreshResult.removedIds, syncedCmds.includes("claude"),
+      state,
+      refreshResult.refreshedIds,
+      refreshResult.removedIds,
+      syncedCmds.includes("claude"),
     );
     return {
-      synced: true, drifted: true, refreshed: refreshResult.refreshed,
+      synced: true,
+      drifted: true,
+      refreshed: refreshResult.refreshed,
       stateSkipped: !stateSaved,
     };
   }
   return { synced: false, drifted: true };
 }
 
-
-export { buildInstanceBaselineEntry, collectStaleInstanceIds, confirmSync, detectAndPromptSync, detectCommonConfigDrift, mergeAndSaveSyncState, recordInstanceBaseline, refreshStaleInstances, snapshotSyncState };
+export {
+  buildInstanceBaselineEntry,
+  collectStaleInstanceIds,
+  confirmSync,
+  detectAndPromptSync,
+  detectCommonConfigDrift,
+  mergeAndSaveSyncState,
+  recordInstanceBaseline,
+  refreshStaleInstances,
+  snapshotSyncState,
+};
