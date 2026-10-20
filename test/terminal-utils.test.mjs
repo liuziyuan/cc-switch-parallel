@@ -14,6 +14,7 @@ const {
   exitCodeForSignal,
   editorExitCode,
   parseTmuxPanes,
+  parseTmuxPaneInfo,
   installTerminalGuard,
 } = await import("../src/terminal-utils.ts");
 
@@ -110,6 +111,19 @@ test("parseTmuxPanes: /dev prefix, CRLF and dirty lines", () => {
   assert.equal(map.get("ttys001"), "main");
   assert.equal(map.get("ttys002"), "work");
   assert.equal(map.size, 2);
+});
+
+test("parseTmuxPaneInfo: pane identity, dirty lines and control chars", () => {
+  const map = parseTmuxPaneInfo(
+    "/dev/ttys001\tmain\t%1\t0\t0\r\n/dev/ttys002\twork\t%2\t1\t3\nshort\tline\n\n",
+  );
+  assert.deepEqual(map.get("ttys001"), { session: "main", paneId: "%1", windowIndex: "0", paneIndex: "0" });
+  assert.deepEqual(map.get("ttys002"), { session: "work", paneId: "%2", windowIndex: "1", paneIndex: "3" });
+  assert.equal(map.size, 2);
+  assert.equal(map.has("short"), false);
+
+  const dirty = parseTmuxPaneInfo("/dev/ttys003\t\x1b[31mevil\x1b[0m\t%3\t0\t0\n");
+  assert.equal(dirty.get("ttys003").session, "evil");
 });
 
 test("installTerminalGuard: signals cleanup and exit; dispose removes listeners", () => {

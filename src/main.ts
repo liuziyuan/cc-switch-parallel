@@ -242,7 +242,7 @@ async function main() {
   }
 
   if (args[0] === "ps") {
-    runPs(args.slice(1));
+    await runPs(args.slice(1));
     return;
   }
 

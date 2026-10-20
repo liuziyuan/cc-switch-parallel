@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { collectInstances } from "./doctor.js";
 import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
+import { confirmSync } from "../drift.js";
 import { HOME } from "../paths.js";
-import { readSessions, saveSyncState, sessionIsAlive, sessionLiveness, withSyncStateLock } from "../sessions.js";
-import { displayWidth, padDisplay, parseTmuxPanes, sanitizeText } from "../terminal-utils.js";
+import { readSessions, removeSessionFile, saveSyncState, sessionIsAlive, sessionLiveness, withSyncStateLock } from "../sessions.js";
+import { displayWidth, padDisplay, parseTmuxPaneInfo, parseTmuxPanes, sanitizeText, type TmuxPaneInfo } from "../terminal-utils.js";
 import { isAggregationProviderSettings, readStackState } from "../stack/state.js";
 
 // ─── switch ps ────────────────────────────────────────────────────────
@@ -223,17 +224,265 @@ function renderPsJson(rows: RunningSessionRow[]): string {
   }, null, 2);
 }
 
-function runPs(args: string[] = []): void {
-  let json = false;
-  for (const a of args) {
-    if (a === "--json") { json = true; continue; }
-    console.error(`✗ unknown argument: ${a}`);
-    console.error("Usage: switch ps [--json]");
+type PsArgs =
+  | { mode: "table" }
+  | { mode: "json" }
+  | { mode: "kill"; target: string; force: boolean }
+  | { mode: "attach"; target: string }
+  | { error: string; usage: string };
+
+function parsePsArgs(args: string[]): PsArgs {
+  if (!args.length) return { mode: "table" };
+  if (args.length === 1 && args[0] === "--json") return { mode: "json" };
+  if (args[0] === "kill") {
+    let force = false;
+    const rest: string[] = [];
+    for (const a of args.slice(1)) {
+      if (a === "--force") force = true;
+      else rest.push(a);
+    }
+    if (rest.length !== 1) {
+      return { error: "kill requires exactly one target", usage: "Usage: switch ps kill <pid|index> [--force]" };
+    }
+    return { mode: "kill", target: rest[0], force };
+  }
+  if (args[0] === "attach") {
+    if (args.length !== 2) {
+      return { error: "attach requires exactly one index", usage: "Usage: switch ps attach <index>" };
+    }
+    return { mode: "attach", target: args[1] };
+  }
+  return { error: `unknown argument: ${args[0]}`, usage: "Usage: switch ps [--json | kill <pid|index> [--force] | attach <index>]" };
+}
+
+type SessionTarget =
+  | { ok: true; row: RunningSessionRow }
+  | { ok: false; error: string };
+
+function resolveSessionTarget(rows: RunningSessionRow[], token: string): SessionTarget {
+  const raw = String(token ?? "");
+  let mode: "index" | "pid" | "auto" = "auto";
+  let value = raw;
+  if (/^#\d+$/.test(raw)) {
+    mode = "index";
+    value = raw.slice(1);
+  } else if (/^pid:\d+$/i.test(raw)) {
+    mode = "pid";
+    value = raw.slice(4);
+  } else if (!/^\d+$/.test(raw)) {
+    return { ok: false, error: `invalid target "${raw}" — use an index (1..${rows.length}) or pid:<pid>` };
+  }
+  if (!rows.length) return { ok: false, error: "no running sessions" };
+  const n = Number(value);
+  if (mode === "index" || (mode === "auto" && n >= 1 && n <= rows.length)) {
+    const row = rows.find((r) => r.index === n);
+    return row ? { ok: true, row } : { ok: false, error: `index ${n} is out of range (1..${rows.length})` };
+  }
+  const row = rows.find((r) => r.pid === n);
+  return row ? { ok: true, row } : { ok: false, error: `no session matches "${raw}"` };
+}
+
+function pidExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    return e?.code !== "ESRCH";
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() < deadline) {
+    if (!pidExists(pid)) return true;
+    await sleep(100);
+  }
+  return !pidExists(pid);
+}
+
+function signalPid(pid: number, signal: NodeJS.Signals): "ok" | "gone" | "eperm" | "error" {
+  try {
+    process.kill(pid, signal);
+    return "ok";
+  } catch (e: any) {
+    if (e?.code === "ESRCH") return "gone";
+    if (e?.code === "EPERM") return "eperm";
+    return "error";
+  }
+}
+
+async function confirmKill(row: RunningSessionRow): Promise<boolean> {
+  const result = await confirmSync([
+    `  #${row.index}  ${row.cli}  ${row.name}  pid ${row.pid}`,
+    `  tmux: ${row.tmux ?? "-"}  dir: ${row.cwd ?? "-"}`,
+  ], "Kill this session?");
+  if (result === "interrupt") process.exit(130);
+  return result === "yes";
+}
+
+type KillOptions = {
+  force?: boolean;
+  confirm?: () => Promise<boolean>;
+  isTTY?: boolean;
+  termTimeoutMs?: number;
+  killTimeoutMs?: number;
+};
+
+type ActionResult = { ok: boolean; detail: string; exitCode?: number };
+
+// Only a session that was recorded by this tool AND still matches its
+// recorded lstart is signalable. "unknown" means we cannot prove the pid is
+// ours, so it is refused even though the process exists.
+async function killSession(row: RunningSessionRow, opts: KillOptions = {}): Promise<ActionResult> {
+  const pid = row.pid;
+  if (pid === null || !Number.isInteger(pid) || pid <= 1 || pid === process.pid) {
+    return { ok: false, detail: `refusing to signal pid ${row.pid ?? "?"} (not a valid session pid)` };
+  }
+  const liveness = sessionLiveness(row.session);
+  if (liveness === "dead") {
+    removeSessionFile(row.path);
+    return { ok: true, detail: `session #${row.index} already exited` };
+  }
+  if (liveness === "unknown") {
+    return {
+      ok: false,
+      detail: `refusing to signal pid ${pid}: cannot verify process identity (lstart mismatch or unreadable)`,
+    };
+  }
+  if (!opts.force) {
+    const interactive = opts.isTTY ?? !!process.stdin.isTTY;
+    if (!interactive) {
+      return { ok: false, detail: "ps kill requires an interactive terminal (or use --force)" };
+    }
+    const confirmed = opts.confirm ? await opts.confirm() : await confirmKill(row);
+    if (!confirmed) return { ok: false, detail: "cancelled" };
+  }
+
+  const termTimeoutMs = opts.termTimeoutMs ?? 5000;
+  const killTimeoutMs = opts.killTimeoutMs ?? 2000;
+  if (opts.force) {
+    const killed = signalPid(pid, "SIGKILL");
+    if (killed === "eperm") return { ok: false, detail: `permission denied signaling pid ${pid}` };
+    if (killed !== "gone" && !(await waitForPidExit(pid, killTimeoutMs))) {
+      return { ok: false, detail: `session #${row.index} (pid ${pid}) is still running after SIGKILL` };
+    }
+  } else {
+    const term = signalPid(pid, "SIGTERM");
+    if (term === "eperm") return { ok: false, detail: `permission denied signaling pid ${pid}` };
+    let exited = term === "gone" || (await waitForPidExit(pid, termTimeoutMs));
+    if (!exited) {
+      const killed = signalPid(pid, "SIGKILL");
+      if (killed === "eperm") return { ok: false, detail: `permission denied signaling pid ${pid}` };
+      exited = killed === "gone" || (await waitForPidExit(pid, killTimeoutMs));
+    }
+    if (!exited) {
+      return { ok: false, detail: `session #${row.index} (pid ${pid}) is still running after SIGKILL` };
+    }
+  }
+  removeSessionFile(row.path);
+  return { ok: true, detail: `killed session #${row.index} (pid ${pid}, ${row.cli}, ${row.name})` };
+}
+
+type TmuxLookup =
+  | { ok: true; panes: Map<string, TmuxPaneInfo> }
+  | { ok: false; reason: "notFound" | "unavailable" };
+
+function tmuxPaneInfoByTty(): TmuxLookup {
+  try {
+    const r = spawnSync("tmux", [
+      "list-panes", "-a", "-F",
+      "#{pane_tty}\t#{session_name}\t#{pane_id}\t#{window_index}\t#{pane_index}",
+    ], { encoding: "utf8", timeout: 2000, maxBuffer: 1 << 20 });
+    if (r.error) return { ok: false, reason: (r.error as any).code === "ENOENT" ? "notFound" : "unavailable" };
+    if (r.status !== 0) return { ok: false, reason: "unavailable" };
+    return { ok: true, panes: parseTmuxPaneInfo(r.stdout || "") };
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+}
+
+type AttachOptions = {
+  insideTmux?: boolean;
+  isTTY?: boolean;
+  runTmux?: (argv: string[], opts?: any) => any;
+  lookup?: TmuxLookup;
+};
+
+function attachSession(row: RunningSessionRow, opts: AttachOptions = {}): ActionResult {
+  const lookup = opts.lookup ?? tmuxPaneInfoByTty();
+  if (!lookup.ok) {
+    return {
+      ok: false,
+      detail: lookup.reason === "notFound"
+        ? "tmux not found on PATH — attach requires tmux."
+        : "tmux is not available (is a server running?)",
+    };
+  }
+  const pane = row.tty ? lookup.panes.get(row.tty) : null;
+  if (!pane) {
+    return { ok: false, detail: `session #${row.index} is not running inside tmux (tty: ${row.tty ?? "-"})` };
+  }
+  const run = opts.runTmux ?? ((argv: string[], o: any = {}) => spawnSync("tmux", argv, { encoding: "utf8", ...o }));
+  const failed = (what: string, r: any): ActionResult => ({
+    ok: false,
+    detail: `${what} failed${r?.stderr ? `: ${sanitizeText(String(r.stderr)).trim()}` : ""}`,
+    exitCode: typeof r?.status === "number" ? r.status : 1,
+  });
+  const inside = opts.insideTmux ?? !!process.env.TMUX;
+  if (inside) {
+    let r = run(["switch-client", "-t", pane.session]);
+    if (r.error || r.status !== 0) return failed("tmux switch-client", r);
+    r = run(["select-pane", "-t", pane.paneId]);
+    if (r.error || r.status !== 0) return failed("tmux select-pane", r);
+    return { ok: true, detail: `selected ${pane.session} ${pane.paneId}` };
+  }
+  const interactive = opts.isTTY ?? !!process.stdin.isTTY;
+  if (!interactive) return { ok: false, detail: "attach requires an interactive terminal." };
+  let r = run(["select-window", "-t", `${pane.session}:${pane.windowIndex}`]);
+  if (r.error || r.status !== 0) return failed("tmux select-window", r);
+  r = run(["select-pane", "-t", pane.paneId]);
+  if (r.error || r.status !== 0) return failed("tmux select-pane", r);
+  r = run(["attach-session", "-t", pane.session], { stdio: "inherit" });
+  if (r.error) return { ok: false, detail: `tmux attach-session failed: ${r.error.message || r.error}` };
+  if (typeof r.status === "number" && r.status !== 0) {
+    return { ok: false, detail: "tmux attach-session failed", exitCode: r.status };
+  }
+  return { ok: true, detail: `attached to ${pane.session} ${pane.paneId}` };
+}
+
+async function runPs(args: string[] = []): Promise<void> {
+  const parsed = parsePsArgs(args);
+  if ("error" in parsed) {
+    console.error(`✗ ${parsed.error}`);
+    console.error(parsed.usage);
     process.exit(1);
   }
   const rows = collectRunningSessions();
-  if (json) console.log(renderPsJson(rows));
-  else renderPsTable(rows);
+  if (parsed.mode === "table") {
+    renderPsTable(rows);
+    return;
+  }
+  if (parsed.mode === "json") {
+    console.log(renderPsJson(rows));
+    return;
+  }
+  const target = resolveSessionTarget(rows, parsed.target);
+  if (!target.ok) {
+    console.error(`✗ ${target.error}`);
+    process.exit(1);
+  }
+  const result = parsed.mode === "kill"
+    ? await killSession(target.row, { force: parsed.force })
+    : attachSession(target.row);
+  if (!result.ok) {
+    console.error(`✗ ${result.detail}`);
+    process.exit(result.exitCode ?? 1);
+  }
+  console.log(`✓ ${result.detail}`);
 }
 
 // Drop the drift baselines of removed instance dirs, so stale-instance
@@ -258,4 +507,4 @@ function pruneInstanceBaselines(instances) {
 }
 
 
-export { buildRunningSet, collectRunningSessions, formatDuration, pruneInstanceBaselines, renderPsJson, renderPsTable, runPs, stackBillingMemberName, tmuxSessionByTty };
+export { attachSession, buildRunningSet, collectRunningSessions, formatDuration, killSession, parsePsArgs, pruneInstanceBaselines, renderPsJson, renderPsTable, resolveSessionTarget, runPs, stackBillingMemberName, tmuxPaneInfoByTty, tmuxSessionByTty };

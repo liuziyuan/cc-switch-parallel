@@ -160,6 +160,34 @@ export function parseTmuxPanes(stdout: any): Map<string, string> {
   return map;
 }
 
+export type TmuxPaneInfo = {
+  session: string;
+  paneId: string;
+  windowIndex: string;
+  paneIndex: string;
+};
+
+/**
+ * Parse `tmux list-panes -F '#{pane_tty}\t#{session_name}\t#{pane_id}\t#{window_index}\t#{pane_index}'`.
+ * Keys are tty without the `/dev/` prefix, matching session records.
+ */
+export function parseTmuxPaneInfo(stdout: any): Map<string, TmuxPaneInfo> {
+  const map = new Map<string, TmuxPaneInfo>();
+  for (const raw of String(stdout || "").split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (!line) continue;
+    const parts = line.split("\t");
+    if (parts.length < 5) continue;
+    const tty = sanitizeText(parts[0]).replace(/^\/dev\//, "");
+    const session = sanitizeText(parts[1]);
+    const paneId = sanitizeText(parts[2]);
+    const windowIndex = sanitizeText(parts[3]);
+    const paneIndex = sanitizeText(parts[4]);
+    if (tty && session && paneId) map.set(tty, { session, paneId, windowIndex, paneIndex });
+  }
+  return map;
+}
+
 type GuardOptions = {
   cleanup: () => void;
   exit?: (code: number) => void;
