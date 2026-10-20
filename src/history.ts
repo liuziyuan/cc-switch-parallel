@@ -271,6 +271,36 @@ function mergeTop5(entries, order, aliveByCli) {
   return out;
 }
 
+// The Recent rows, one per quick slot. Single constructor for both surfaces —
+// the TUI's `a s d f g` keys and the command line's `switch a|s|d|f|g` must
+// resolve a slot to the same provider, argv and mode; two copies of this
+// projection would drift on pin order, renames and dead rows.
+// `running` (● live) is TUI-only presentation state and is added by the caller.
+function quickItemsFor(entries, order, aliveByCli) {
+  return mergeTop5(entries, order, aliveByCli).map((e, i) => {
+    const snap = aliveByCli?.get(e.cli);
+    const name = (e.providerId && snap?.nameById.get(e.providerId)) || e.provider;
+    const permArgs = APP_ADAPTERS[e.cli]?.permissionArgs?.(e.hotkey) ?? [];
+    const replay = Array.isArray(e.extraArgs) ? e.extraArgs : [];
+    // "+args" marks rows whose replay goes beyond the bare permission flags
+    // (--continue etc.). An empty extraArgs on a non-default mode is NOT
+    // extra — quick-launch backfills the permission flags itself.
+    const hasExtraArgs = replay.length > 0 && JSON.stringify(replay) !== JSON.stringify(permArgs);
+    return {
+      key: QUICK_KEYS[i],
+      label: `${name} · ${e.cli} · ${permLabel(e.hotkey)} · ${relTime(e.lastUsed)}${hasExtraArgs ? " · +args" : ""}`,
+      cli: e.cli,
+      providerId: e.providerId ?? null,
+      provider: name,
+      hotkey: e.hotkey ?? undefined,
+      extraArgs: replay,
+      pairKey: entryKey(e),
+      dead: isDeadEntry(e, aliveByCli),
+      pinned: order.includes(entryKey(e)),
+    };
+  });
+}
+
 // One-shot informational flags must never enter launch history: replaying
 // `claude --version` prints and exits — the CLI never opens — and every replay
 // re-records the flag, so one accidental `switch <p> claude --version` turns
@@ -509,4 +539,4 @@ function permLabel(hotkey) {
 }
 
 
-export { HISTORY_VERSION, ONE_SHOT_FLAGS, QUICK_KEYS, _historyFrozen, byStrength, entryKey, healRecordedArgs, insertManualOrder, isDeadEntry, loadHistory, mergeTop5, migrateHistory, normalizeOrder, permLabel, recordLaunch, relTime, removeAllDeadPairs, removeHistoryPair, saveHistory, setEntryHotkey, snapshotAliveByCli, stripOneShotFlags, stripPermissionArgs, top5, unpinPair };
+export { HISTORY_VERSION, ONE_SHOT_FLAGS, QUICK_KEYS, _historyFrozen, byStrength, entryKey, healRecordedArgs, insertManualOrder, isDeadEntry, loadHistory, mergeTop5, migrateHistory, normalizeOrder, permLabel, quickItemsFor, recordLaunch, relTime, removeAllDeadPairs, removeHistoryPair, saveHistory, setEntryHotkey, snapshotAliveByCli, stripOneShotFlags, stripPermissionArgs, top5, unpinPair };

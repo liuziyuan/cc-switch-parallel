@@ -42,6 +42,8 @@ switch
 
 **Recent (top 5)：** CLI 界面会列出最常用的 5 个启动组合，按 `a s d f g` 一键快速启动；按使用次数排序，每行尾部显示最近一次使用时间（`· 2h`、`· 3d` 等）。命令模式启动（`switch "X" claude …`）同样计入排序；快捷启动会重放当时的完整参数——上次带 `--continue` 启动，这次按快捷键也会带 `--continue`（带额外参数的行会以 `· +args` 标出）。
 
+**命令行快捷启动：** 不想开 TUI 时，`switch a` / `switch s` / `switch d` / `switch f` / `switch g` 直接启动对应槽位——与在 TUI 里按同一字母完全等价：同一置顶顺序、同一重放参数、同一启动模式，启动前会在 stderr 打一行 `→ 供应商 · cli · 模式`。只认裸键形式，`switch a claude` 仍按 provider 名解析。Full-auto 槽位与 TUI 一致，重放前要求确认（非交互终端无法确认时拒绝启动并给出显式命令）。
+
 **置顶是持久的。** 高亮 Recent 行按 `t` + 数字 `1`–`5` 钉入对应槽位（provider 界面的 `t` 仍然可用——钉完会直接进入启动模式选择，选完即以该模式启动）；被钉的行带 `*` 标记，跨启动保持位置，直到按 `u` 取消置顶。条目以供应商 id 为键：在 cc-switch 中改名不会丢槽位和历史次数，Recent 自动跟随显示新名字。
 
 **改启动模式：** 高亮 Recent 行按 `e`，再选 `⏎` Default / `2` Semi-auto / `3` Full-auto，即可就地修改该条目的启动模式（非权限参数如 `--continue` 保留）。
@@ -55,6 +57,7 @@ Full-auto（`⚠`）的快捷启动行会先确认再以 `--dangerously-skip-per
 ```bash
 switch [--sync|--no-sync] <provider> <cmd> [args...]
 switch [--sync|--no-sync] --id <providerId> <cmd> [args...]
+switch [--sync|--no-sync] a|s|d|f|g         # 直接启动 Recent top5 对应槽位
 ```
 
 示例：
@@ -65,6 +68,8 @@ switch "Zhipu GLM en" claude --continue
 switch --sync "Claude Official" claude   # 启动前就地交互确认配置漂移
 switch --no-sync "Example Provider" codex       # 静默启动，抑制漂移警告
 switch --id <providerId> claude          # 按 id 启动（同名 provider 时消歧）
+switch s                                 # 启动 Recent 第 2 槽，等价于 TUI 里按 s
+switch --no-sync d                       # 静默启动 Recent 第 3 槽
 ```
 
 provider 名在 cc-switch 中不要求唯一：命令模式遇到同名 provider 会**报错并列出所有匹配的 id**，不会静默选择第一个。此时用 `--id` 指定，或在 cc-switch 中改名；TUI 始终按 id 启动，不受重名影响。

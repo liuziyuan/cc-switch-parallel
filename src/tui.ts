@@ -5,7 +5,7 @@ import { APP_ADAPTERS } from "./adapters.js";
 import { buildRunningSet } from "./commands/ps.js";
 import { queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
-import { QUICK_KEYS, entryKey, insertManualOrder, isDeadEntry, loadHistory, permLabel, relTime, removeAllDeadPairs, removeHistoryPair, setEntryHotkey, snapshotAliveByCli, top5, unpinPair } from "./history.js";
+import { QUICK_KEYS, insertManualOrder, loadHistory, permLabel, quickItemsFor, removeAllDeadPairs, removeHistoryPair, setEntryHotkey, snapshotAliveByCli, unpinPair } from "./history.js";
 import { launchProvider } from "./launch.js";
 import { VIRTUAL_STACK_APPS } from "./paths.js";
 import { buildAggregationGroup, cleanupLegacyStackRows, reportLegacyStackCleanup } from "./stack/state.js";
@@ -800,30 +800,11 @@ async function runTUI() {
     const aliveByCli = snapshotAliveByCli();
     const runningSet = buildRunningSet();
     const buildQuickItems = () => {
-      const { order } = loadHistory();
-      return top5(aliveByCli).map((e, i) => {
-        const snap = aliveByCli.get(e.cli);
-        const name = (e.providerId && snap?.nameById.get(e.providerId)) || e.provider;
-        const permArgs = APP_ADAPTERS[e.cli]?.permissionArgs?.(e.hotkey) ?? [];
-        const replay = Array.isArray(e.extraArgs) ? e.extraArgs : [];
-        // "+args" marks rows whose replay goes beyond the bare permission flags
-        // (--continue etc.). An empty extraArgs on a non-default mode is NOT
-        // extra — quick-launch backfills the permission flags itself.
-        const hasExtraArgs = replay.length > 0 && JSON.stringify(replay) !== JSON.stringify(permArgs);
-        return {
-          key: QUICK_KEYS[i],
-          label: `${name} · ${e.cli} · ${permLabel(e.hotkey)} · ${relTime(e.lastUsed)}${hasExtraArgs ? " · +args" : ""}`,
-          cli: e.cli,
-          providerId: e.providerId ?? null,
-          provider: name,
-          hotkey: e.hotkey ?? undefined,
-          extraArgs: replay,
-          pairKey: entryKey(e),
-          dead: isDeadEntry(e, aliveByCli),
-          pinned: order.includes(entryKey(e)),
-          running: runningSet.has(e.providerId),
-        };
-      });
+      const { entries, order } = loadHistory();
+      // Shared projection with command mode's `switch a|s|d|f|g` — only the
+      // ● live marker is TUI-specific.
+      return quickItemsFor(entries, order, aliveByCli)
+        .map((q) => ({ ...q, running: runningSet.has(q.providerId) }));
     };
 
     const cli = await tuiSelect("Select CLI tool", cliOptions, {
