@@ -152,12 +152,12 @@
 
 **现状**
 
-- `launchProvider` 的流程：`detectAndPromptSync` → `queryProvider` → `setupInstance` → `guard` → `prepare` → `recordInstanceBaseline` → `recordLaunch` → `launchTracked`。
+- `launchProvider` 的流程：`detectAndPromptSync` → `resolveProviderRef`（内部 `queryProviderMatches` / `queryProviderById`）→ `setupInstance` → `guard` → `prepare` → `recordInstanceBaseline` → `recordLaunch` → `launchTracked`。
 - 纯推导部分已有：`adapter.computeEffectiveSettings(...)`（与 prepare 的 C3 契约一致），Claude 侧 `buildClaudeEffectiveSettings`，Codex 侧 `buildCodexConfig`。
 
 **目标**
 
-- `switch <provider> <cmd> --dry-run`（或 `switch launch --dry-run`）：打印将写入的 effective config、实例目录、将执行的命令与环境变量；不写文件、不启动 CLI、不计入 history。
+- `switch --dry-run [--diff] [--show-secrets] <provider> <cmd> [args...]`（flag 必须在最前）：打印将写入的 effective config、实例目录、将执行的命令与环境变量；不写文件、不启动 CLI、不计入 history。
 - 可选 `--diff`：与当前实例文件对比，展示变化。
 
 **实现要点**
@@ -292,15 +292,15 @@
 - **Copilot 并行路由**：使用者不再使用 Copilot（2026-10-20）。
 - **TUI 搜索/过滤**：provider 数量保持较小（2026-10-20）。
 
-## 5. 不属于 E、但建议单独处理的遗留项
+## 5. 不属于 E 的遗留项（复核后状态）
 
-| 项目 | 类型 | 说明 |
+| 项目 | 类型 | 现状 |
 |---|---|---|
-| 同名 provider 静默取第一个 | **缺陷** | `db.ts` 的 `queryProvider` 使用 `ORDER BY id LIMIT 1`；命令模式会无提示选中第一个。建议检测重名并报歧义。 |
-| CI 仅 Ubuntu + Node 22 | 工程 | `engines >=18`；建议 Node 18/20/22/24 矩阵 + lint + coverage。 |
-| `noImplicitAny: false` | 工程 | 逐步收严类型。 |
-| `stack/state.ts ↔ stack/catalog.ts` 循环导入 | 工程 | 抽出无依赖的共享判定/常量。 |
-| `main.ts` 的 update/__test 面 | 工程 | `runUpdate` 内联约 110 行；`__test` 导出 80+ 项。 |
+| 同名 provider 静默取第一个 | **已过时 / 已修复** | 文档原说法不成立：`queryProvider` 已不再执行 `ORDER BY id LIMIT 1`，且生产代码无调用（已删除）。launch / dry-run / customize 均走 `queryProviderMatches` + `resolveProviderRef` 并报歧义。v1 history 迁移已改为“同名不绑定 + 一次性警告”，not-found 提示改为输出 `id  name`。 |
+| CI 仅 Ubuntu + Node 22 | 工程 / **已修复** | CI 矩阵改为 Node 18.20.8 / 20 / 22 / 24（`push main` 也触发）；新增 Biome lint 与原生 test coverage（85/79/82）；publish 前执行 typecheck/test/build。测试脚本改为 `node --import tsx --test`，Node 18/20 可运行（本地需 ≥18.18）。 |
+| `noImplicitAny: false` | 工程 / **未做** | 开启后 464 个错误、25 个文件（前 5 文件占 54%）；单独立项，采用一次性修复，不做 `@ts-nocheck` 棘轮。 |
+| `stack/state.ts ↔ stack/catalog.ts` 循环导入 | 工程 / **已修复（最小）** | 抽出 `src/stack/aggregation.ts`，state 不再 import catalog，公开面不变。剩余 `db ↔ state ↔ history` 与 13 文件 SCC 记录为后续独立项。 |
+| `main.ts` 的 update/__test 面 | 工程 / **已修复** | 实际 `runUpdate` 为 46 行（连同 helper 89 行），`__test` 为 108 项且 107 项只是转出口。已抽出 `commands/update.ts` 与 `commands/args.ts`，20 个测试改为直接 import 源模块，`__test` 已删除。 |
 | catalog 模板字段跟进 | 维护 | 上游模型更新时手动同步。 |
 
 ## 6. 验收标准（若实施）
