@@ -145,7 +145,7 @@ function cleanupLegacyStackRows() {
   return { removed, skippedCurrent, migratedHistory, migratedColors };
 }
 
-function reportLegacyStackCleanup(result) {
+function reportLegacyStackCleanup(result: any) {
   if (!result) return;
   for (const r of result.removed) {
     console.error(

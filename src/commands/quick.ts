@@ -1,6 +1,6 @@
 // ─── commands/quick (`switch a|s|d|f|g`) ───────────────────────────────
 
-import { APP_ADAPTERS } from "../adapters.js";
+import { APP_ADAPTERS, getAdapter } from "../adapters.js";
 import { confirmSync } from "../drift.js";
 import {
   QUICK_KEYS,
@@ -50,7 +50,7 @@ async function runQuickLaunch(key: string, syncFlag: string | null) {
   // explicit yes. Non-TTY callers can't confirm and are told the explicit path.
   // The dangerous flag is per-CLI (Codex spells it differently).
   const dangerFlag =
-    APP_ADAPTERS[item.cli]?.permissionArgs?.("3").join(" ") ?? "--dangerously-skip-permissions";
+    getAdapter(item.cli)?.permissionArgs?.("3").join(" ") ?? "--dangerously-skip-permissions";
   if (item.hotkey === "3") {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       console.error(
@@ -75,7 +75,7 @@ async function runQuickLaunch(key: string, syncFlag: string | null) {
   const args =
     item.extraArgs.length > 0
       ? item.extraArgs
-      : (APP_ADAPTERS[item.cli]?.permissionArgs?.(item.hotkey) ?? []);
+      : (getAdapter(item.cli)?.permissionArgs?.(item.hotkey) ?? []);
   console.error(`→ ${item.label}`);
   await launchProvider(item.cli, launchRefForQuick(item), args, syncFlag, { hotkey: item.hotkey });
 }

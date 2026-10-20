@@ -40,7 +40,7 @@ function buildRunningSet() {
 // prompts stop naming providers whose directories are gone (the dir name IS
 // the providerId — see setupInstance). Best-effort: a state-file hiccup must
 // not fail the clean itself.
-function pruneInstanceBaselines(instances) {
+function pruneInstanceBaselines(instances: any) {
   try {
     withSyncStateLock((state) => {
       let changed = false;

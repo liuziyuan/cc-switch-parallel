@@ -10,7 +10,7 @@ const CODEX_INSTRUCTIONS_INSTANCE_MARK =
 
 // First run writes a marked snapshot block on top (refreshable), the user's
 // instance-only section below (preserved byte-for-byte across refreshes).
-function buildCodexInstructionsTemplate(globalText, globalPathDisplay) {
+function buildCodexInstructionsTemplate(globalText: any, globalPathDisplay: any) {
   const body = (globalText || "").trimEnd();
   return [
     `<!-- cc-switch: snapshot of ${globalPathDisplay} — re-run \`switch customize codex <provider>\` to refresh this block -->`,
@@ -27,7 +27,11 @@ function buildCodexInstructionsTemplate(globalText, globalPathDisplay) {
 // Rewrite ONLY the snapshot region; anything below the instance marker is
 // kept byte-for-byte. Returns null when the file doesn't carry our marker
 // (a hand-written file) — the caller must not touch it.
-function refreshCodexInstructionsSnapshot(existingText, newGlobalText, globalPathDisplay) {
+function refreshCodexInstructionsSnapshot(
+  existingText: any,
+  newGlobalText: any,
+  globalPathDisplay: any,
+) {
   const instanceIdx = existingText.indexOf(CODEX_INSTRUCTIONS_INSTANCE_MARK);
   if (instanceIdx < 0) return null;
   const tail = existingText.slice(instanceIdx);

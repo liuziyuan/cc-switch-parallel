@@ -57,7 +57,7 @@ function readInstalledVersion() {
 
 // Shared tail for both update paths: confirm against what is really on disk,
 // and fail loudly (non-zero) when the disk still disagrees.
-function reportUpdateOutcome(latestVersion) {
+function reportUpdateOutcome(latestVersion: any) {
   const installed = readInstalledVersion();
   if (installed === latestVersion) {
     console.log(`✓ Updated to v${latestVersion}`);

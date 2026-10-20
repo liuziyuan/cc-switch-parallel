@@ -40,7 +40,7 @@ import { tuiSelect } from "../tui.js";
 
 // ─── doctor / clean ────────────────────────────────────────────────────
 
-function which(bin) {
+function which(bin: any) {
   try {
     const r = spawnSync("which", [bin], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
     return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
@@ -112,7 +112,7 @@ async function aggregationDoctorChecks(): Promise<DoctorCheck[]> {
     return checks;
   }
   add("aggregation live-state", true, "readable (stack on)");
-  const rowExists = (id) => {
+  const rowExists = (id: any) => {
     try {
       return !!queryProviderById(id, "claude");
     } catch {
@@ -612,7 +612,7 @@ async function runDoctor(args: string[] = []): Promise<void> {
   renderDoctorText(checks);
 }
 
-async function runClean(args) {
+async function runClean(args: any) {
   const force = args.includes("--force");
   const instances = collectInstances();
   if (!instances.length) {

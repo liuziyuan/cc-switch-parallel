@@ -141,7 +141,7 @@ function renderListTable(rows: ListProviderRow[]): void {
     status: r.available ? "ok" : `invalid: ${r.issues.join("; ")}`,
   }));
   const all = [headers, ...cells];
-  const width = (key) => Math.max(...all.map((c) => displayWidth(c[key])), 1);
+  const width = (key: string) => Math.max(...all.map((c: any) => displayWidth(c[key])), 1);
   const wApp = width("app");
   const wName = width("name");
   const wId = width("id");

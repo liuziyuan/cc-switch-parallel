@@ -13,7 +13,7 @@ import { HOME, LIVE_STATE_PATH } from "../paths.js";
 // missing file, a renamed field or a disabled switch all read as "off".
 // Contract gate: an unknown version (file-level or the app's contract block)
 // is a schema this build cannot interpret — read as "off" rather than guess.
-function readStackState(appType) {
+function readStackState(appType: any) {
   try {
     const raw = JSON.parse(readFileSync(LIVE_STATE_PATH, "utf8"));
     if (!isPlainObject(raw)) return null;

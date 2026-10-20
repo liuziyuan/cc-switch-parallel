@@ -108,7 +108,7 @@ function buildCodexStackSettingsFromGlobal() {
 // projection still parses as a custom provider table; the launch probe warns
 // the proxy is down (or the stack off) and the entry is only ever reached
 // with the instance dir present.
-function codexStackDormantSettings(baseUrl) {
+function codexStackDormantSettings(baseUrl: any) {
   const proj = {
     model_provider: "cc-switch-stack",
     model_catalog_json: CC_SWITCH_CATALOG_FILENAME,
@@ -129,16 +129,19 @@ function codexStackDormantSettings(baseUrl) {
 // state skeleton below stays single-source; only the "derive from global
 // config" and "dormant settings" halves differ per app (claude: env object;
 // codex: TOML whitelist projection).
-const STACK_SETTINGS_DERIVERS = {
+const STACK_SETTINGS_DERIVERS: Record<
+  string,
+  { fromGlobal: () => any; dormant: (baseUrl: any) => any }
+> = {
   claude: {
     fromGlobal: buildStackSettingsFromGlobal,
-    dormant(baseUrl) {
+    dormant(baseUrl: any) {
       return { env: { ANTHROPIC_AUTH_TOKEN: PROXY_MANAGED_TOKEN, ANTHROPIC_BASE_URL: baseUrl } };
     },
   },
   codex: {
     fromGlobal: buildCodexStackSettingsFromGlobal,
-    dormant: (baseUrl) => codexStackDormantSettings(baseUrl),
+    dormant: (baseUrl: any) => codexStackDormantSettings(baseUrl),
   },
 };
 
@@ -157,7 +160,7 @@ const STACK_SETTINGS_DERIVERS = {
 // `takenNames` are the provider names already in the DB for this app; the
 // caller injects them so this module never needs the DB (avoids a cycle).
 // Computed on every call — no cache; the CLI calls it a handful of times per run.
-function virtualStackProviderForCore(appType, takenNames: string[] = []) {
+function virtualStackProviderForCore(appType: any, takenNames: string[] = []) {
   if (!VIRTUAL_STACK_APPS.has(appType)) return null;
   try {
     const deriver = STACK_SETTINGS_DERIVERS[appType];
@@ -201,10 +204,10 @@ function virtualStackProviderForCore(appType, takenNames: string[] = []) {
 // desktop that writes its own row wins). `rows` keeps the caller's projection
 // shape ({id, name} for the list queries; full rows for the single-row ones).
 // is_virtual stays on the row — the drift split and write-back paths key on it.
-function appendVirtualStackRowCore(rows, appType, takenNames: string[] = []) {
+function appendVirtualStackRowCore(rows: any, appType: any, takenNames: string[] = []) {
   const v = virtualStackProviderForCore(appType, takenNames);
   if (!v) return rows;
-  if (rows.some((r) => r.id === VIRTUAL_STACK_PROVIDER_ID)) return rows;
+  if (rows.some((r: any) => r.id === VIRTUAL_STACK_PROVIDER_ID)) return rows;
   return [...rows, v];
 }
 

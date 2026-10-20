@@ -1,7 +1,7 @@
 // ─── launch (split from bin/cc-launch.mjs) ─────────────────────────────
 
 import { join } from "node:path";
-import { APP_ADAPTERS } from "./adapters.js";
+import { APP_ADAPTERS, getAdapter } from "./adapters.js";
 import { loadSettings, queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync, recordInstanceBaseline } from "./drift.js";
 import { guardInstanceConfigBeforeOverwrite } from "./guard.js";
@@ -36,7 +36,7 @@ async function launchProvider(
   syncFlag: string | null = null,
   record: { hotkey?: string } | null = null,
 ) {
-  const adapter = APP_ADAPTERS[cmd];
+  const adapter = getAdapter(cmd);
   if (!adapter) {
     console.error(
       `✗ Unsupported command: ${cmd}. Supported: ${Object.keys(APP_ADAPTERS).join(", ")}`,

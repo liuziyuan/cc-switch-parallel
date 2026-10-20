@@ -27,7 +27,7 @@ import { isAggregationProviderSettings, readStackState } from "../stack/state.js
 // as the statusline wrapper). null when the pick is not attributable (no
 // ccs prefix, stack off, or the key no longer live) — the plain provider
 // name is shown then. Pure given (model, stack); DB lookup inside.
-function stackBillingMemberName(model, stack) {
+function stackBillingMemberName(model: any, stack: any) {
   const key = ccsClaudeKeyFromModel(model);
   if (!key) return null;
   const pid = stack?.keys?.[key];
@@ -39,7 +39,7 @@ function stackBillingMemberName(model, stack) {
   }
 }
 
-function formatDuration(ms) {
+function formatDuration(ms: any) {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -158,7 +158,7 @@ function collectRunningSessions(): RunningSessionRow[] {
       startedAt,
       upMs: startedAt === null ? 0 : Math.max(0, now - startedAt),
       extraArgs: Array.isArray(session.extraArgs)
-        ? session.extraArgs.map((a) => sanitizeText(a))
+        ? session.extraArgs.map((a: any) => sanitizeText(a))
         : [],
       index: 0,
     };
@@ -185,7 +185,8 @@ function renderPsTable(rows: RunningSessionRow[]): void {
     return;
   }
   const home = process.env.HOME;
-  const shorten = (p) => (home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
+  const shorten = (p: any) =>
+    home && p && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
   const display = rows.map((r) => ({
     index: String(r.index),
     cli: r.cli,
@@ -195,7 +196,7 @@ function renderPsTable(rows: RunningSessionRow[]): void {
     up: formatDuration(r.upMs),
     args: r.extraArgs.length ? ` ${r.extraArgs.join(" ")}` : "",
   }));
-  const w = (xs) => Math.max(...xs.map((x) => displayWidth(x)), 1);
+  const w = (xs: any) => Math.max(...xs.map((x: any) => displayWidth(x)), 1);
   const wIndex = w(display.map((r) => r.index));
   const wCli = w(display.map((r) => r.cli));
   const wName = w(display.map((r) => r.name));
