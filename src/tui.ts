@@ -2,7 +2,7 @@
 
 import { join, resolve } from "node:path";
 import { APP_ADAPTERS } from "./adapters.js";
-import { buildRunningSet } from "./commands/ps.js";
+import { buildRunningSet } from "./instances.js";
 import { queryProvidersByApp } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
 import {

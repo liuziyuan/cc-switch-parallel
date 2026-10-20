@@ -3,19 +3,12 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { collectInstances } from "./doctor.js";
+import { buildRunningSet, collectInstances, pruneInstanceBaselines } from "../instances.js";
 import type { InstanceInfo, ProviderRow } from "../types.js";
 import { queryProviderById } from "../db.js";
 import { confirmSync } from "../drift.js";
 import { HOME } from "../paths.js";
-import {
-  readSessions,
-  removeSessionFile,
-  saveSyncState,
-  sessionIsAlive,
-  sessionLiveness,
-  withSyncStateLock,
-} from "../sessions.js";
+import { readSessions, removeSessionFile, sessionLiveness } from "../sessions.js";
 import {
   displayWidth,
   padDisplay,
@@ -60,19 +53,6 @@ function formatDuration(ms) {
 // Live providerIds across all instances — feeds the TUI ● live marker.
 // Same per-iteration-snapshot pattern as snapshotAliveByCli. Read-only: any
 // session alive marks the provider; cleanup is `runPs`'s job.
-function buildRunningSet() {
-  const running = new Set();
-  for (const inst of collectInstances()) {
-    for (const { session } of readSessions(inst.path)) {
-      if (sessionIsAlive(session)) {
-        running.add(inst.name);
-        break;
-      }
-    }
-  }
-  return running;
-}
-
 // tty → tmux session name, one lookup for the whole `ps` run. Empty map when
 // tmux is absent, hangs (bounded at 2s) or errors — caller then falls back to
 // the raw tty. Session names are sanitized by the parser.
@@ -556,27 +536,6 @@ async function runPs(args: string[] = []): Promise<void> {
     process.exit(result.exitCode ?? 1);
   }
   console.log(`✓ ${result.detail}`);
-}
-
-// Drop the drift baselines of removed instance dirs, so stale-instance
-// prompts stop naming providers whose directories are gone (the dir name IS
-// the providerId — see setupInstance). Best-effort: a state-file hiccup must
-// not fail the clean itself.
-function pruneInstanceBaselines(instances) {
-  try {
-    withSyncStateLock((state) => {
-      let changed = false;
-      for (const { name, appType } of instances) {
-        if (state.instances?.[appType]?.[name] !== undefined) {
-          delete state.instances[appType][name];
-          changed = true;
-        }
-      }
-      if (changed) saveSyncState(state);
-    });
-  } catch {
-    // best-effort: unreadable state — the ghost entry stays, harmless.
-  }
 }
 
 export {

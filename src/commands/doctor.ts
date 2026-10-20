@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import type { DoctorCheck, DoctorFixResult, InstanceInfo } from "../types.js";
 import { APP_ADAPTERS } from "../adapters.js";
 import { instanceInstructionsPath } from "./customize.js";
-import { pruneInstanceBaselines } from "./ps.js";
+import { collectInstances, pruneInstanceBaselines } from "../instances.js";
 import {
   loadSettings,
   queryCommonConfig,
@@ -15,7 +15,7 @@ import {
   queryProvidersByApp,
   readSchemaUserVersion,
 } from "../db.js";
-import { ensureSymlink, lstatSyncSafe, readdirSyncSafe } from "../fs-utils.js";
+import { ensureSymlink, lstatSyncSafe } from "../fs-utils.js";
 import { pruneInstanceSettingsBackups } from "../guard.js";
 import { deepEqualJson, isPlainObject, parseJsonObject } from "../json-utils.js";
 import { loadSyncState, readSessions, sessionLiveness } from "../sessions.js";
@@ -47,20 +47,6 @@ function which(bin) {
   } catch {
     return null;
   }
-}
-
-function collectInstances(): InstanceInfo[] {
-  const instances: InstanceInfo[] = [];
-  for (const adapter of Object.values(APP_ADAPTERS)) {
-    const dir = join(INSTANCES_DIR, adapter.appType);
-    if (!existsSync(dir)) continue;
-    for (const name of readdirSyncSafe(dir) || []) {
-      const full = join(dir, name);
-      if (lstatSyncSafe(full)?.isDirectory())
-        instances.push({ name, appType: adapter.appType, path: full });
-    }
-  }
-  return instances;
 }
 
 // Sessions that must block a clean: alive OR unknown (conservative — never
