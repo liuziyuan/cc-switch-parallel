@@ -7,7 +7,7 @@ import { CLI_META } from "./cli-meta.js";
 import {
   buildCodexInstructionsTemplate,
   refreshCodexInstructionsSnapshot,
-} from "./commands/customize.js";
+} from "./codex-instructions.js";
 import { patchCommonConfigClaude, queryProviderById, queryProvidersByApp } from "./db.js";
 import {
   atomicWrite,
