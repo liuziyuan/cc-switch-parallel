@@ -37,17 +37,10 @@ insertRow("z-dup", "claude", "Dup");
 insertRow("solo", "claude", "Solo");
 insertRow("codex-dup", "codex", "Dup");
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  queryProviderById,
-  queryProviderMatches,
-  queryProvidersByApp,
-  resolveProviderRef,
-  formatAmbiguousProvider,
-  parseLaunchArgs,
-  launchRefForRow,
-  launchRefForQuick,
-} = __test;
+const { queryProviderById, queryProviderMatches, queryProvidersByApp } = await import("../src/db.ts");
+const { parseLaunchArgs } = await import("../src/commands/args.ts");
+const { resolveProviderRef, formatAmbiguousProvider } = await import("../src/provider-ref.ts");
+const { launchRefForRow, launchRefForQuick } = await import("../src/tui.ts");
 const { formatAvailableProviders } = await import("../src/provider-ref.ts");
 
 test("queryProviderMatches: returns every same-name row in id order", () => {

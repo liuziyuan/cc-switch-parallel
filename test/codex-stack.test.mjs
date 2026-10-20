@@ -14,31 +14,13 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-codex-stack-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  isCodexAggregationProviderSettings,
-  codexAggregationRoute,
-  providerIsAggregation,
-  aggregationBaseUrlFor,
-  buildCodexStackSettingsFromGlobal,
-  codexStackDormantSettings,
-  protectCodexAggregationIdentity,
-  copyGlobalCodexCatalogIntoInstance,
-  readGlobalCodexCatalogText,
-  isCodexAggModelPath,
-  virtualStackProviderFor,
-  appendVirtualStackRow,
-  queryProviderById,
-  queryProviderMatches,
-  queryProvidersByApp,
-  queryProvidersStrict,
-  readStackState,
-  buildAggregationGroup,
-  mergeCodexRuntimeState,
-  VIRTUAL_STACK_PROVIDER_ID,
-  codexAggregationDoctorChecks,
-  APP_ADAPTERS,
-} = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } = await import("../src/db.ts");
+const { codexAggregationRoute } = await import("../src/stack/aggregation.ts");
+const { protectCodexAggregationIdentity, copyGlobalCodexCatalogIntoInstance, readGlobalCodexCatalogText, mergeCodexRuntimeState } = await import("../src/stack/catalog.ts");
+const { isCodexAggregationProviderSettings, providerIsAggregation, aggregationBaseUrlFor, buildCodexStackSettingsFromGlobal, codexStackDormantSettings, isCodexAggModelPath, virtualStackProviderFor, appendVirtualStackRow, readStackState, buildAggregationGroup } = await import("../src/stack/state.ts");
+const { codexAggregationDoctorChecks } = await import("../src/commands/doctor.ts");
+const { VIRTUAL_STACK_PROVIDER_ID } = await import("../src/paths.ts");
 
 const CC = join(testHome, ".cc-switch");
 const CODEX_DIR = join(testHome, ".codex");

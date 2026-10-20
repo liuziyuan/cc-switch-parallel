@@ -1,33 +1,17 @@
 // ─── main entry (split from bin/cc-launch.mjs) ──────────────────────────
 
-import { APP_ADAPTERS } from "./adapters.js";
-import { buildClaudeEffectiveSettings, claudeInstanceSettingsPath, isClaudeRuntimeStatePath } from "./claude-config.js";
-import { buildCodexInstructionsTemplate, parseCustomizeArgs, printHelp, refreshCodexInstructionsSnapshot, runCustomize, runUncustomize } from "./commands/customize.js";
+import { printHelp, runCustomize, runUncustomize } from "./commands/customize.js";
 import { parseLaunchArgs } from "./commands/args.js";
-import { aggregationDoctorChecks, codexAggregationDoctorChecks, runClean, runDoctor } from "./commands/doctor.js";
-import { runPs, stackBillingMemberName } from "./commands/ps.js";
+import { runClean, runDoctor } from "./commands/doctor.js";
+import { runPs } from "./commands/ps.js";
 import { runList } from "./commands/list.js";
 import { runDryRun } from "./commands/dry-run.js";
 import { isQuickLaunchKey, runQuickLaunch } from "./commands/quick.js";
 import { queryLatestVersion, runUpdate } from "./commands/update.js";
-import { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict, readSchemaUserVersion } from "./db.js";
 import { detectAndPromptSync } from "./drift.js";
-import { formatSettingsChangeLine, guardInstanceConfigBeforeOverwrite } from "./guard.js";
-import { healRecordedArgs, isDeadEntry, snapshotAliveByCli, stripOneShotFlags } from "./history.js";
-import { applyMergePatch, deepEqualJson, diffSettingsLeaves, jsonDeepMerge, jsonNormalize, mergeCommonOverProvider, parseJsonObject } from "./json-utils.js";
 import { launchProvider } from "./launch.js";
-import { formatAmbiguousProvider, resolveProviderRef } from "./provider-ref.js";
-import { VERSION, VIRTUAL_STACK_PROVIDER_ID } from "./paths.js";
-import { buildLaunchExtraEnv } from "./sessions.js";
-import { claudeExclusiveEnv, claudeFloorEnv, claudeFloorTop, detectSharedConfigMode, isLiveSharedSnippet, projectClaudeSharedKeys, projectCodexSharedKeys, readSharedConfig, resetSharedConfigWarnings, sharedConfigHash, sharedSnippetText } from "./shared-config.js";
-import { applyCodexStatusLineInjection, codexAggregationRoute, codexInstanceDirFor, copyGlobalCodexCatalogIntoInstance, isCodexRuntimeStateChange, isCodexRuntimeStatePath, isCodexStatusLineChannelPath, mergeCodexRuntimeState, protectCodexAggregationIdentity, readGlobalCodexCatalogText } from "./stack/catalog.js";
-import { aggregationBaseUrlFor, appendVirtualStackRow, buildAggregationGroup, buildCodexStackSettingsFromGlobal, buildStackSettingsFromGlobal, buildStackUsageConfig, cleanupLegacyStackRows, codexStackDormantSettings, isAggregationProviderSettings, isCodexAggModelPath, isCodexAggregationProviderSettings, isLoopbackBaseUrl, probeTcpReachable, protectAggregationIdentityEnv, providerIsAggregation, readGlobalModelPicker, readStackState, virtualStackProviderFor } from "./stack/state.js";
-import { USAGE_CACHE_FILENAME, buildUsageQueryConfig, extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor } from "./stack/usage.js";
-import { applyStatusLineInjection, buildStackUsageWrapperLines, buildStatusLineWrapperScript, buildUsageWrapperLines, claudeProviderName, isStatusLineChannelPath } from "./statusline.js";
-import { STATUSLINE_COLOR_CHOICES, STATUSLINE_DISPLAY_ITEMS, detectStatuslineRelay, loadStatuslineDisplay, loadStatuslinePreferences, normalizeDisplayPreferences, saveStatuslineColor, saveStatuslineDisplay, statuslineColorFor } from "./statusline-colors.js";
-import { applyTomlPatchText } from "./toml-utils.js";
-import { buildStatuslinePanelLines, launchRefForQuick, launchRefForRow, runTUI } from "./tui.js";
-import { applyClaudeLivePluginPatch, applyClaudeLiveSettingsFieldPatches, applyCodexLiveSettingsFieldPatches, buildNestedAssign, foldRemovalPatch, getPathValue, isSensitiveConfigKey, isSensitiveConfigPath, pathExistsInSnippet, resolvePathSegments, splitChangesByTarget } from "./upward.js";
+import { VERSION } from "./paths.js";
+import { runTUI } from "./tui.js";
 
 // ─── Main entry ────────────────────────────────────────────────────────
 
@@ -187,116 +171,6 @@ async function main() {
 }
 
 
-// Test-only export surface. Frozen so callers can't reach module internals.
-export const __test = Object.freeze({
-  mergeCommonOverProvider,
-  protectAggregationIdentityEnv,
-  jsonDeepMerge,
-  applyMergePatch,
-  jsonNormalize,
-  parseJsonObject,
-  applyTomlPatchText,
-  deepEqualJson,
-  isSensitiveConfigKey,
-  isSensitiveConfigPath,
-  stripOneShotFlags,
-  healRecordedArgs,
-  queryProviderById,
-  queryProviderMatches,
-  queryProvidersByApp,
-  queryProvidersStrict,
-  parseLaunchArgs,
-  resolveProviderRef,
-  formatAmbiguousProvider,
-  launchRefForQuick,
-  launchRefForRow,
-  snapshotAliveByCli,
-  isDeadEntry,
-  splitChangesByTarget,
-  buildNestedAssign,
-  pathExistsInSnippet,
-  getPathValue,
-  foldRemovalPatch,
-  diffSettingsLeaves,
-  guardInstanceConfigBeforeOverwrite,
-  parseCustomizeArgs,
-  buildCodexInstructionsTemplate,
-  refreshCodexInstructionsSnapshot,
-  buildClaudeEffectiveSettings,
-  claudeInstanceSettingsPath,
-  isClaudeRuntimeStatePath,
-  applyStatusLineInjection,
-  buildStatusLineWrapperScript,
-  isStatusLineChannelPath,
-  claudeProviderName,
-  statuslineColorFor,
-  saveStatuslineColor,
-  loadStatuslinePreferences,
-  STATUSLINE_DISPLAY_ITEMS,
-  loadStatuslineDisplay,
-  saveStatuslineDisplay,
-  normalizeDisplayPreferences,
-  detectStatuslineRelay,
-  buildStatuslinePanelLines,
-  buildLaunchExtraEnv,
-  STATUSLINE_COLOR_CHOICES,
-  applyCodexStatusLineInjection,
-  isCodexStatusLineChannelPath,
-  isCodexRuntimeStatePath,
-  isCodexRuntimeStateChange,
-  formatSettingsChangeLine,
-  mergeCodexRuntimeState,
-  codexInstanceDirFor,
-  resolvePathSegments,
-  extractClaudeUsageSource,
-  resolveUsageIdentity,
-  usageEndpointFor,
-  buildUsageQueryConfig,
-  buildUsageWrapperLines,
-  isLoopbackBaseUrl,
-  isAggregationProviderSettings,
-  isCodexAggregationProviderSettings,
-  codexAggregationRoute,
-  providerIsAggregation,
-  aggregationBaseUrlFor,
-  buildCodexStackSettingsFromGlobal,
-  codexStackDormantSettings,
-  protectCodexAggregationIdentity,
-  copyGlobalCodexCatalogIntoInstance,
-  readGlobalCodexCatalogText,
-  isCodexAggModelPath,
-  readStackState,
-  readGlobalModelPicker,
-  buildStackSettingsFromGlobal,
-  virtualStackProviderFor,
-  appendVirtualStackRow,
-  VIRTUAL_STACK_PROVIDER_ID,
-  buildStackUsageConfig,
-  buildStackUsageWrapperLines,
-  buildAggregationGroup,
-  cleanupLegacyStackRows,
-  probeTcpReachable,
-  aggregationDoctorChecks,
-  codexAggregationDoctorChecks,
-  stackBillingMemberName,
-  USAGE_CACHE_FILENAME,
-  APP_ADAPTERS,
-  readSchemaUserVersion,
-  readSharedConfig,
-  detectSharedConfigMode,
-  projectClaudeSharedKeys,
-  projectCodexSharedKeys,
-  sharedConfigHash,
-  sharedSnippetText,
-  isLiveSharedSnippet,
-  claudeFloorTop,
-  claudeFloorEnv,
-  claudeExclusiveEnv,
-  resetSharedConfigWarnings,
-  applyClaudeLiveSettingsFieldPatches,
-  applyClaudeLivePluginPatch,
-  applyCodexLiveSettingsFieldPatches,
-});
 
 export { isVoltaManagedInstall, queryLatestVersion, readInstalledVersion, reportUpdateOutcome, runUpdate } from "./commands/update.js";
 export { main };

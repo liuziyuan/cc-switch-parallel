@@ -12,8 +12,8 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-shared-prepare-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const { APP_ADAPTERS, readSharedConfig, resetSharedConfigWarnings } = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { readSharedConfig, resetSharedConfigWarnings } = await import("../src/shared-config.ts");
 
 const CC = join(testHome, ".cc-switch");
 const DB = join(CC, "cc-switch.db");

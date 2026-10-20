@@ -13,40 +13,17 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-usage-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  buildClaudeEffectiveSettings,
-  buildStatusLineWrapperScript,
-  buildUsageWrapperLines,
-  extractClaudeUsageSource,
-  resolveUsageIdentity,
-  usageEndpointFor,
-  buildUsageQueryConfig,
-  isLoopbackBaseUrl,
-  isAggregationProviderSettings,
-  protectAggregationIdentityEnv,
-  splitChangesByTarget,
-  APP_ADAPTERS,
-  readStackState,
-  readGlobalModelPicker,
-  buildStackSettingsFromGlobal,
-  virtualStackProviderFor,
-  appendVirtualStackRow,
-  VIRTUAL_STACK_PROVIDER_ID,
-  buildStackUsageConfig,
-  queryProviderById,
-  queryProviderMatches,
-  queryProvidersByApp,
-  queryProvidersStrict,
-  snapshotAliveByCli,
-  isDeadEntry,
-  cleanupLegacyStackRows,
-  probeTcpReachable,
-  aggregationDoctorChecks,
-  stackBillingMemberName,
-  buildAggregationGroup,
-  USAGE_CACHE_FILENAME,
-} = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { snapshotAliveByCli, isDeadEntry } = await import("../src/history.ts");
+const { splitChangesByTarget } = await import("../src/upward.ts");
+const { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } = await import("../src/db.ts");
+const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
+const { buildStatusLineWrapperScript, buildUsageWrapperLines } = await import("../src/statusline.ts");
+const { extractClaudeUsageSource, resolveUsageIdentity, usageEndpointFor, buildUsageQueryConfig, USAGE_CACHE_FILENAME } = await import("../src/stack/usage.ts");
+const { isLoopbackBaseUrl, isAggregationProviderSettings, protectAggregationIdentityEnv, readStackState, readGlobalModelPicker, buildStackSettingsFromGlobal, virtualStackProviderFor, appendVirtualStackRow, buildStackUsageConfig, cleanupLegacyStackRows, probeTcpReachable, buildAggregationGroup } = await import("../src/stack/state.ts");
+const { aggregationDoctorChecks } = await import("../src/commands/doctor.ts");
+const { stackBillingMemberName } = await import("../src/commands/ps.ts");
+const { VIRTUAL_STACK_PROVIDER_ID } = await import("../src/paths.ts");
 
 const CC = join(testHome, ".cc-switch");
 const INSTANCES = join(CC, "instances", "claude");

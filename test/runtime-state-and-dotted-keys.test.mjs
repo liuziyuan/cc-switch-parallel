@@ -11,18 +11,8 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-runtime-state-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  resolvePathSegments,
-  getPathValue,
-  pathExistsInSnippet,
-  buildNestedAssign,
-  splitChangesByTarget,
-  isCodexRuntimeStatePath,
-  isCodexRuntimeStateChange,
-  mergeCodexRuntimeState,
-  codexInstanceDirFor,
-} = __test;
+const { resolvePathSegments, getPathValue, pathExistsInSnippet, buildNestedAssign, splitChangesByTarget } = await import("../src/upward.ts");
+const { isCodexRuntimeStatePath, isCodexRuntimeStateChange, mergeCodexRuntimeState, codexInstanceDirFor } = await import("../src/stack/catalog.ts");
 
 // ─── dotted-key path resolution (2026-10-17 provider-row corruption) ────
 // Codex TOML keys like [hooks.state."<abs path>"] contain dots; the dotted

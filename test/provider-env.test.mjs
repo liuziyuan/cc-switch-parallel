@@ -11,12 +11,8 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-provider-env-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  buildLaunchExtraEnv,
-  statuslineColorFor,
-  saveStatuslineColor,
-} = __test;
+const { statuslineColorFor, saveStatuslineColor } = await import("../src/statusline-colors.ts");
+const { buildLaunchExtraEnv } = await import("../src/sessions.ts");
 
 // ─── buildLaunchExtraEnv ────────────────────────────────────────────────
 // Transport for the tmuxclihook status bar: the launched CLI's hooks inherit

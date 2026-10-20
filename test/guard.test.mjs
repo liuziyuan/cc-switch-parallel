@@ -15,12 +15,9 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-guard-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  guardInstanceConfigBeforeOverwrite,
-  deepEqualJson,
-  APP_ADAPTERS,
-} = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { deepEqualJson } = await import("../src/json-utils.ts");
+const { guardInstanceConfigBeforeOverwrite } = await import("../src/guard.ts");
 
 const CC = join(testHome, ".cc-switch");
 const BACKUPS = join(CC, "backups");

@@ -15,20 +15,12 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-statusline-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const {
-  buildClaudeEffectiveSettings,
-  buildStatusLineWrapperScript,
-  isStatusLineChannelPath,
-  claudeProviderName,
-  deepEqualJson,
-  statuslineColorFor,
-  saveStatuslineColor,
-  loadStatuslinePreferences,
-  applyCodexStatusLineInjection,
-  isCodexStatusLineChannelPath,
-  APP_ADAPTERS,
-} = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
+const { deepEqualJson } = await import("../src/json-utils.ts");
+const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
+const { buildStatusLineWrapperScript, isStatusLineChannelPath, claudeProviderName } = await import("../src/statusline.ts");
+const { statuslineColorFor, saveStatuslineColor, loadStatuslinePreferences } = await import("../src/statusline-colors.ts");
+const { applyCodexStatusLineInjection, isCodexStatusLineChannelPath } = await import("../src/stack/catalog.ts");
 
 const CC = join(testHome, ".cc-switch");
 const INSTANCES = join(CC, "instances", "claude");

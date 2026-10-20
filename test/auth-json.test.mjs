@@ -15,8 +15,7 @@ const testHome = mkdtempSync(join(tmpdir(), "cc-launch-auth-"));
 process.env.CC_LAUNCH_SKIP_MAIN = "1";
 process.env.CC_SWITCH_TEST_HOME = testHome;
 
-const { __test } = await import("../bin/cc-launch.mjs");
-const { APP_ADAPTERS } = __test;
+const { APP_ADAPTERS } = await import("../src/adapters.ts");
 const codex = APP_ADAPTERS.codex;
 
 const CC = join(testHome, ".cc-switch");
