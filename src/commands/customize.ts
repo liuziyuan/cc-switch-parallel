@@ -259,6 +259,7 @@ Launch:
   switch --dry-run [--diff] [--show-secrets] <provider> <cmd> [args...]
                                       Preview config, instance dir, command and env
   switch a|s|d|f|g                    Launch a Recent top-5 slot directly
+  switch --sync a|s|d|f|g             Confirm config drift, then launch that Recent slot
 
 Sessions:
   switch ps [--json]                  List running switch-launched sessions
@@ -293,7 +294,8 @@ Examples:
   switch --dry-run --diff "Zhipu GLM en" claude
   switch list --app claude
   switch ps --json
-  switch s                              # Recent slot 2 — same as pressing s in the TUI`;
+  switch s                              # Recent slot 2 — same as pressing s in the TUI
+  switch --sync s                       # Recent slot 2, confirm drift first`;
 }
 
 function printHelp() {

@@ -90,10 +90,11 @@ provider 名在 cc-switch 中不要求唯一：命令模式遇到同名 provider
 
 ```bash
 switch s          # 启动 Recent 第 2 槽，等价于 TUI 里按 s
+switch --sync s   # 启动前交互确认配置漂移，然后启动该槽位
 switch --no-sync d
 ```
 
-只有裸键形式会命中（`switch a claude` 会被当作名为 `a` 的 provider）。Full-auto 槽位启动前需要确认，且要求有可用终端。
+全局 flag 必须写在槽位键之前，`--sync` / `--no-sync` 对槽位与普通 provider 启动的行为一致。只有裸键形式会命中（`switch a claude` 会被当作名为 `a` 的 provider）。Full-auto 槽位启动前需要确认，且要求有可用终端。
 
 #### Dry run
 
@@ -218,7 +219,7 @@ Codex 的凭据文件与 Claude 同构：OAuth（ChatGPT 登录）型实例 syml
   - **插件**（仅 Claude——Codex 没有插件概念）：安装、移除或切换（`/plugin`），写回共享配置的 `enabledPlugins`（live 模式写全局 `~/.claude/settings.json`，旧 schema 写 `common_config_claude`）。多个实例状态冲突时，只有插件状态被真实修改过的实例才有投票权（旧共享配置的陈旧镜像没有）；被修改过的实例之间，以最近的改动为准。
   - **配置字段**：非插件字段（Claude 的 env、permissions、hooks、模型等；Codex 的模型、审批策略、MCP 服务器等）按叶子级 diff 展示（数组按整块比较——元素级合并在 RFC 7396 下没有可靠原语），确认后按智能拆分写回。仲裁与插件通道同语义：与基线一致的镜像实例无票，各字段的胜者是最新修改（mtime）的实例。已知限制：某字段在共享配置中存在、但你只想改单个 provider 时，它仍会写进共享配置、波及所有合并共享配置的 provider——这是「共享配置覆盖 provider」合并语义下唯一不丢改动的选择。例外：含凭据命名的敏感字段（`*_TOKEN` / `*_KEY` / `*SECRET*` 等）不会被写回共享配置——改动保留在实例内，需在桌面端手动更新；从共享配置删除敏感字段则不受限。写回基于存储文本的 compare-and-swap（CAS）：桌面端并发写入永远不会被覆盖——最坏情况是提示你重跑 `switch sync`。
 
-在 **TUI 模式**下，漂移会在 CLI 选择器之前展示，你可以就地确认同步。在**命令模式**下，它是在 stderr 上的非阻塞警告 —— 运行 `switch sync` 来查看并应用，加 `--sync` 可在启动前就地确认，加 `--no-sync` 则完全抑制警告。首次运行会静默记录一份基线，因此已有的插件永远不会被报告为「新增」。
+在 **TUI 模式**下，漂移会在 CLI 选择器之前展示，你可以就地确认同步。在**命令模式**下，它是在 stderr 上的非阻塞警告 —— 运行 `switch sync` 来查看并应用，加 `--sync` 可在启动前就地确认（`switch --sync <slot>` 对 Recent 槽位同样适用），加 `--no-sync` 则完全抑制警告。stale 名单会保留本次正在启动的 provider（它确实还是陈旧状态），并追加一行 `(this launch will refresh "…")` —— 它的配置本来就会在本次启动时重新生成，其余正在运行的实例仍需重启。覆盖守卫会同时对比实例文件的基线（上次生成的内容）和本次将要写入的目标值：已经与目标值一致的会话内改动不再报告为「将被覆盖」，只有真正会被替换掉的编辑才会给出警告、备份和 `switch sync` 建议。首次运行会静默记录一份基线，因此已有的插件永远不会被报告为「新增」。
 
 ## 实例 statusline（provider 标签）
 
