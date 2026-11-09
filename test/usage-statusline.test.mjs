@@ -1568,7 +1568,7 @@ function setupStackDB(members) {
   }
 }
 
-test("aggregation: buildStackUsageConfig resolves members with own creds; unresolvable members drop out", () => {
+test("aggregation: buildStackUsageConfig resolves members with own creds; unresolvable members stay attributed", () => {
   cleanStackInstance();
   setupStackDB([
     [
@@ -1604,14 +1604,100 @@ test("aggregation: buildStackUsageConfig resolves members with own creds; unreso
     join(INSTANCES, STACK_PROVIDER_ID),
     stackInstanceFile("statusline-wrapper.mjs"),
   );
-  assert.deepEqual(Object.keys(cfg.map).sort(), ["deepseek", "zhipu"]); // nezha unresolvable → absent
+  assert.deepEqual(Object.keys(cfg.map).sort(), ["deepseek", "zhipu"]); // nezha has no usage cfg
   assert.equal(cfg.map.zhipu.url, "https://api.z.ai/api/monitor/usage/quota/limit");
   assert.equal(cfg.map.zhipu.token, "zai-tok");
   assert.equal(cfg.map.deepseek.url, "https://api.deepseek.com/user/balance");
   assert.equal(cfg.map.deepseek.token, "ds-tok");
   assert.equal(cfg.map.zhipu.cachePath.endsWith("usage-stack-zhipu.json"), true); // per-key cache buckets
   assert.equal(cfg.defaultKey, "zhipu"); // proxy_route member
-  assert.deepEqual(cfg.names, { zhipu: "Z.AI GLM", deepseek: "DeepSeek" });
+  // attribution follows member identity: an unresolvable member stays in
+  // names (placeholder at render time) but never enters the usage map.
+  assert.deepEqual(cfg.names, {
+    zhipu: "Z.AI GLM",
+    deepseek: "DeepSeek",
+    nezha: "Example Provider",
+  });
+  assert.equal(cfg.map.nezha, undefined);
+  removeLiveState();
+});
+
+test("aggregation: defaultKey stays set when the default member has no usage config", () => {
+  cleanStackInstance();
+  setupStackDB([
+    [
+      "m-zai",
+      "Z.AI GLM",
+      { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "zai-tok" },
+      ZHIPU_META,
+    ],
+    [
+      "m-ds",
+      "DeepSeek",
+      { ANTHROPIC_BASE_URL: "https://agent-gateway.example.com/x", ANTHROPIC_AUTH_TOKEN: "ds" },
+      {},
+    ],
+  ]);
+  writeLiveState(
+    { enabled: true, members: ["m-zai", "m-ds"], keys: { zhipu: "m-zai", deepseek: "m-ds" } },
+    "m-ds", // default member is the one without a usage config
+  );
+  const stack = readStackState("claude");
+  const cfg = buildStackUsageConfig(
+    stack,
+    join(INSTANCES, STACK_PROVIDER_ID),
+    stackInstanceFile("statusline-wrapper.mjs"),
+  );
+  assert.equal(cfg.defaultKey, "deepseek"); // attribution ≠ usage availability
+  assert.equal(cfg.map.deepseek, undefined);
+  assert.equal(cfg.names.deepseek, "DeepSeek");
+  assert.ok(cfg.map.zhipu);
+  removeLiveState();
+});
+
+test("aggregation: a member whose DB row is missing keeps a key-named placeholder entry", () => {
+  cleanStackInstance();
+  setupStackDB([
+    [
+      "m-zai",
+      "Z.AI GLM",
+      { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "zai-tok" },
+      ZHIPU_META,
+    ],
+  ]);
+  writeLiveState(
+    { enabled: true, members: ["m-zai", "m-gone"], keys: { zhipu: "m-zai", deepseek: "m-gone" } },
+    "m-zai",
+  );
+  const stack = readStackState("claude");
+  const cfg = buildStackUsageConfig(
+    stack,
+    join(INSTANCES, STACK_PROVIDER_ID),
+    stackInstanceFile("statusline-wrapper.mjs"),
+  );
+  assert.ok(cfg); // names non-empty → stack-aware wrapper, not null
+  assert.equal(cfg.names.deepseek, "deepseek"); // row missing → key fallback
+  assert.equal(cfg.map.deepseek, undefined);
+  removeLiveState();
+});
+
+test("aggregation: a wholesale DB read failure degrades to placeholders, not null", () => {
+  cleanStackInstance();
+  rmSync(join(CC, "cc-switch.db"), { force: true }); // no providers table → query throws
+  writeLiveState(
+    { enabled: true, members: ["m-zai", "m-ds"], keys: { zhipu: "m-zai", deepseek: "m-ds" } },
+    "m-ds",
+  );
+  const stack = readStackState("claude");
+  const cfg = buildStackUsageConfig(
+    stack,
+    join(INSTANCES, STACK_PROVIDER_ID),
+    stackInstanceFile("statusline-wrapper.mjs"),
+  );
+  assert.ok(cfg);
+  assert.deepEqual(cfg.map, {});
+  assert.deepEqual(cfg.names, { zhipu: "zhipu", deepseek: "deepseek" });
+  assert.equal(cfg.defaultKey, "deepseek");
   removeLiveState();
 });
 
@@ -2236,7 +2322,10 @@ const DEEPSEEK_BALANCE_BODY = {
   balance_infos: [{ total_balance: "12.34", currency: "USD" }],
 };
 
-async function withStackWrapper(t, { modelId, displayName, proxyRoute, liveMembers, onRequest }) {
+async function withStackWrapper(
+  t,
+  { modelId, displayName, proxyRoute, liveMembers, onRequest, members },
+) {
   cleanStackInstance();
   const { server, port } = await startFixtureServer((req, res) => {
     onRequest?.(req);
@@ -2246,23 +2335,29 @@ async function withStackWrapper(t, { modelId, displayName, proxyRoute, liveMembe
     else res.end("{}");
   });
   t.after(() => closeServer(server));
-  setupStackDB([
-    [
-      "m-zai",
-      "Z.AI GLM",
-      {
-        ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/api/anthropic`,
-        ANTHROPIC_AUTH_TOKEN: "zai-tok",
-      },
-      ZHIPU_META,
+  const memberRows = typeof members === "function" ? members(port) : members;
+  setupStackDB(
+    memberRows || [
+      [
+        "m-zai",
+        "Z.AI GLM",
+        {
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/api/anthropic`,
+          ANTHROPIC_AUTH_TOKEN: "zai-tok",
+        },
+        ZHIPU_META,
+      ],
+      [
+        "m-ds",
+        "DeepSeek",
+        {
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/anthropic`,
+          ANTHROPIC_AUTH_TOKEN: "ds-tok",
+        },
+        DEEPSEEK_META,
+      ],
     ],
-    [
-      "m-ds",
-      "DeepSeek",
-      { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/anthropic`, ANTHROPIC_AUTH_TOKEN: "ds-tok" },
-      DEEPSEEK_META,
-    ],
-  ]);
+  );
   writeLiveState(
     {
       enabled: true,
@@ -2363,6 +2458,81 @@ test("aggregation e2e: unregistered ccs key falls to the side-by-side form (all 
   // each cell carries its member key — the stable ccs id segment
   assert.ok(first.includes("zhipu 5h"), first);
   assert.ok(first.includes("deepseek [$12.34]"), first);
+});
+
+// A member can be a known live member yet have no queryable usage config
+// (unsupported origin, disabled usage script, missing row). Attribution must
+// still land on THAT member and render its placeholder — showing another
+// member's quota is the bug this guards against.
+function unresolvableDeepseekMembers(port) {
+  return [
+    [
+      "m-zai",
+      "Z.AI GLM",
+      {
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/api/anthropic`,
+        ANTHROPIC_AUTH_TOKEN: "zai-tok",
+      },
+      ZHIPU_META,
+    ],
+    [
+      "m-ds",
+      "DeepSeek",
+      { ANTHROPIC_BASE_URL: "https://agent-gateway.example.com/x", ANTHROPIC_AUTH_TOKEN: "ds" },
+      {},
+    ],
+  ];
+}
+
+test("aggregation e2e: known member without usage config renders a placeholder, never another member's quota", async (t) => {
+  const requests = [];
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-deepseek--deepseek-flash[1m]",
+    proxyRoute: "m-zai",
+    onRequest: (req) => requests.push(req.url),
+    members: unresolvableDeepseekMembers,
+  });
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsiPublic(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("[DeepSeek]"), first); // tag follows the member, not [Stack]
+  assert.ok(first.includes("deepseek —"), first); // our placeholder
+  assert.ok(!first.includes("5h"), first);
+  assert.ok(!first.includes("40%"), first);
+  assert.ok(!first.includes("52%"), first);
+  assert.ok(!first.includes("[$12.34]"), first);
+  assert.deepEqual(requests, []); // placeholder path never fetches
+  assert.equal(existsSync(stackInstanceFile("usage-stack-deepseek.json")), false);
+  assert.equal(existsSync(stackInstanceFile("usage-stack-zhipu.json")), false);
+});
+
+test("aggregation e2e: known member without usage config in the self-drawn layout", async (t) => {
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-deepseek--deepseek-flash[1m]",
+    proxyRoute: "m-zai",
+    members: unresolvableDeepseekMembers,
+  });
+  writeGlobalSettings(undefined); // no relay → wrapper draws both lines itself
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const [first, second] = r.stdout.split("\n");
+  assert.ok(stripAnsiPublic(first).includes("[DeepSeek]"), first);
+  assert.ok(stripAnsiPublic(second).includes("deepseek —"), second);
+  assert.ok(!stripAnsiPublic(second).includes("5h"), second);
+});
+
+test("aggregation e2e: prefix-less model with an unusable default member shows the placeholder", async (t) => {
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "glm-5.3-flash", // no ccs prefix → defaultKey (m-ds, no usage config)
+    proxyRoute: "m-ds",
+    members: unresolvableDeepseekMembers,
+  });
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const first = stripAnsiPublic(r.stdout.split("\n")[0]);
+  assert.ok(first.includes("[DeepSeek]"), first);
+  assert.ok(first.includes("deepseek —"), first);
+  assert.ok(!first.includes("5h"), first); // not the zhipu member's quota
 });
 
 test("aggregation e2e: prefix-less model id routes to the default member", async (t) => {

@@ -123,31 +123,45 @@ function appendVirtualStackRow(rows: any, appType: any) {
   return appendVirtualStackRowCore(rows, appType, takenProviderNames(appType));
 }
 
-// Per-member usage config map for an aggregation instance. Each member is
-// resolved with its OWN settings_config + meta (never the aggregation row's
-// proxy placeholder token) — the same resolveUsageIdentity the member would
-// get as a direct provider. Members without a resolvable identity are simply
-// absent from the map (no usage cell for them, never an error).
+// Per-member usage config map for an aggregation instance. A member's KEY in
+// stack.keys is its identity: the ccs model id decodes to that key and the tag
+// follows it even when no usage identity is resolvable. Members without a
+// resolvable identity stay in `names` (rendered as a placeholder) but are
+// absent from `map` (no usage cell, never an error).
 function buildStackUsageConfig(stack: any, instanceDir: any, wrapperPath: any) {
+  const keys = Object.entries(stack.keys) as [string, string][];
   const map: Record<string, any> = {};
   const names: Record<string, any> = {};
-  for (const [key, providerId] of Object.entries(stack.keys) as [string, string][]) {
-    let row: ProviderRow | null = null;
-    try {
-      row = queryProviderById(providerId, "claude");
-    } catch {
-      row = null;
-    }
-    if (!row) continue;
+  if (!keys.length) return null;
+  // One read for all members. The old per-member loop queried them one by one,
+  // so a transient write lock could drop the FIRST member while later ones
+  // succeeded — the exact "known member silently loses its usage" failure.
+  // all-or-nothing keeps attribution and usage config consistent.
+  const ids = [...new Set(keys.map(([, providerId]) => providerId))];
+  const rows = new Map<string, ProviderRow>();
+  try {
+    const quoted = ids.map((id) => sqlQuote(id)).join(", ");
+    const list = queryDB(
+      `SELECT id, name, settings_config, meta FROM providers ` +
+        `WHERE app_type = ${sqlQuote("claude")} AND id IN (${quoted})`,
+    ) as ProviderRow[];
+    for (const row of list) rows.set(row.id, row);
+  } catch {
+    // A failed read degrades every member to a placeholder — never to another
+    // member's quota.
+  }
+  for (const [key, providerId] of keys) {
+    const row = rows.get(providerId) ?? null;
+    names[key] = row?.name || key;
     let sc: any = null;
     let meta: any = null;
     try {
-      sc = JSON.parse(row.settings_config);
+      sc = row ? JSON.parse(row.settings_config) : null;
     } catch {
       sc = null;
     }
     try {
-      meta = JSON.parse(row.meta);
+      meta = row ? JSON.parse(row.meta) : null;
     } catch {
       meta = null;
     }
@@ -158,13 +172,12 @@ function buildStackUsageConfig(stack: any, instanceDir: any, wrapperPath: any) {
     );
     if (!cfg) continue;
     map[key] = cfg;
-    names[key] = row.name;
   }
-  if (!Object.keys(map).length) return null;
   let defaultKey: string | null = null;
   if (stack.proxyRoute) {
+    // Attribution is by member identity, not by usage availability: the
+    // default member may legitimately have no usage config (placeholder).
     defaultKey = Object.keys(stack.keys).find((k) => stack.keys[k] === stack.proxyRoute) || null;
-    if (defaultKey && !map[defaultKey]) defaultKey = null;
   }
   return { defaultKey, names, map, selfPath: wrapperPath };
 }
