@@ -14,14 +14,21 @@ import type { ProviderRow } from "./types.js";
 const DB_BUSY_TIMEOUT_MS = 3000;
 const DB_PROC_TIMEOUT_MS = 5000;
 
+// Reads hit the same locks as writes: the desktop app keeps writing while we
+// launch. `.timeout` is sqlite3's busy handler; `timeout` below only bounds
+// the PROCESS, so without it a read fails instantly instead of waiting.
 function queryDB(sql: string): any[] {
   try {
-    const json = execFileSync("sqlite3", ["-json", DB_PATH, sql], {
-      encoding: "utf8",
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: DB_PROC_TIMEOUT_MS,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const json = execFileSync(
+      "sqlite3",
+      ["-json", DB_PATH, `.timeout ${DB_BUSY_TIMEOUT_MS}`, sql],
+      {
+        encoding: "utf8",
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: DB_PROC_TIMEOUT_MS,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     return JSON.parse(json || "[]");
   } catch (e: any) {
     if (e.status === 1 && (!e.stdout || !e.stderr)) return [];

@@ -564,13 +564,15 @@ function buildUsageWrapperLines(usageConfig: any) {
 // single inlined USAGE. At render time the ccs key is decoded from the
 // statusline model id ("ccs-claude-<key>--<model>[1m]" — key never contains
 // "--", so the FIRST separator splits it; the id is lowercase but keys are
-// lowercase by construction anyway). Routing: decoded key in map → that
-// member; no ccs prefix → the default provider's key (upstream routes
-// prefix-less requests there); decoded-but-unregistered or empty map → the
-// side-by-side fallback: render every member's last-known cell and refresh
-// them in the background. Cache/SWR semantics per member mirror the
-// single-provider tail (fresh hit = zero network, stale = last-known +
-// detached refresh, no cache = one sync fetch), each in its own cache file.
+// lowercase by construction anyway). Attribution is by member IDENTITY
+// (STACK.names, which lists every live member), not by usage availability:
+// decoded member with a config → its usage cell; known member WITHOUT a
+// config → a dim placeholder for that member (never another member's quota);
+// key completely unknown, or no ccs prefix and no default member → the
+// side-by-side fallback, rendering every configured member's last-known cell.
+// Cache/SWR semantics per member mirror the single-provider tail (fresh hit =
+// zero network, stale = last-known + detached refresh, no cache = one sync
+// fetch), each in its own cache file.
 function buildStackUsageWrapperLines(stackConfig: any) {
   return [
     `// ─── Aggregation usage segment (cc-switch Stack) ────────────────────`,
@@ -670,6 +672,10 @@ function buildStackUsageWrapperLines(stackConfig: any) {
     `    const bal = Number.isNaN(n) ? "\\x1b[97m" : n < 10 ? "\\x1b[91m" : n < 20 ? "\\x1b[93m" : "\\x1b[97m";`,
     `    return dim + "[" + off + bal + amount + off + dim + "]" + off;`,
     `  }`,
+    `  if (data.kind === "unavailable") {`,
+    `    // Attribution succeeded but this member has no queryable usage config.`,
+    `    return dim + (data.label || "member") + " —" + off;`,
+    `  }`,
     `  return "";`,
     `}`,
     ``,
@@ -699,14 +705,16 @@ function buildStackUsageWrapperLines(stackConfig: any) {
     `let modelId = "";`,
     `try { const m = JSON.parse(input)?.model; modelId = String((m && (m.id || m.display_name)) || ""); } catch {}`,
     `const ccsMatch = modelId.match(/${CCS_CLAUDE_MODEL_ID_SOURCE}/i);`,
+    `const isMember = (k) => !!(STACK.names && Object.prototype.hasOwnProperty.call(STACK.names, k));`,
     `let activeKey = null;`,
     `if (ccsMatch) {`,
     `  const k = ccsMatch[1].toLowerCase();`,
-    `  if (STACK.map[k]) activeKey = k;`,
-    `} else if (STACK.defaultKey && STACK.map[STACK.defaultKey]) {`,
+    `  if (isMember(k)) activeKey = k;`,
+    `} else if (STACK.defaultKey && isMember(STACK.defaultKey)) {`,
     `  activeKey = STACK.defaultKey;`,
     `}`,
-    `// Tag follows the billable member, not the launch provider.`,
+    `// Tag follows the billable member, not the launch provider — including a`,
+    `// member that has no usage config (it renders a placeholder below).`,
     `if (activeKey && STACK.names[activeKey]) tag = makeTag(STACK.names[activeKey]);`,
     ``,
     `if (process.env.CC_LAUNCH_USAGE_REFRESH === "1") {`,
@@ -739,6 +747,10 @@ function buildStackUsageWrapperLines(stackConfig: any) {
     `  const stackKeys = Object.keys(STACK.map);`,
     `  if (activeKey) {`,
     `    const cfg = STACK.map[activeKey];`,
+    `    // Known member without a usage config: show OUR placeholder — never`,
+    `    // another member's quota — and never read a cache, fetch or spawn.`,
+    `    if (!cfg) usageData = { key: activeKey, data: { kind: "unavailable", label: activeKey } };`,
+    `    else {`,
     `    const cache = cfgReadCache(cfg);`,
     `    const fresh = cache && cache.data && now - cache.ts < cfg.ttlMs;`,
     `    const backedOff = !!(cache && cache.errTs && now - cache.errTs < cfg.errorBackoffMs);`,
@@ -762,6 +774,7 @@ function buildStackUsageWrapperLines(stackConfig: any) {
     `        usageData = { key: activeKey, data: fetched };`,
     `        cfgWriteCache(cfg, { ts: now, refreshTs: now, errTs: 0, data: fetched });`,
     `      } else cfgWriteCache(cfg, { refreshTs: now, errTs: now });`,
+    `    }`,
     `    }`,
     `  } else if (stackKeys.length) {`,
     `    // Side-by-side fallback (model not attributable to any member): render`,
