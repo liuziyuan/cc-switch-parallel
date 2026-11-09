@@ -2,6 +2,14 @@
 
 cc-switch-parallel — 为 Claude Code / Codex 提供按 provider 隔离的配置启动(详见 README_ZH.md)。
 
+## 发布流程(强制,不可遗漏)
+
+**任何要合并到 main 的 PR,都必须同时升级版本号。** 发布工作流在 main 收到 push 时触发,但 `package.json` 版本与 npm 上已发布版本相同时会直接跳过——不升版本,代码合并了也不会发布,用户 `switch update` 也拿不到。
+
+- 用 `npm version patch --no-git-tag-version` 升 patch 版本(不要打 tag),与代码改动放在**同一个 PR**里。
+- 合并后确认 Actions 的 `publish` 工作流确实发布了新版本,再让用户 `switch update` 验证。
+- 这是历史约定(例:PR #62 合并时 `0.26.1 → 0.26.2`),所有 PR 一律适用。
+
 ## 待办:Codex 支持自定义 statusline 后,移除 tmux 状态栏 provider 标签方案
 
 Codex TUI 内目前无法显示 provider 标签:原生 `[tui] status_line` 仅支持内置字段选择,无外部命令渲染(上游 openai/codex#17827,截至 v0.163 未实现)。当前过渡方案是 launch 时注入 `CC_SWITCH_PROVIDER` / `CC_SWITCH_PROVIDER_ID` 环境变量,由 tmux-claude-hooks-status(≥ v0.4.0)的 codex hooks 捕获后在 tmux 状态栏渲染 provider 段——该能力本质是 switch 的需求,tmuxclihook 只是承载方。
