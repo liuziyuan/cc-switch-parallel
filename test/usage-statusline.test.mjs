@@ -1,11 +1,13 @@
 import process from "node:process";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, chmodSync } from "node:fs";
+import { tmpdir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import net from "node:net";
 
 // Fixture home MUST be set before the dynamic import: HOME-derived constants
 // (CC_SWITCH_DIR, INSTANCES_DIR) are evaluated at module load.
@@ -19,7 +21,7 @@ const { splitChangesByTarget } = await import("../src/upward.ts");
 const { queryProviderById, queryProviderMatches, queryProvidersByApp, queryProvidersStrict } =
   await import("../src/db.ts");
 const { buildClaudeEffectiveSettings } = await import("../src/claude-config.ts");
-const { buildStatusLineWrapperScript, buildUsageWrapperLines } = await import(
+const { buildStatusLineWrapperScript, buildUsageWrapperLines, buildUsageProxyLines } = await import(
   "../src/statusline.ts"
 );
 const {
@@ -2626,3 +2628,365 @@ test("aggregation refresh: REFRESH_KEYS narrows the refresh to listed members", 
 function stripAnsiPublic(s) {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
+
+// ─── system-proxy fallback (shared buildUsageProxyLines) ──────────────
+
+// Deterministic "direct fails, proxy is the only way out" target: `localhost.`
+// (trailing dot) resolves to 127.0.0.1 but is NOT matched by the wrapper's
+// loopback guard (exact match), so the fallback stays armed while the direct
+// connection gets a millisecond ECONNREFUSED against this dead port.
+async function deadPort() {
+  const s = createServer();
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const port = s.address().port;
+  s.close();
+  return port;
+}
+
+// Cheat CONNECT proxy: answers 200, then writes a canned HTTP response into
+// the tunnel regardless of what the client sends. Deliberately not a real
+// pipe — the unit under test is the wrapper's fallback transport, not proxy
+// semantics. Serves the plain-HTTP tunnel cases; the TLS tunnel gets its own
+// real-pipe proxy below.
+function startCheatProxy(t, { body, status = 200 } = {}) {
+  const connectLog = [];
+  const server = createServer((req, res) => res.end());
+  server.on("connect", (req, clientSocket) => {
+    connectLog.push(req.url);
+    clientSocket.on("error", () => {});
+    clientSocket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+    setTimeout(() => {
+      try {
+        const payload = JSON.stringify(body ?? ZHIPU_QUOTA_BODY);
+        clientSocket.end(
+          `HTTP/1.1 ${status} OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\nConnection: close\r\n\r\n${payload}`,
+        );
+      } catch {}
+    }, 20);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      t.after(() => closeServer(server));
+      resolve({ port: server.address().port, connectLog });
+    });
+  });
+}
+
+// Whatever proxy vars the developer shell carries must not leak into the
+// child; these empty strings read as "unset" to the wrapper's probe.
+const NO_PROXY_ENV = {
+  HTTP_PROXY: "", http_proxy: "", HTTPS_PROXY: "", https_proxy: "",
+  ALL_PROXY: "", all_proxy: "",
+};
+
+function manualUsageConfig(url, kind = "zhipu", token = "tok-123", cachePath = instanceFile()) {
+  return {
+    kind,
+    url,
+    token,
+    authStyle: "bearer",
+    ttlMs: 300000,
+    cachePath,
+    selfPath: instanceFile("statusline-wrapper.mjs"),
+    syncTimeoutMs: 1500,
+    refreshTimeoutMs: 8000,
+    errorBackoffMs: 60000,
+    refreshDedupMs: 15000,
+  };
+}
+
+// A detached refresh spawned by one case may land AFTER that case's
+// beforeEach wiped the shared instance dir — every network case below gives
+// the wrapper its own cache path so those stragglers can't poison it.
+function uniqueCacheFile() {
+  return join(INSTANCES, PROVIDER_ID, "cache-" + Math.random().toString(36).slice(2) + ".json");
+}
+
+function writeWrapperWithUsage(usageConfig, stackConfig = null) {
+  mkdirSync(join(INSTANCES, PROVIDER_ID), { recursive: true });
+  const wrapperPath = instanceFile("statusline-wrapper.mjs");
+  writeFileSync(
+    wrapperPath,
+    buildStatusLineWrapperScript("GLM", GLOBAL_SETTINGS, null, "auto", usageConfig, stackConfig),
+  );
+  return wrapperPath;
+}
+
+// `scutil --proxy` stub on PATH: lets darwin tests decide what the system
+// proxy looks like (and lets the darwin-independent cases keep the real one
+// out of the picture entirely).
+function writeFakeScutil(body) {
+  const dir = join(testHome, "fake-bin-" + Math.random().toString(36).slice(2));
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, "scutil");
+  writeFileSync(p, "#!/bin/sh\n" + body);
+  chmodSync(p, 0o700);
+  return dir;
+}
+
+test("proxy runtime: both usage tails inline the shared block exactly once; no-usage wrapper has none", () => {
+  const block = buildUsageProxyLines().join("\n");
+  const usageCfg = manualUsageConfig("https://api.z.ai/api/monitor/usage/quota/limit");
+  const withUsage = buildStatusLineWrapperScript("GLM", GLOBAL_SETTINGS, null, "auto", usageCfg);
+  const stackCfg = {
+    map: { zhipu: { ...usageCfg, cachePath: "/tmp/z.json" } },
+    names: { zhipu: "Z" },
+    defaultKey: null,
+    selfPath: "/tmp/s.mjs",
+  };
+  const withStack = buildStatusLineWrapperScript("Stack", GLOBAL_SETTINGS, null, "auto", null, stackCfg);
+  const plain = buildStatusLineWrapperScript("P", GLOBAL_SETTINGS, null, "auto", null, null);
+  for (const [name, src] of [["single", withUsage], ["stack", withStack]]) {
+    assert.ok(src.includes(block), `${name} wrapper carries the shared block`);
+    assert.equal(src.indexOf(block), src.lastIndexOf(block), `${name} wrapper carries it exactly once`);
+  }
+  assert.ok(!plain.includes("usageProxyFetch"), "no-usage wrapper stays proxy-free");
+});
+
+test("proxy fallback: direct network failure tunnels through the proxy and succeeds", async (t) => {
+  const dp = await deadPort();
+  const proxy = await startCheatProxy(t);
+  const cacheFile = uniqueCacheFile();
+  const wrapperPath = writeWrapperWithUsage(
+    manualUsageConfig(`http://localhost.:${dp}/api/monitor/usage/quota/limit`, "zhipu", "tok-123", cacheFile),
+  );
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    HTTP_PROXY: `http://127.0.0.1:${proxy.port}`,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const out = stripAnsiPublic(r.stdout);
+  assert.ok(out.includes("5h ██░░░░ 40%"), out);
+  assert.ok(out.includes("W ███░░░ 52%"), out);
+  const cache = JSON.parse(readFileSync(cacheFile, "utf8"));
+  assert.ok(cache.ts > 0 && cache.errTs === 0, JSON.stringify(cache));
+  assert.deepEqual(cache.data, { kind: "zhipu", fiveH: 40, weekly: 52 });
+  assert.equal(proxy.connectLog.length, 1, proxy.connectLog.join(","));
+});
+
+test("proxy fallback: dead proxy fails silently into the normal error backoff", async (t) => {
+  const dp = await deadPort();
+  const cacheFile = uniqueCacheFile();
+  const wrapperPath = writeWrapperWithUsage(
+    manualUsageConfig(`http://localhost.:${dp}/api/monitor/usage/quota/limit`, "zhipu", "tok-123", cacheFile),
+  );
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    HTTP_PROXY: "http://127.0.0.1:1",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const out = stripAnsiPublic(r.stdout);
+  assert.ok(!out.includes("5h"), out);
+  const cache = JSON.parse(readFileSync(cacheFile, "utf8"));
+  assert.ok(cache.errTs > 0 && cache.data === null, JSON.stringify(cache));
+});
+
+test("proxy fallback: business failure never wakes the proxy", async (t) => {
+  const lanIp = Object.values(networkInterfaces())
+    .flat()
+    .find((i) => i && !i.internal && i.family === "IPv4")?.address;
+  if (!lanIp) return t.skip("no non-loopback IPv4 interface");
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push(req.url);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ code: 401, success: false, msg: "token rejected" }));
+  });
+  await new Promise((r) => server.listen(0, lanIp, r));
+  t.after(() => closeServer(server));
+  // Observation port: IF the wrapper wrongly treated the business error as a
+  // network failure, the fallback would CONNECT here and the log would move.
+  const proxy = await startCheatProxy(t);
+  const fakeBin = writeFakeScutil("exit 0\n");
+  const cacheFile = uniqueCacheFile();
+  const wrapperPath = writeWrapperWithUsage(
+    manualUsageConfig(`http://${lanIp}:${server.address().port}/api/monitor/usage/quota/limit`, "zhipu", "tok-123", cacheFile),
+  );
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    HTTP_PROXY: `http://127.0.0.1:${proxy.port}`,
+    PATH: fakeBin + ":" + process.env.PATH,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(seen.length, 1, "direct fetch reached the fixture");
+  assert.equal(proxy.connectLog.length, 0, proxy.connectLog.join(","));
+  const cache = JSON.parse(readFileSync(cacheFile, "utf8"));
+  assert.ok(cache.errTs > 0 && cache.data === null, JSON.stringify(cache));
+});
+
+test("proxy fallback (darwin): scutil system proxy is honored", { skip: process.platform !== "darwin" }, async (t) => {
+  const dp = await deadPort();
+  const proxy = await startCheatProxy(t);
+  const fakeBin = writeFakeScutil(
+    `printf '<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : ${proxy.port}\n  HTTPProxy : 127.0.0.1\n  HTTPSEnable : 0\n}\n'\nexit 0\n`,
+  );
+  const cacheFile = uniqueCacheFile();
+  const wrapperPath = writeWrapperWithUsage(
+    manualUsageConfig(`http://localhost.:${dp}/api/monitor/usage/quota/limit`, "zhipu", "tok-123", cacheFile),
+  );
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    PATH: fakeBin + ":" + process.env.PATH,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const out = stripAnsiPublic(r.stdout);
+  assert.ok(out.includes("5h ██░░░░ 40%"), out);
+  assert.equal(proxy.connectLog.length, 1, proxy.connectLog.join(","));
+});
+
+test("proxy fallback (darwin): SOCKS-only system proxy is skipped", { skip: process.platform !== "darwin" }, async (t) => {
+  const dp = await deadPort();
+  const fakeBin = writeFakeScutil(
+    `printf '<dictionary> {\n  SOCKSEnable : 1\n  SOCKSPort : 9050\n  SOCKSProxy : 127.0.0.1\n}\n'\nexit 0\n`,
+  );
+  const cacheFile = uniqueCacheFile();
+  const wrapperPath = writeWrapperWithUsage(
+    manualUsageConfig(`http://localhost.:${dp}/api/monitor/usage/quota/limit`, "zhipu", "tok-123", cacheFile),
+  );
+  const r = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    PATH: fakeBin + ":" + process.env.PATH,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const cache = JSON.parse(readFileSync(cacheFile, "utf8"));
+  assert.ok(cache.errTs > 0 && cache.data === null, JSON.stringify(cache));
+});
+
+test("stale marker: cache older than 30 minutes renders a dim ?; younger does not", async (t) => {
+  const dp = await deadPort();
+  const cacheFile = uniqueCacheFile();
+  const wrapperPath = writeWrapperWithUsage(
+    manualUsageConfig(`http://localhost.:${dp}/api/monitor/usage/quota/limit`, "zhipu", "tok-123", cacheFile),
+  );
+  const mkCache = (ageMin) =>
+    writeFileSync(
+      cacheFile,
+      JSON.stringify({
+        v: 1,
+        ts: Date.now() - ageMin * 60000,
+        refreshTs: 0,
+        errTs: 0,
+        data: { kind: "zhipu", fiveH: 40, weekly: 52 },
+      }),
+    );
+  mkCache(31);
+  const stale = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    HTTP_PROXY: "http://127.0.0.1:1",
+  });
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.ok(stale.stdout.includes("\x1b[2m?\x1b[0m"), JSON.stringify(stale.stdout));
+  assert.ok(stripAnsiPublic(stale.stdout).includes("52% ?"), stripAnsiPublic(stale.stdout));
+
+  mkCache(29);
+  const fresh = await runWrapper(wrapperPath, STATUSLINE_INPUT, {
+    ...NO_PROXY_ENV,
+    HTTP_PROXY: "http://127.0.0.1:1",
+  });
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.ok(!fresh.stdout.includes("\x1b[2m?\x1b[0m"), JSON.stringify(fresh.stdout));
+  assert.ok(fresh.stdout.includes("52%"), stripAnsiPublic(fresh.stdout));
+});
+
+// TLS-tunnel case: a REAL pipe proxy into an https fixture (self-signed, CA
+// injected via NODE_EXTRA_CA_CERTS), so the wrapper's tls.connect branch —
+// SNI, certificate validation through the tunnel — runs against actual TLS.
+test("aggregation: proxy fallback refreshes a member through a real TLS tunnel", async (t) => {
+  const certDir = mkdtempSync(join(tmpdir(), "usage-proxy-cert-"));
+  const keyFile = join(certDir, "key.pem");
+  const crtFile = join(certDir, "crt.pem");
+  const gen = spawnSync("openssl", [
+    "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "2", "-nodes",
+    "-keyout", keyFile, "-out", crtFile, "-subj", "/CN=localhost",
+    "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+  ], { encoding: "utf8" });
+  if (gen.status !== 0 || !existsSync(crtFile)) return t.skip("openssl unavailable");
+
+  const dp = await deadPort();
+  const httpsServer = createHttpsServer(
+    { key: readFileSync(keyFile), cert: readFileSync(crtFile) },
+    (req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(ZHIPU_QUOTA_BODY));
+    },
+  );
+  await new Promise((r) => httpsServer.listen(0, "127.0.0.1", r));
+  t.after(() => closeServer(httpsServer));
+
+  const connectLog = [];
+  const proxySrv = createServer();
+  proxySrv.on("connect", (req, clientSocket, head) => {
+    connectLog.push(req.url);
+    const upstream = net.connect(httpsServer.address().port, "127.0.0.1");
+    clientSocket.on("error", () => {});
+    upstream.on("error", () => {});
+    upstream.on("connect", () => {
+      clientSocket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+      if (head && head.length) upstream.write(head);
+      clientSocket.pipe(upstream);
+      upstream.pipe(clientSocket);
+    });
+  });
+  await new Promise((r) => proxySrv.listen(0, "127.0.0.1", r));
+  t.after(() => closeServer(proxySrv));
+
+  // Member URL must pass usageEndpointFor (https, non-loopback host) yet
+  // fail at connect time: `localhost.` again, against the dead port.
+  await withStackWrapper(t, {
+    modelId: "ccs-claude-zhipu--glm-5.3-flash[1m]",
+    proxyRoute: "m-zai",
+    members: [
+      [
+        "m-zai",
+        "Z.AI GLM",
+        {
+          ANTHROPIC_BASE_URL: `https://localhost.:${dp}/api/anthropic`,
+          ANTHROPIC_AUTH_TOKEN: "zai-tok",
+        },
+        ZHIPU_META,
+      ],
+    ],
+  });
+  const wrapperPath = stackInstanceFile("statusline-wrapper.mjs");
+  const r = await runWrapper(wrapperPath, "{}", {
+    ...NO_PROXY_ENV,
+    HTTPS_PROXY: `http://127.0.0.1:${proxySrv.address().port}`,
+    NODE_EXTRA_CA_CERTS: crtFile,
+    CC_LAUNCH_USAGE_REFRESH: "1",
+    CC_LAUNCH_USAGE_REFRESH_KEY: "zhipu",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(connectLog.length, 1, connectLog.join(","));
+  const cache = JSON.parse(readFileSync(stackInstanceFile("usage-stack-zhipu.json"), "utf8"));
+  assert.ok(cache.ts > 0 && cache.errTs === 0, JSON.stringify(cache));
+  assert.equal(cache.data.fiveH, 40);
+  assert.ok(!existsSync(stackInstanceFile("usage-stack-deepseek.json")), "unlisted member untouched");
+});
+
+test("aggregation side-by-side: per-member stale markers", async (t) => {
+  const { wrapperPath, input } = await withStackWrapper(t, {
+    modelId: "ccs-claude-unknown--whatever",
+    proxyRoute: null,
+  });
+  const now = Date.now();
+  writeFileSync(
+    stackInstanceFile("usage-stack-zhipu.json"),
+    JSON.stringify({
+      v: 1, ts: now - 31 * 60000, refreshTs: 0, errTs: 0,
+      data: { kind: "zhipu", fiveH: 40, weekly: 52 },
+    }),
+  );
+  writeFileSync(
+    stackInstanceFile("usage-stack-deepseek.json"),
+    JSON.stringify({
+      v: 1, ts: now, refreshTs: 0, errTs: 0,
+      data: { kind: "deepseek", balance: "12.34", currency: "USD", sym: "$" },
+    }),
+  );
+  const r = await runWrapper(wrapperPath, input);
+  assert.equal(r.status, 0, r.stderr);
+  const out = stripAnsiPublic(r.stdout);
+  assert.ok(out.includes("52% ?"), out); // stale zhipu cell carries the marker
+  assert.ok(out.includes("[$12.34]"), out); // fresh deepseek cell intact
+  assert.ok(!out.includes("[$12.34] ?"), out); // …and unmarked
+});
